@@ -89,6 +89,7 @@ void app_main(void)
     }
 
     /* WebSocket */
+    ws_client_set_handler(on_ws_event);
     ESP_ERROR_CHECK(ws_client_start(CONFIG_SERVER_HOST, CONFIG_SERVER_TOKEN));
 
     buttons_init(on_button);

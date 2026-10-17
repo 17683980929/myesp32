@@ -47,6 +47,9 @@ typedef struct {
 
 typedef void (*ws_handler_t)(const ws_event_t *ev);
 
+/** 注册事件回调（收到 info/page/sub 等消息时调用） */
+void ws_client_set_handler(ws_handler_t handler);
+
 /** 服务器下发的信息栏数据（time/date/week/weather），本地项由 UI 自己填 */
 dev_info_t *ws_client_info(void);
 

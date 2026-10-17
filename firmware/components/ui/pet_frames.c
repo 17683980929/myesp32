@@ -1,5 +1,5 @@
 /* 自动生成，请勿手改。来源: 1bit_threshold */
-#include "pet_frames_small.h"
+#include "pet_frames.h"
 
 /* 01_idle  200x267 */
 const uint8_t pet_sm_01_idle[] = {

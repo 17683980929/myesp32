@@ -21,6 +21,8 @@ static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .ba
 
 dev_info_t *ws_client_info(void) { return &s_info; }
 
+void ws_client_set_handler(ws_handler_t handler) { s_handler = handler; }
+
 static void dispatch(const ws_event_t *ev) { if (s_handler) s_handler(ev); }
 
 static void on_data(char *data, int len)
