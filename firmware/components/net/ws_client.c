@@ -104,7 +104,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         uint8_t mac[6];
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
         snprintf(msg, sizeof(msg),
-                 "{\"t\":\"hello\",\"fw\":\"" MyESP32_FW "\","
+                 "{\"t\":\"hello\",\"fw\":\"" MYESP32_FW "\","
                  "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
                  "\"caps\":[\"audio\",\"lua\"]}",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

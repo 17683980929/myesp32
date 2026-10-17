@@ -170,11 +170,10 @@ static int weather_kind(const char *text)
 typedef enum { PET_IDLE, PET_BLINK, PET_THINKING, PET_SPEAKING } pet_state_t;
 
 static pet_state_t s_pet = PET_IDLE;
-static uint32_t s_last_frame = 0;
 static int s_frame_idx = 0;
 static int s_blink_phase = 0;
 
-static const char *PET_NAMES[PET_FRAMES] = {
+static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_01_idle, pet_sm_02_idle_blink, pet_sm_03_listening,
     pet_sm_04_thinking, pet_sm_05_speaking, pet_sm_06_happy,
     pet_sm_07_love, pet_sm_08_confused, pet_sm_09_sleepy,
@@ -195,6 +194,7 @@ static void pet_tick(uint32_t now)
 {
     switch (s_pet) {
     case PET_IDLE:
+    case PET_BLINK:
         /* 每 3.2 秒眨一次眼，眨 160ms */
         if (s_blink_phase == 0 && (now % 3200) < 40) {
             s_frame_idx = 1;
@@ -212,7 +212,6 @@ static void pet_tick(uint32_t now)
 /* ── 页面 ──────────────────────────────────────────────────────────── */
 
 static ui_page_t s_page = UI_PAGE_HOME;
-static uint32_t s_func_enter_ms = 0;
 static int s_busy = 0;
 static char s_sub[64] = "";
 
