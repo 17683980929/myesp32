@@ -1,0 +1,26 @@
+# ── 第三方大文件（官方 demo 176MB，不进仓库）─────────────────
+vendor-demo/
+ws-demo.zip
+
+# ── 依赖与构建产物 ───────────────────────────────────────────
+node_modules/
+package-lock.json
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+firmware/managed_components/
+
+# ── 服务器本地配置（以后会有密钥，绝不进仓库）────────────────
+server/config.json
+
+# ── 临时文件 ─────────────────────────────────────────────────
+w.json
+t.json
+*.tmp
+~$*
+
+# ── 系统 ─────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+desktop.ini

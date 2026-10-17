@@ -1,0 +1,19 @@
+{
+  "name": "myesp32-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MyEsp32 桌面宠物服务器：设备网关 + 配置网页 + 云服务封装",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs"
+  },
+  "dependencies": {
+    "mpg123-decoder": "^1.0.0",
+    "opusscript": "^0.1.1",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

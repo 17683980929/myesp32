@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MyEsp32 · 配置</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e4e7ec; --text:#1f2328;
+    --muted:#6b7280; --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);
+         padding:14px 22px;display:flex;align-items:center;gap:14px;
+         position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  header .dot.on{background:var(--ok)}
+  header .spacer{flex:1}
+  main{max-width:1080px;margin:0 auto;padding:22px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin-bottom:16px}
+  .card h2{font-size:14px;margin:0 0 14px;font-weight:600;
+           display:flex;align-items:center;gap:8px}
+  .card h2 .tag{font-size:11px;font-weight:400;color:var(--muted);
+                background:var(--bg);border:1px solid var(--line);
+                padding:1px 7px;border-radius:20px}
+  label{display:block;margin:10px 0 4px;font-size:12px;color:var(--muted)}
+  input,select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);
+        border-radius:6px;font:inherit;background:#fff;color:var(--text)}
+  input:focus,select:focus,textarea:focus{outline:2px solid #dbeafe;border-color:var(--accent)}
+  textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .row{display:flex;gap:12px}
+  .row>*{flex:1}
+  button{padding:8px 16px;border-radius:6px;border:1px solid var(--line);
+         background:#fff;color:var(--text);font:inherit;cursor:pointer}
+  button:hover{background:#f9fafb}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#1d4ed8}
+  .actions{display:flex;gap:10px;align-items:center;margin-top:16px}
+  .msg{font-size:12px}
+  .msg.ok{color:var(--ok)} .msg.err{color:var(--err)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  .kv{display:flex;justify-content:space-between;padding:5px 0;
+      border-bottom:1px dashed var(--line);font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv span:first-child{color:var(--muted)}
+  code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .banner{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
+          padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>MyEsp32 · 配置</h1>
+  <span class="spacer"></span>
+  <span class="msg" id="hdrMsg"></span>
+  <button onclick="refreshStatus()">刷新状态</button>
+</header>
+
+<main>
+  <div class="banner" id="warnBanner" style="display:none"></div>
+
+  <!-- 状态 -->
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="grid" style="gap:20px">
+      <div>
+        <div class="kv"><span>运行时长</span><span id="stUptime">—</span></div>
+        <div class="kv"><span>在线设备</span><span id="stDevCount">—</span></div>
+        <div class="kv"><span>天气</span><span id="stWeather">—</span></div>
+      </div>
+      <div>
+        <div class="kv"><span>天气错误</span><span id="stWeatherErr">—</span></div>
+        <div class="kv"><span>设备连接地址</span><span><code id="stWsUrl">—</code></span></div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <table>
+        <thead><tr><th>会话</th><th>MAC</th><th>固件</th><th>页面</th><th>状态</th><th>电量</th><th>室温/湿度</th></tr></thead>
+        <tbody id="devTable"><tr><td colspan="7" style="color:var(--muted)">暂无设备</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- 服务器 -->
+    <div class="card">
+      <h2>服务器 <span class="tag">安全</span></h2>
+      <label>监听端口</label>
+      <input id="s_port" type="number" min="1" max="65535">
+      <label>设备鉴权 Token<span class="hint"> 留空则不鉴权（公网必须设置）</span></label>
+      <input id="s_token" placeholder="留空 = 不鉴权">
+      <label>配置网页密码<span class="hint"> 留空则不设密码（公网必须设置）</span></label>
+      <input id="s_adminPwd" type="password" placeholder="留空 = 不设密码">
+    </div>
+
+    <!-- WiFi -->
+    <div class="card">
+      <h2>WiFi <span class="tag">下发给设备</span></h2>
+      <label>SSID</label>
+      <input id="w_ssid" placeholder="2.4GHz 网络名">
+      <label>密码</label>
+      <input id="w_pwd" type="password" placeholder="留空表示无密码">
+      <p class="hint">设备通过 SoftAP 配网时以此为准；改完需要设备重新配网。</p>
+    </div>
+
+    <!-- 天气 -->
+    <div class="card">
+      <h2>天气 <span class="tag">wttr.in</span></h2>
+      <label>城市</label>
+      <input id="wt_city" placeholder="例如 北京">
+      <div class="row">
+        <div>
+          <label>刷新间隔（秒）</label>
+          <input id="wt_refresh" type="number" min="60">
+        </div>
+        <div>
+          <label>启用</label>
+          <select id="wt_enabled"><option value="1">开启</option><option value="0">关闭</option></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="refreshWeather()">立即刷新天气</button>
+        <span class="msg" id="weatherMsg"></span>
+      </div>
+    </div>
+
+    <!-- 信息推送 -->
+    <div class="card">
+      <h2>信息栏推送</h2>
+      <label>推送间隔（秒）</label>
+      <input id="i_push" type="number" min="10">
+      <p class="hint">服务器按这个间隔把时间/日期/天气推给设备。温湿度和电量由设备本地读取，不走网络。</p>
+    </div>
+  </div>
+
+  <!-- LLM -->
+  <div class="card">
+    <h2>大模型 <span class="tag">LLM</span></h2>
+    <div class="row">
+      <div>
+        <label>Base URL</label>
+        <input id="l_base" placeholder="https://api.deepseek.com">
+      </div>
+      <div>
+        <label>模型</label>
+        <input id="l_model" placeholder="deepseek-flash">
+      </div>
+    </div>
+    <label>API Key</label>
+    <input id="l_key" type="password" placeholder="sk-...">
+    <div class="row">
+      <div>
+        <label>最大 token</label>
+        <input id="l_max" type="number" min="32" max="4000">
+      </div>
+      <div>
+        <label>温度</label>
+        <input id="l_temp" type="number" step="0.1" min="0" max="2">
+      </div>
+    </div>
+    <label>人设（System Prompt）</label>
+    <textarea id="l_prompt" rows="4"></textarea>
+  </div>
+
+  <!-- ASR -->
+  <div class="card">
+    <h2>语音识别 <span class="tag">腾讯云</span></h2>
+    <div class="row">
+      <div><label>AppId</label><input id="a_appid" placeholder="数字 AppId"></div>
+      <div><label>引擎</label><input id="a_engine" placeholder="16k_zh"></div>
+    </div>
+    <div class="row">
+      <div><label>SecretId</label><input id="a_sid" type="password"></div>
+      <div><label>SecretKey</label><input id="a_skey" type="password"></div>
+    </div>
+  </div>
+
+  <!-- TTS -->
+  <div class="card">
+    <h2>语音合成 <span class="tag">百度（免费）</span></h2>
+    <label>语速（0-15）</label>
+    <input id="t_speed" type="number" min="0" max="15">
+  </div>
+
+  <!-- Lua -->
+  <div class="card">
+    <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
+    <textarea id="lua_code" rows="12" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()"></textarea>
+    <div class="actions">
+      <button class="primary" onclick="deployLua()">下发到设备</button>
+      <span class="msg" id="luaMsg"></span>
+    </div>
+  </div>
+
+  <div class="actions" style="justify-content:flex-end">
+    <span class="msg" id="saveMsg"></span>
+    <button class="primary" onclick="saveAll()">保存全部配置</button>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg = null;
+
+function setMsg(el, text, kind) {
+  el.textContent = text;
+  el.className = "msg " + (kind || "");
+  if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 4000);
+}
+
+async function loadConfig() {
+  const r = await fetch("/api/config");
+  cfg = await r.json();
+
+  $("s_port").value = cfg.server.port;
+  $("s_token").value = cfg.server.authToken;
+  $("s_adminPwd").value = cfg.server.adminPassword;
+
+  $("w_ssid").value = cfg.wifi.ssid;
+  $("w_pwd").value = cfg.wifi.password;
+
+  $("wt_city").value = cfg.weather.city;
+  $("wt_refresh").value = cfg.weather.refreshSec;
+  $("wt_enabled").value = cfg.weather.enabled ? "1" : "0";
+
+  $("i_push").value = cfg.info.pushSec;
+
+  $("l_base").value = cfg.llm.baseUrl;
+  $("l_model").value = cfg.llm.model;
+  $("l_key").value = cfg.llm.apiKey;
+  $("l_max").value = cfg.llm.maxTokens;
+  $("l_temp").value = cfg.llm.temperature;
+  $("l_prompt").value = cfg.llm.systemPrompt;
+
+  $("a_appid").value = cfg.asr.appId;
+  $("a_engine").value = cfg.asr.engine;
+  $("a_sid").value = cfg.asr.secretId;
+  $("a_skey").value = cfg.asr.secretKey;
+
+  $("t_speed").value = cfg.tts.speed;
+
+  $("lua_code").value = cfg.lua.activeScript || "";
+
+  // 安全提示
+  const warns = [];
+  if (!cfg.server.authToken) warns.push("设备鉴权未开启");
+  if (!cfg.server.adminPassword) warns.push("配置网页无密码");
+  if (warns.length) {
+    $("warnBanner").style.display = "block";
+    $("warnBanner").textContent = "⚠ " + warns.join("；") + "。公网部署请务必设置。";
+  }
+}
+
+async function saveAll() {
+  const body = {
+    server: {
+      port: +$("s_port").value,
+      authToken: $("s_token").value,
+      adminPassword: $("s_adminPwd").value,
+    },
+    wifi: { ssid: $("w_ssid").value, password: $("w_pwd").value },
+    weather: {
+      city: $("wt_city").value,
+      refreshSec: +$("wt_refresh").value,
+      enabled: $("wt_enabled").value === "1",
+    },
+    info: { pushSec: +$("i_push").value },
+    llm: {
+      baseUrl: $("l_base").value,
+      model: $("l_model").value,
+      apiKey: $("l_key").value,
+      maxTokens: +$("l_max").value,
+      temperature: +$("l_temp").value,
+      systemPrompt: $("l_prompt").value,
+    },
+    asr: {
+      appId: $("a_appid").value,
+      engine: $("a_engine").value,
+      secretId: $("a_sid").value,
+      secretKey: $("a_skey").value,
+    },
+    tts: { speed: +$("t_speed").value },
+  };
+
+  const r = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  setMsg($("saveMsg"), j.ok ? "已保存" : "保存失败", j.ok ? "ok" : "err");
+  if (j.ok) loadConfig();
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const s = await r.json();
+
+    const up = s.uptimeSec;
+    $("stUptime").textContent =
+      `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m ${up % 60}s`;
+    $("stDevCount").textContent = s.devices.length;
+    $("stWeather").textContent = s.weather
+      ? `${s.weather.city} ${s.weather.text} ${s.weather.temp}℃`
+      : "无数据";
+    $("stWeatherErr").textContent = s.weatherError || "—";
+    $("stWsUrl").textContent = `ws://${location.host}/device`;
+    $("dot").className = "dot on";
+
+    const tb = $("devTable");
+    if (!s.devices.length) {
+      tb.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">暂无设备</td></tr>';
+    } else {
+      tb.innerHTML = s.devices.map((d) => `
+        <tr>
+          <td><code>${d.sid}</code></td>
+          <td>${d.mac || "—"}</td>
+          <td>${d.fw || "—"}</td>
+          <td>${d.page}</td>
+          <td>${d.recording ? "🎙 录音中" : d.busy ? "⏳ 处理中" : "空闲"}</td>
+          <td>${d.stat?.bat != null ? d.stat.bat + "%" : "—"}</td>
+          <td>${d.stat?.room ? d.stat.room.t.toFixed(1) + "℃ / " + d.stat.room.h + "%" : "—"}</td>
+        </tr>`).join("");
+    }
+  } catch (e) {
+    $("dot").className = "dot";
+    setMsg($("hdrMsg"), "无法连接服务器", "err");
+  }
+}
+
+async function refreshWeather() {
+  setMsg($("weatherMsg"), "刷新中…");
+  try {
+    const r = await fetch("/api/weather/refresh", { method: "POST" });
+    const j = await r.json();
+    setMsg($("weatherMsg"), j.ok ? `已更新：${j.weather.text} ${j.weather.temp}℃` : `失败：${j.error}`,
+           j.ok ? "ok" : "err");
+    refreshStatus();
+  } catch (e) {
+    setMsg($("weatherMsg"), "请求失败", "err");
+  }
+}
+
+async function deployLua() {
+  const code = $("lua_code").value;
+  if (!code.trim()) { setMsg($("luaMsg"), "脚本为空", "err"); return; }
+  const r = await fetch("/api/lua", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const j = await r.json();
+  setMsg($("luaMsg"), j.ok ? `已下发给 ${j.sent} 台设备` : "下发失败", j.ok ? "ok" : "err");
+}
+
+loadConfig();
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

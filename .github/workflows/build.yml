@@ -1,0 +1,66 @@
+name: Build MyEsp32 Firmware
+
+# push 且固件目录有改动时自动编译；也支持手动触发
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v5.5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: firmware
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Merge single image
+        working-directory: firmware
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          idf.py merge-bin -o merged-binary.bin
+
+      - name: Show flash args
+        working-directory: firmware
+        shell: bash
+        run: cat build/flash_args || true
+
+      - name: Upload merged image
+        uses: actions/upload-artifact@v4
+        with:
+          name: myesp32-merged
+          path: |
+            firmware/build/merged-binary.bin
+            firmware/build/flash_args
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload individual bins (fallback)
+        uses: actions/upload-artifact@v4
+        with:
+          name: myesp32-bins
+          path: |
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+            firmware/build/ota_data_initial.bin
+            firmware/build/edge_agent.bin
+            firmware/build/myesp32.bin
+            firmware/build/flash_args
+          if-no-files-found: warn
+          retention-days: 14

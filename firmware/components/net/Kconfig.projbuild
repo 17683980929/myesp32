@@ -1,0 +1,19 @@
+menu "MyEsp32 Network"
+
+    config WIFI_SSID
+        string "WiFi SSID（2.4GHz）"
+        default "MyWiFi"
+
+    config WIFI_PASSWORD
+        string "WiFi 密码"
+        default ""
+
+    config SERVER_HOST
+        string "服务器地址 host:port"
+        default "192.168.1.203:8080"
+
+    config SERVER_TOKEN
+        string "服务器鉴权 token"
+        default ""
+
+endmenu

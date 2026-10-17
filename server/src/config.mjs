@@ -1,0 +1,142 @@
+/**
+ * config.mjs — 配置读写
+ *
+ * 配置存 server/config.json。首次启动如果不存在，用内置默认值创建。
+ * 配置网页（/admin）改的就是这个文件，改完即时生效（服务内部读缓存）。
+ */
+
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+export const ROOT = path.resolve(HERE, "..");
+export const CONFIG_PATH = path.join(ROOT, "config.json");
+
+export const DEFAULT_CONFIG = {
+  server: {
+    port: 8080,
+    host: "0.0.0.0",
+    /** 设备连接鉴权 token。空字符串 = 不鉴权（公网部署必须设置） */
+    authToken: "",
+    /** 配置网页密码。空字符串 = 不鉴权（公网部署必须设置） */
+    adminPassword: "",
+  },
+  device: {
+    name: "MyEsp32",
+    /** 允许连接的设备 MAC 白名单，空数组 = 不限制 */
+    macAllowList: [],
+  },
+  wifi: {
+    /** 下发给设备的 WiFi（SoftAP 配网时可覆盖） */
+    ssid: "",
+    password: "",
+  },
+  weather: {
+    enabled: true,
+    source: "wttr.in",
+    city: "北京",
+    /** 多久拉一次天气（秒） */
+    refreshSec: 600,
+  },
+  info: {
+    /** 信息栏推送间隔（秒） */
+    pushSec: 60,
+  },
+  llm: {
+    provider: "deepseek",
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "",
+    model: "deepseek-flash",
+    maxTokens: 300,
+    temperature: 0.7,
+    systemPrompt:
+      "你叫小智，是一个桌面语音助手，说话简洁口语化。" +
+      "回答控制在两三句话以内，不要列表、不要 markdown、不要解释思考过程。",
+  },
+  asr: {
+    provider: "tencent",
+    appId: "",
+    secretId: "",
+    secretKey: "",
+    engine: "16k_zh",
+  },
+  tts: {
+    provider: "baidu",
+    speed: 5,
+  },
+  lua: {
+    /** 当前生效的脚本内容 */
+    activeScript: "",
+    /** 上一版，用于回滚 */
+    prevScript: "",
+  },
+};
+
+/** 深合并：对象递归，数组和标量直接覆盖 */
+function deepMerge(base, patch) {
+  if (Array.isArray(patch) || patch === null || typeof patch !== "object") {
+    return patch === undefined ? base : patch;
+  }
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    out[k] = k in base && typeof base[k] === "object" && base[k] !== null && !Array.isArray(base[k])
+      ? deepMerge(base[k], v)
+      : v;
+  }
+  return out;
+}
+
+let cache = null;
+
+export function loadConfig() {
+  if (cache) return cache;
+
+  if (!existsSync(CONFIG_PATH)) {
+    cache = structuredClone(DEFAULT_CONFIG);
+    writeFileSync(CONFIG_PATH, JSON.stringify(cache, null, 2), "utf8");
+    return cache;
+  }
+
+  try {
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    /* 用默认值补齐缺失字段，老配置升级不会炸 */
+    cache = deepMerge(structuredClone(DEFAULT_CONFIG), raw);
+  } catch (e) {
+    throw new Error(`config.json 解析失败: ${e.message}`);
+  }
+  return cache;
+}
+
+export function saveConfig(patch) {
+  const next = deepMerge(loadConfig(), patch);
+  writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), "utf8");
+
+  /* 原地更新，不替换对象 —— 上层（ctx.config）持有的是同一个引用，
+     一旦替换成新对象，各模块读到的还是旧配置。 */
+  for (const k of Object.keys(cache)) delete cache[k];
+  Object.assign(cache, next);
+  return cache;
+}
+
+export function getConfig() {
+  return loadConfig();
+}
+
+/** 给配置网页用的脱敏副本：密钥只回显是否已配置 */
+export function maskedConfig() {
+  const c = structuredClone(loadConfig());
+  const mask = (v) => (v ? "••••••" + String(v).slice(-4) : "");
+  c.llm.apiKey = mask(c.llm.apiKey);
+  c.asr.secretId = mask(c.asr.secretId);
+  c.asr.secretKey = mask(c.asr.secretKey);
+  c.server.authToken = mask(c.server.authToken);
+  c.server.adminPassword = mask(c.server.adminPassword);
+  c.wifi.password = mask(c.wifi.password);
+  return c;
+}
+
+/** 判断提交上来的值是不是"没改"（脱敏占位） */
+export function isMasked(v) {
+  return typeof v === "string" && v.startsWith("••••••");
+}
