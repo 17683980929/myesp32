@@ -16,6 +16,13 @@
 #include "pet_frames.h"
 #include "sensors.h"
 
+#ifndef PET_W
+#define PET_W            200
+#endif
+#ifndef PET_H
+#define PET_H            267
+#endif
+
 /* ── 文本（font5x7，支持 1/2/3 倍放大）────────────────────────────── */
 
 static void draw_text(int x, int y, const char *s, int scale, int ink)

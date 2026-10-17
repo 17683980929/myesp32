@@ -8,6 +8,8 @@
 #include "ws_client.h"
 #include <string.h>
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_websocket_client.h"
 #include "cJSON.h"
 #include "esp_mac.h"

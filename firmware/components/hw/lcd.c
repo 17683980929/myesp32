@@ -19,6 +19,7 @@
 
 #include "lcd.h"
 #include <string.h>
+#include <assert.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/spi_master.h"

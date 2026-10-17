@@ -12,7 +12,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
-#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
@@ -85,12 +87,6 @@ void sensors_init(void)
 }
 
 /* ── SHTC3 ─────────────────────────────────────────────────────────── */
-
-static esp_err_t shtc3_cmd(uint16_t cmd)
-{
-    uint8_t b[2] = { cmd >> 8, cmd & 0xFF };
-    return i2c_master_transmit(s_shtc3, b, 2, 100);
-}
 
 esp_err_t sensors_read_th(float *temp_c, float *hum)
 {
