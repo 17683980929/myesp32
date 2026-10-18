@@ -197,7 +197,7 @@ static void on_button(btn_id_t id, btn_event_t ev)
             ws_send_json(msg);
             ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
         }
-    } else {                                            /* BOOT：按住=麦克风直通自检 */
+    } else {                                            /* BOOT：按住=录音自检（松手回放） */
         if (ev == BTN_DOWN) {
             if (s_voice_state == VOICE_IDLE) audio_echo_set(1);
         } else if (ev == BTN_UP) {

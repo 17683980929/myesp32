@@ -26,7 +26,7 @@ void audio_play_stop(void);                             /* 立即停止（断线
 int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
 
 /* ── 自检 ───────────────────────────────────────────────────────────── */
-void audio_echo_set(int on);    /* 按住 BOOT：麦克风直通喇叭 */
+void audio_echo_set(int on);    /* 按住 BOOT：录音到 PSRAM，松手回放（半双工，防啸叫） */
 int  audio_echo_active(void);
 
 /* ── 音量 ───────────────────────────────────────────────────────────── */

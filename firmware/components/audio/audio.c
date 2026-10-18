@@ -8,9 +8,10 @@
  *     TDM 输出（REG12=0x02）；2 通道读取时每帧 2 个 16bit 字。
  *     串口实测：每个 16bit 字 = 一路麦克风样点（偶=麦A、奇=麦B 交织），
  *     幅度小（空载 ±12、近距离说话 ±300~1500）。直接按 16bit 用 + 数字增益：
- *     上行取偶数字 ×8，BOOT 回放原样 ×8。
+ *     上行取偶数字 ×8；BOOT 自检同源（半双工：按住只录音到 PSRAM，
+ *     松手后回放 —— 避免实时直通时扬声器串回麦克风形成回授啸叫）。
  *     （教训：16bit 字不能拆成两个 8bit 用 —— 低 8bit 是样点取模 256 的锯齿，
- *      放大后就是电流音；整字不放大又只是"小声"。）
+ *      放大后就是电流音；实时直通只要增益超过回授阈值就自激啸叫。）
  *   - 喇叭 ES8311 走 DAC，PA 使能在 AUD_PA_PIN（GPIO46）。
  *
  * 上行：麦克风 20ms×3 → 解包单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
@@ -70,6 +71,16 @@ static volatile int   s_play_finishing = 0;   /* tts_stop 已到 */
 static volatile int   s_play_done      = 0;   /* 队列播完（main 读一次清） */
 static volatile int   s_playing        = 0;
 
+/* ── BOOT 自检（半双工语音便签：按住录音，松手回放）──────────────────── */
+
+#define MEMO_MAX  (AUD_SAMPLE_HZ * 8)         /* 最长 8 秒单声道 */
+static int16_t       *s_memo           = NULL;   /* PSRAM 缓冲 */
+static volatile int   s_memo_len       = 0;      /* 已录样点数 */
+static volatile int   s_memo_play_pos  = 0;      /* 回放位置 */
+static volatile int   s_memo_play_end  = 0;      /* 回放终点 */
+static int            s_echo_n         = 0;      /* 自检诊断计数（每次会话清零） */
+static int            s_echo_warned    = 0;
+
 /* ── 麦克风任务（录音 / 直通自检）────────────────────────────────────── */
 
 /* 槽位诊断：把每个 16bit 字拆成高/低 8bit 观察分布。
@@ -98,15 +109,15 @@ static void mic_task(void *arg)
     int frames = 0;
 
     for (;;) {
-        /* 自检模式：麦克风 → 喇叭（BOOT 按住）。
-         * 原始样点 ×8 数字增益后直通（原始直通用户实测"偏小"）。 */
+        /* BOOT 自检（半双工）：按住时只录音到 PSRAM（喇叭静音，杜绝回授啸叫），
+         * 松手后由播放任务回放。偶数字（麦A）×8 —— 与上行同源，等于预演 ASR 输入。 */
         if (s_echo_on) {
-            static int echo_n = 0;
             if (esp_codec_dev_read(s_rec, in, sizeof(in)) == ESP_CODEC_DEV_OK) {
-                if (++echo_n == 1) {
+                if (++s_echo_n == 1) {
+                    s_echo_warned = 0;
                     ESP_LOGI(TAG, "自检原始样本: %04X %04X %04X %04X",
                              (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
-                } else if (echo_n % 100 == 0) {           /* 每 2 秒打一次电平，便于诊断 */
+                } else if (s_echo_n % 100 == 0) {         /* 每 2 秒打一次电平，便于诊断 */
                     float sr[4];
                     double acc = 0;                       /* double 防 32bit 溢出（曾现 nan） */
                     slot_rms(in, READ_CHUNK * 2, sr);
@@ -114,13 +125,18 @@ static void mic_task(void *arg)
                     ESP_LOGI(TAG, "自检槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f（原始 RMS=%.0f）",
                              sr[0], sr[1], sr[2], sr[3], sqrt(acc / (READ_CHUNK * 2)));
                 }
-                for (int i = 0; i < READ_CHUNK * 2; i++) {
-                    int32_t v = (int32_t)in[i] * 8;
-                    if (v > 32000) v = 32000;
-                    else if (v < -32000) v = -32000;
-                    in[i] = (int16_t)v;
+                if (s_memo && s_memo_len <= MEMO_MAX - READ_CHUNK) {
+                    for (int i = 0; i < READ_CHUNK; i++) {
+                        int32_t v = (int32_t)in[i * 2] * 8;
+                        if (v > 32000) v = 32000;
+                        else if (v < -32000) v = -32000;
+                        s_memo[s_memo_len + i] = (int16_t)v;
+                    }
+                    s_memo_len += READ_CHUNK;
+                } else if (!s_echo_warned) {
+                    s_echo_warned = 1;
+                    ESP_LOGW(TAG, "自检缓冲已满或不可用，超出部分忽略");
                 }
-                esp_codec_dev_write(s_play, in, sizeof(in));
             }
             continue;
         }
@@ -209,6 +225,22 @@ static void play_task(void *arg)
     }
 
     for (;;) {
+        /* BOOT 自检回放（此时麦克风不录音，半双工不会回授） */
+        if (s_memo && s_memo_play_pos < s_memo_play_end) {
+            int pos = s_memo_play_pos;
+            int n = s_memo_play_end - pos;
+            if (n > FRAME_SAMPLES) n = FRAME_SAMPLES;
+            for (int i = 0; i < n; i++) {
+                st[i * 2] = s_memo[pos + i];
+                st[i * 2 + 1] = s_memo[pos + i];
+            }
+            esp_codec_dev_write(s_play, st, n * 4);
+            s_memo_play_pos = pos + n;
+            if (s_memo_play_pos >= s_memo_play_end)
+                ESP_LOGI(TAG, "自检回放完成（%d 样点）", s_memo_play_end);
+            continue;
+        }
+
         if (!s_playing) {
             if (xQueueReceive(s_playq, &f, pdMS_TO_TICKS(100)) != pdTRUE) {
                 if (s_play_finishing) { s_play_finishing = 0; s_play_done = 1; }
@@ -282,8 +314,32 @@ int audio_play_finished(void)
 void audio_echo_set(int on)
 {
     if (!s_ready) return;
-    if (on && s_rec_on) return;          /* 录音中不做直通 */
-    s_echo_on = on ? 1 : 0;
+    if (on) {
+        if (s_rec_on) return;                /* 录音中不启动自检 */
+        if (!s_memo) {
+            s_memo = heap_caps_malloc((size_t)MEMO_MAX * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+            if (!s_memo) {
+                ESP_LOGE(TAG, "自检缓冲分配失败（%d 字节）", (int)(MEMO_MAX * sizeof(int16_t)));
+                return;
+            }
+            ESP_LOGI(TAG, "自检缓冲就绪: %d 字节 PSRAM（最长 8 秒）", (int)(MEMO_MAX * sizeof(int16_t)));
+        }
+        s_memo_play_pos = s_memo_play_end = 0;   /* 中断上一次回放 */
+        s_memo_len = 0;
+        s_echo_n = 0;
+        s_echo_on = 1;
+        ESP_LOGI(TAG, "BOOT 自检：开始录音（松手回放）");
+    } else {
+        if (!s_echo_on) return;
+        s_echo_on = 0;
+        if (s_memo_len > 0) {
+            s_memo_play_pos = 0;
+            s_memo_play_end = s_memo_len;
+            ESP_LOGI(TAG, "BOOT 自检：录到 %.1f 秒，开始回放", s_memo_len / (float)AUD_SAMPLE_HZ);
+        } else {
+            ESP_LOGW(TAG, "BOOT 自检：没有录到数据");
+        }
+    }
 }
 int audio_echo_active(void) { return s_echo_on; }
 
