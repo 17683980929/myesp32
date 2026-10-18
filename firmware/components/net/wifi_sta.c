@@ -60,6 +60,7 @@ esp_err_t wifi_sta_start(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wcfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_ps(WIFI_PS_NONE);   /* 关省电：避免 beacon 超时断连 + 降低延迟 */
 
     ESP_LOGI(TAG, "WiFi 启动，连接 %s", ssid);
     return ESP_OK;
