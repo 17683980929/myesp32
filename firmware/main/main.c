@@ -40,6 +40,7 @@ typedef enum { VOICE_IDLE = 0, VOICE_REC, VOICE_THINK, VOICE_SPEAK } voice_state
 
 static voice_state_t s_voice_state = VOICE_IDLE;
 static int s_key_down_at = -1;          /* KEY 按下时刻（ms）；-1 = 未按 */
+static int s_boot_down_at = -1;         /* BOOT 按下时刻（ms）：区分短按（音量）/长按（自检） */
 static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
@@ -285,11 +286,20 @@ static void on_button(btn_id_t id, btn_event_t ev)
             ws_send_json(msg);
             ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
         }
-    } else {                                            /* BOOT：按住=录音自检（松手回放） */
+    } else {                                            /* BOOT：短按=音量循环；按住≥600ms=录音自检（松手回放） */
         if (ev == BTN_DOWN) {
+            s_boot_down_at = now_ms();
             if (s_voice_state == VOICE_IDLE) audio_echo_set(1);
+        } else if (ev == BTN_CLICK) {
+            audio_echo_discard();                       /* 短按不做自检回放 */
+            audio_volume_cycle();                       /* 音量：增大 → 顶档后静音 → 循环 */
         } else if (ev == BTN_UP) {
-            audio_echo_set(0);
+            /* 短按：CLICK 已处理完，把自检残料清掉；长按：正常回放自检录音 */
+            if (s_boot_down_at >= 0 && now_ms() - s_boot_down_at < 600)
+                audio_echo_discard();
+            else
+                audio_echo_set(0);
+            s_boot_down_at = -1;
         }
     }
 }
@@ -377,11 +387,11 @@ static void main_loop(void)
             if (s_sub_cur[0] && s_sub_cur_frames > 0) {
                 int pages = ui_sub_pages(s_sub_cur);
                 if (pages > 1) {
-                    /* 翻页滞后：TTS 句首有静音、句尾略慢，纯按比例翻会早几个字
-                     * （实测反馈：上一页最后几个字还没念完就翻了）→ 留 10% 余量 */
-                    int lag = s_sub_cur_frames / 10;
-                    if (lag < 3) lag = 3;
-                    if (lag > 14) lag = 14;
+                    /* 翻页滞后：TTS 句首有静音、句尾略慢，纯按比例翻会早几个字。
+                     * 10% 余量实测仍偏快 → 加到 12.5%，长句最多滞后 18 帧（约 1.1 秒） */
+                    int lag = s_sub_cur_frames / 8;
+                    if (lag < 4) lag = 4;
+                    if (lag > 18) lag = 18;
                     int prog = played - s_sub_cur_at - lag;
                     if (prog < 0) prog = 0;
                     if (prog > s_sub_cur_frames) prog = s_sub_cur_frames;

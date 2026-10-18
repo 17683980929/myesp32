@@ -36,6 +36,8 @@ int  audio_rec_vad_stop(void);  /* 读一次即清：1=说完 2=没说话 3=超�
 /* ── 自检 ───────────────────────────────────────────────────────────── */
 void audio_echo_set(int on);    /* 按住 BOOT：录音到 PSRAM，松手回放（半双工，防啸叫） */
 int  audio_echo_active(void);
+void audio_echo_discard(void);  /* BOOT 短按：丢掉自检录音（不回放，给音量让路） */
 
 /* ── 音量 ───────────────────────────────────────────────────────────── */
 void audio_set_volume(int vol); /* 0..100 */
+void audio_volume_cycle(void);  /* BOOT 短按：逐档增大 → 顶档后静音 → 回到最小档循环（带反馈音） */

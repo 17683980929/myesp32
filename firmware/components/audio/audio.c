@@ -17,7 +17,7 @@
  * 上行：麦克风 20ms×3 → 解包单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
  * 下行：ws 二进制帧 → 队列 → 播放任务解码 → 复制双声道 → 写 I2S
  *
- * BOOT 按住 = 麦克风直通喇叭（本地自检，不经过网络）。
+ * BOOT 短按 = 音量循环（增大→顶档静音→再循环，带提示音）；按住 = 本地自检（松手回放）。
  */
 
 #include "audio.h"
@@ -76,6 +76,7 @@ static volatile int   s_stream_open    = 0;   /* tts_start 后开闸；结束后
 static volatile int   s_stream_act_ms  = 0;   /* 最近一次帧活动时刻（看门狗用） */
 static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步，tts_start 清零） */
 static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
+static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放任务消费） */
 
 /* 播放流沉默超时：tts_start 后 15 秒既没有帧流入、也没有声音在放
  * （服务器句子合成超时 12 秒；正常到不了）→ 判本轮结束并复位，
@@ -267,6 +268,29 @@ static void mic_task(void *arg)
 
 /* ── 播放任务（解码 TTS）────────────────────────────────────────────── */
 
+/* 音量反馈音：880Hz 120ms，首尾淡入淡出防爆音。只在播放任务里调用
+ * （播放任务是唯一写 codec 的路径，避免和 TTS 写入交叉打架）。 */
+static void play_beep(void)
+{
+    enum { BEEP_N = AUD_SAMPLE_HZ * 12 / 100 };      /* 1920 样点 = 120ms */
+    static int16_t buf[BEEP_N * 2];
+    const int fade = BEEP_N / 10;
+    for (int i = 0; i < BEEP_N; i++) {
+        int amp = 9000;
+        if (i < fade)                amp = amp * i / fade;
+        else if (i >= BEEP_N - fade) amp = amp * (BEEP_N - 1 - i) / fade;
+        int16_t v = (int16_t)(amp * sinf(6.2831853f * 880.0f * (float)i / AUD_SAMPLE_HZ));
+        buf[i * 2] = v;
+        buf[i * 2 + 1] = v;
+    }
+    for (int off = 0; off < BEEP_N; ) {
+        int n = BEEP_N - off;
+        if (n > FRAME_SAMPLES) n = FRAME_SAMPLES;
+        esp_codec_dev_write(s_play, buf + off * 2, n * 4);
+        off += n;
+    }
+}
+
 static void play_task(void *arg)
 {
     static int16_t pcm[FRAME_SAMPLES];
@@ -290,6 +314,14 @@ static void play_task(void *arg)
             s_playing = 0;
             xQueueReset(s_playq);
             s_play_done = 1;
+        }
+
+        /* 音量反馈音：空闲才响（TTS 播放中音量已即时生效，不需要提示音） */
+        if (s_beep_req) {
+            s_beep_req = 0;
+            if (!s_playing && !s_echo_on && !s_rec_on &&
+                !(s_memo && s_memo_play_pos < s_memo_play_end))
+                play_beep();
         }
 
         /* BOOT 自检回放（此时麦克风不录音，半双工不会回授） */
@@ -485,6 +517,34 @@ int audio_echo_active(void) { return s_echo_on; }
 void audio_set_volume(int vol)
 {
     if (s_play) esp_codec_dev_set_out_vol(s_play, vol);
+}
+
+/* 音量档位：BOOT 短按逐档增大；顶档再按 → 静音；静音再按 → 回到最小档循环。
+ * 顶档取 85 而不是 100：85 及以上功放电流尖峰会触发 BOD 欠压复位（实测教训）。 */
+static const int VOL_STEPS[] = { 25, 50, 75, 85 };
+static int s_vol_cur = 65;              /* 与 audio_init 里设置的默认一致 */
+
+void audio_volume_cycle(void)
+{
+    int next = VOL_STEPS[0];            /* 从静音(0)再按 → 回最小档重新开始 */
+    if (s_vol_cur > 0) {
+        next = 0;                       /* 默认递增；找不到更大档位 = 已到顶 → 静音 */
+        for (int i = 0; i < (int)(sizeof(VOL_STEPS) / sizeof(VOL_STEPS[0])); i++) {
+            if (VOL_STEPS[i] > s_vol_cur) { next = VOL_STEPS[i]; break; }
+        }
+    }
+    audio_set_volume(next);
+    s_vol_cur = next;
+    s_beep_req = 1;                     /* 反馈音（播放任务空闲时响） */
+    ESP_LOGI(TAG, "音量 → %d%s", next, next ? "" : "（静音）");
+}
+
+void audio_echo_discard(void)
+{
+    if (!s_echo_on && s_memo_len == 0) return;
+    s_echo_on = 0;
+    s_memo_play_pos = s_memo_play_end = 0;
+    s_memo_len = 0;                     /* 短按：录音直接丢，不回放 */
 }
 
 /* ── 初始化 ─────────────────────────────────────────────────────────── */
