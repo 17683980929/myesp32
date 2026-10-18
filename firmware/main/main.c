@@ -298,6 +298,11 @@ static void on_button(btn_id_t id, btn_event_t ev)
 
 static void main_loop(void)
 {
+    /* 开机即空闲态，但 s_voice_state 是静态初始化成 IDLE 的、没走过 voice_to()，
+     * 而唤醒使能只在 voice_to() 里打开——这里补一次，否则开机后首次语音唤醒
+     * 不生效（要等一轮 KEY 对话结束回到 IDLE 后才被顺带打开）。 */
+    voice_to(VOICE_IDLE);
+
     TickType_t last = xTaskGetTickCount();
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
