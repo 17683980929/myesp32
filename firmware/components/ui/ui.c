@@ -130,7 +130,7 @@ static void draw_cjk(int x, int y, const char *s, int scale, int ink)
 
 /* ── 7 段数字（时钟用，任意尺寸）──────────────────────────────────── */
 
-/* 0..9 的七段码：A B C D E F G */
+/* 0..9 的七段码：bit0..bit6 = A(上) B(右上) C(右下) D(下) E(左下) F(左上) G(中) */
 static const uint8_t SEG[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
 
 static void seg_digit(int x, int y, int d, int h, int ink)
@@ -139,16 +139,16 @@ static void seg_digit(int x, int y, int d, int h, int ink)
     int w = h / 2 + t;                   /* 单个数字宽 */
     int a[7][4] = {                      /* A B C D E F G 的矩形 */
         { t, 0,             w - 2 * t, t },        /* A 上 */
-        { w - t, t,         t,   h / 2 - t },      /* B 右上 */
-        { w - t, h / 2 + 1, t,   h / 2 - t - 1 },  /* C 右下 */
+        { w - t, t,         t, h / 2 - t },        /* B 右上 */
+        { w - t, h / 2,     t, h / 2 - t },        /* C 右下（紧接 B，不留缝）*/
         { t, h - t,         w - 2 * t, t },        /* D 下 */
-        { 0, h / 2 + 1,     t,   h / 2 - t - 1 },  /* E 左下 */
-        { 0, t,             t,   h / 2 - t },      /* F 左上 */
+        { 0, h / 2,         t, h / 2 - t },        /* E 左下（紧接 F，不留缝）*/
+        { 0, t,             t, h / 2 - t },        /* F 左上 */
         { t, h / 2 - t / 2, w - 2 * t, t },        /* G 中 */
     };
     uint8_t mask = SEG[d & 0x0F];
     for (int s = 0; s < 7; s++) {
-        if (!(mask & (0x40 >> s))) continue;
+        if (!(mask & (0x01 << s))) continue;       /* SEG 表 bit0..bit6 = A..G */
         lcd_fill(x + a[s][0], y + a[s][1], a[s][2], a[s][3], ink);
     }
 }

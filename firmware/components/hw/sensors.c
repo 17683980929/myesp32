@@ -4,7 +4,7 @@
  * SHTC3：I2C 0x70，命令字连续半字节流（16 位大端）。
  *   唤醒 0x3517 / 睡眠 0xB098 / 软复位 0x805D / 测量(T 在前, 正常模式) 0x7CA2
  *   读回 6 字节：T_MSB T_LSB T_CRC RH_MSB RH_LSB RH_CRC，CRC-8 多项式 0x31
- * 电池：ADC1_CH3，读 10 次平均 ×3，厂家二次拟合公式。
+ * 电池：ADC1_CH3，读 10 次平均 ×3，电压线性映射（3.0V=0%，4.1V+=100%）。
  */
 
 #include "sensors.h"
@@ -150,11 +150,14 @@ static int battery_mv(void)
 int sensors_battery_pct(void)
 {
     int v = battery_mv();
-    /* 厂家二次拟合：v 单位 mV */
-    int pct = (-1 * v * v + 9016 * v - 19189000) / 10000;
-    if (pct > 100) pct = 100;
-    if (pct < 0) pct = 0;
-    return pct;
+
+    /* 电压 → 电量（锂电近似）：3.0V = 0%，4.10V 及以上 = 100%。
+     * 说明：4.1V 已接近满电。插着 USB 时充电芯片充满即停充，板子自身
+     * 耗电会让电压在 ~4.05–4.2V 之间循环，所以阈值取 4.10V 才能在插电
+     * 稳定后显示 100%（原厂 03_ADC_Test 用的是 4.12V 线性映射）。 */
+    if (v >= 4100) return 100;
+    if (v <= 3000) return 0;
+    return (v - 3000) * 100 / 1100;
 }
 
 int sensors_battery_mv(void)

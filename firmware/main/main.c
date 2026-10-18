@@ -90,6 +90,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
 
     sensors_init();
+    ESP_LOGI(TAG, "电池 %d mV / %d%%", sensors_battery_mv(), sensors_battery_pct());
     pcf85063_init();
     ui_init();
 
