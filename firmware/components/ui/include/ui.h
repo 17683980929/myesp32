@@ -13,8 +13,9 @@ ui_page_t ui_get_page(void);
 /** 渲染当前页并刷屏（调用一次画一帧） */
 void ui_render(void);
 
-/** 页面自动刷新（时钟走字、桌宠眨眼、按键状态）。放到周期任务里调 */
-void ui_tick(uint32_t now_ms);
+/** 页面自动刷新（桌宠眨眼等）。放到周期任务里调。
+ *  返回 1 表示画面有变化（例如眨眼换帧），需要重绘 */
+int ui_tick(uint32_t now_ms);
 
 /** 服务器忙/空闲（影响桌宠状态） */
 void ui_set_busy(int busy);

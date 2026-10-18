@@ -10,6 +10,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -19,13 +20,13 @@
 #include "lcd.h"
 #include "buttons.h"
 #include "sensors.h"
+#include "rtc.h"
 #include "wifi_sta.h"
 #include "ws_client.h"
 #include "ui.h"
 
 static const char *TAG = "main";
 
-static ui_page_t s_page = UI_PAGE_HOME;
 static int s_func_since = 0;
 static volatile int s_dirty = 1;        /* 需要重绘 */
 
@@ -42,10 +43,15 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_STT:
         s_dirty = 1;
         break;
-    case WS_EVT_PAGE:
-        s_page = strcmp(ev->name, "func") == 0 ? UI_PAGE_FUNC : UI_PAGE_HOME;
+    case WS_EVT_PAGE: {
+        /* UI 的页面状态是唯一真相，切页必须走 ui_set_page() */
+        ui_page_t p = strcmp(ev->name, "func") == 0 ? UI_PAGE_FUNC : UI_PAGE_HOME;
+        ui_set_page(p);
+        if (p == UI_PAGE_FUNC)
+            s_func_since = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         s_dirty = 1;
         break;
+    }
     case WS_EVT_CONNECTED:
         s_dirty = 1;
         break;
@@ -64,14 +70,16 @@ static void on_button(btn_id_t id, btn_event_t ev)
 
     if (id == BTN_KEY && ev == BTN_CLICK) {
         /* 翻页设备本地完成（不等网络），只告诉服务器一声 */
-        s_page = (s_page == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
-        if (s_page == UI_PAGE_FUNC) s_func_since = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
+        ui_set_page(p);
+        if (p == UI_PAGE_FUNC)
+            s_func_since = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         s_dirty = 1;
 
         char msg[48];
         snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
         ws_send_json(msg);
-        ESP_LOGI(TAG, "KEY → %s", s_page == UI_PAGE_HOME ? "home" : "func");
+        ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
     }
 }
 
@@ -82,6 +90,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
 
     sensors_init();
+    rtc_init();
     ui_init();
 
     ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
@@ -103,17 +112,17 @@ void app_main(void)
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         /* 功能页 5 秒后自动回主页 */
-        if (s_page == UI_PAGE_FUNC && s_func_since &&
+        if (ui_get_page() == UI_PAGE_FUNC && s_func_since &&
             now - (uint32_t)s_func_since > 5000) {
-            s_page = UI_PAGE_HOME;
+            ui_set_page(UI_PAGE_HOME);
             s_dirty = 1;
             ESP_LOGI(TAG, "功能页超时 → home");
         }
 
-        /* 每秒重绘一次（时钟走字），或标记脏时立即重绘 */
+        /* 每秒重绘一次（时钟走字）；脏标记或桌宠换帧时立即重绘 */
+        int pet_changed = ui_tick(now);
         TickType_t nowT = xTaskGetTickCount();
-        if (s_dirty || (nowT - last) >= pdMS_TO_TICKS(1000)) {
-            ui_tick(now);
+        if (s_dirty || pet_changed || (nowT - last) >= pdMS_TO_TICKS(1000)) {
             ui_render();
             s_dirty = 0;
             last = nowT;

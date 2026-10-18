@@ -28,6 +28,8 @@ static i2c_master_dev_handle_t s_shtc3 = NULL;
 static adc_oneshot_unit_handle_t s_adc = NULL;
 static adc_cali_handle_t s_cali = NULL;
 
+i2c_master_bus_handle_t sensors_i2c_bus(void) { return s_bus; }
+
 /* ── CRC ───────────────────────────────────────────────────────────── */
 
 static uint8_t crc8(const uint8_t *d, int len)
