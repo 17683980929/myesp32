@@ -117,7 +117,7 @@ static const char PAGE_B[] =
     "catch(e){alert('保存失败，请重试');}}"
     "</script></body></html>";
 
-static char s_page[3200];
+static char s_page[6144];
 
 static void html_escape(const char *in, char *out, size_t out_sz)
 {
@@ -136,42 +136,7 @@ static void html_escape(const char *in, char *out, size_t out_sz)
     out[o] = 0;
 }
 
-static void build_page(void)
-{
-    wifi_cfg_t cfg;
-    wifi_cfg_load(&cfg);
-
-    char ssid[256], host[256], token[256];
-    html_escape(cfg.ssid,  ssid,  sizeof(ssid));
-    html_escape(cfg.host,  host,  sizeof(host));
-    html_escape(cfg.token, token, sizeof(token));
-
-    int len = snprintf(s_page, sizeof(s_page), "%s", PAGE_A);
-    if (len < 0 || len >= (int)sizeof(s_page)) return;
-
-    len += snprintf(s_page + len, sizeof(s_page) - len,
-        "<label>WiFi 名称（只支持 2.4GHz）</label>"
-        "<div class=\"row\"><input id=\"ssid\" value=\"%s\" placeholder=\"输入或点右侧扫描\">"
-        "<button type=\"button\" class=\"ghost\" onclick=\"scan()\">扫描</button></div>"
-        "<div id=\"aps\"></div>"
-        "<label>WiFi 密码（开放网络留空）</label><input id=\"pass\" type=\"password\">"
-        "<label>服务器地址（host:port，可留空）</label><input id=\"host\" value=\"%s\">"
-        "<label>服务器 Token（可留空）</label><input id=\"token\" value=\"%s\">",
-        ssid, host, token);
-    if (len < 0 || len >= (int)sizeof(s_page)) return;
-
-    snprintf(s_page + len, sizeof(s_page) - len, "%s", PAGE_B);
-}
-
-/* ── HTTP 处理器 ───────────────────────────────────────────────────── */
-
-static esp_err_t h_root(httpd_req_t *r)
-{
-    httpd_resp_set_type(r, "text/html; charset=utf-8");
-    return httpd_resp_sendstr(r, s_page);
-}
-
-/* 拼 JSON 的安全追加（防越界；截断时返回已达上限） */
+/* 安全追加（防越界，网页 / JSON 共用；越界时静默截断） */
 static int jcat(char *buf, int cap, int len, const char *fmt, ...)
 {
     if (len < 0) return 0;
@@ -183,6 +148,38 @@ static int jcat(char *buf, int cap, int len, const char *fmt, ...)
     if (n < 0) return len;
     if (n > cap - 1 - len) n = cap - 1 - len;
     return len + n;
+}
+
+static void build_page(void)
+{
+    wifi_cfg_t cfg;
+    wifi_cfg_load(&cfg);
+
+    char ssid[256], host[256], token[256];
+    html_escape(cfg.ssid,  ssid,  sizeof(ssid));
+    html_escape(cfg.host,  host,  sizeof(host));
+    html_escape(cfg.token, token, sizeof(token));
+
+    int len = 0;
+    len = jcat(s_page, sizeof(s_page), len, "%s", PAGE_A);
+    len = jcat(s_page, sizeof(s_page), len,
+        "<label>WiFi 名称（只支持 2.4GHz）</label>"
+        "<div class=\"row\"><input id=\"ssid\" value=\"%s\" placeholder=\"输入或点右侧扫描\">"
+        "<button type=\"button\" class=\"ghost\" onclick=\"scan()\">扫描</button></div>"
+        "<div id=\"aps\"></div>"
+        "<label>WiFi 密码（开放网络留空）</label><input id=\"pass\" type=\"password\">"
+        "<label>服务器地址（host:port，可留空）</label><input id=\"host\" value=\"%s\">"
+        "<label>服务器 Token（可留空）</label><input id=\"token\" value=\"%s\">",
+        ssid, host, token);
+    jcat(s_page, sizeof(s_page), len, "%s", PAGE_B);
+}
+
+/* ── HTTP 处理器 ───────────────────────────────────────────────────── */
+
+static esp_err_t h_root(httpd_req_t *r)
+{
+    httpd_resp_set_type(r, "text/html; charset=utf-8");
+    return httpd_resp_sendstr(r, s_page);
 }
 
 static esp_err_t h_scan(httpd_req_t *r)
