@@ -40,7 +40,6 @@ typedef enum { VOICE_IDLE = 0, VOICE_REC, VOICE_THINK, VOICE_SPEAK } voice_state
 
 static voice_state_t s_voice_state = VOICE_IDLE;
 static int s_key_down_at = -1;          /* KEY 按下时刻（ms）；-1 = 未按 */
-static int s_boot_down_at = -1;         /* BOOT 按下时刻（ms）：区分短按（音量）/长按（自检） */
 static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
@@ -93,7 +92,9 @@ static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进�
 static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
-    wake_set_enabled(v == VOICE_IDLE);   /* 只在空闲时听唤醒词（说话/录音中会自触发） */
+    /* 空闲、播报中都听唤醒词（播报中命中 → 用户优先：打断当前回答改听新的）；
+     * 录音/思考中不听（录音里是用户自己的声音会自触发，思考中没意义） */
+    wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK);
     switch (v) {
     case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
     case VOICE_THINK: ui_set_voice(UI_VOICE_THINKING);  break;
@@ -286,21 +287,9 @@ static void on_button(btn_id_t id, btn_event_t ev)
             ws_send_json(msg);
             ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
         }
-    } else {                                            /* BOOT：短按=音量循环；按住≥600ms=录音自检（松手回放） */
-        if (ev == BTN_DOWN) {
-            s_boot_down_at = now_ms();
-            if (s_voice_state == VOICE_IDLE) audio_echo_set(1);
-        } else if (ev == BTN_CLICK) {
-            audio_echo_discard();                       /* 短按不做自检回放 */
-            audio_volume_cycle();                       /* 音量：增大 → 顶档后静音 → 循环 */
-        } else if (ev == BTN_UP) {
-            /* 短按：CLICK 已处理完，把自检残料清掉；长按：正常回放自检录音 */
-            if (s_boot_down_at >= 0 && now_ms() - s_boot_down_at < 600)
-                audio_echo_discard();
-            else
-                audio_echo_set(0);
-            s_boot_down_at = -1;
-        }
+    } else {                                            /* BOOT：短按=音量循环（增大→顶档静音→循环） */
+        if (ev == BTN_CLICK)
+            audio_volume_cycle();
     }
 }
 
@@ -338,16 +327,27 @@ static void main_loop(void)
             voice_start_rec();
         }
 
-        /* 语音唤醒：空闲时听到"小鱼同学"（模型小宇同学）→ 本地应答"我在" → 应答完自动聆听 */
-        if (s_voice_state == VOICE_IDLE && !s_wake_greet && wake_take_hit()) {
-            audio_play_greeting();
-            s_wake_greet = 1;
-            s_sub_clear_at = 0;
-            subq_clear();
-            sub_cur_clear();
-            ui_set_sub("");
-            voice_to(VOICE_SPEAK);
-            ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
+        /* 语音唤醒（模型"小宇同学"，喊"小鱼同学"）：
+         *   - 空闲命中 → 本地应答"我在" → 应答完自动聆听
+         *   - 播报中命中 → 用户优先：打断当前回答，直接进入聆听（不用按 KEY） */
+        if (wake_take_hit()) {
+            if (s_wake_greet) {
+                /* 应答播放期间的误触发：消费掉即可（播放完照常进入聆听） */
+            } else if (s_voice_state == VOICE_IDLE) {
+                audio_play_greeting();
+                s_wake_greet = 1;
+                s_sub_clear_at = 0;
+                subq_clear();
+                sub_cur_clear();
+                ui_set_sub("");
+                voice_to(VOICE_SPEAK);
+                ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
+            } else if (s_voice_state == VOICE_SPEAK) {
+                ESP_LOGI(TAG, "播报中听到唤醒词 → 打断，优先聆听");
+                voice_interrupt();
+                voice_start_rec_auto();
+            }
+            /* 录音/思考中唤醒未使能，理论上到不了这里 */
         }
 
         /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录 */
