@@ -279,6 +279,7 @@ static SemaphoreHandle_t s_fb_lock;
 static uint32_t s_lua_hold_until;
 static int s_lua_frame = -1;             /* ≥0 = 脚本指定的桌宠帧 */
 static int s_lua_frame_prev = -2;
+static uint32_t s_lua_rel_seq;           /* release 自增序号（执行期让位检测用） */
 
 static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_01_idle, pet_sm_02_idle_blink, pet_sm_03_listening,
@@ -596,6 +597,12 @@ void ui_lua_release(void)
 {
     s_lua_hold_until = 0;
     s_lua_frame = -1;
+    s_lua_rel_seq++;
+}
+
+uint32_t ui_lua_release_seq(void)
+{
+    return s_lua_rel_seq;
 }
 
 void ui_lua_clear(void)

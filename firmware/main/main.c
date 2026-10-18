@@ -322,15 +322,23 @@ static void on_ws_event(const ws_event_t *ev)
 
 /* ── 按键 → 页面 ───────────────────────────────────────────────────── */
 
-/* KEY 短按：让位脚本画布 → 翻页 → 上报 → 派发 key_click 事件。
- * 脚本注册了 key_double 时，本动作会等 ~300ms 双击窗口裁决后才执行 */
+/* KEY 短按：画布在屏上时 = 关画布（不翻页）；否则让位画布 → 翻页 → 上报 →
+ * 派发 key_click 事件。脚本注册了 key_double 且画布不在屏上时，本动作会等
+ * ~300ms 双击窗口裁决后才执行 */
 static void key_click_action(void)
 {
-    ui_lua_release();                               /* 用户要看正经界面了 */
-    ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
-    ui_set_page(p);
-    if (p == UI_PAGE_FUNC)
-        s_func_since = now_ms();
+    int canvas = ui_lua_hold_active();               /* 脚本画布正占着屏幕？ */
+    ui_lua_release();                                /* 用户要看正经界面了 */
+    if (canvas) {
+        /* 关画布手势：作废排队中还没执行的 key_double，
+         * 否则画布刚关掉又被队列里的重画盖回来 */
+        lua_runtime_event_drop_pending("key_double");
+    } else {
+        ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
+        ui_set_page(p);
+        if (p == UI_PAGE_FUNC)
+            s_func_since = now_ms();
+    }
     s_dirty = 1;
 
     char msg[48];
@@ -338,7 +346,8 @@ static void key_click_action(void)
     ws_send_json(msg);
     lua_runtime_event("key_click");                 /* 在内置动作之后派发，
                                                      * 脚本设的桌宠状态不会被 release 吃掉 */
-    ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
+    ESP_LOGI(TAG, "KEY → %s", canvas ? "关画布"
+             : (ui_get_page() == UI_PAGE_HOME ? "home" : "func"));
 }
 
 static void on_button(btn_id_t id, btn_event_t ev)
@@ -392,10 +401,12 @@ static void main_loop(void)
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
-         * 没有脚本关心时立刻关掉，单击行为回到即时 */
+         * 没有脚本关心时立刻关掉，单击行为回到即时。
+         * 画布（脚本接管屏幕）正显示时例外：此时单击 = 关画布，不做双击裁决，
+         * 否则连按容易被凑成"双击"→只重画不关闭，用户体感就是"卡死"。 */
         {
             static int s_dbl_evt_on = 0;
-            int want_dbl = lua_runtime_has_event("key_double");
+            int want_dbl = lua_runtime_has_event("key_double") && !ui_lua_hold_active();
             if (want_dbl != s_dbl_evt_on) {
                 s_dbl_evt_on = want_dbl;
                 buttons_set_double(want_dbl);

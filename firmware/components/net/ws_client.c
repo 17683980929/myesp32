@@ -180,7 +180,9 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
 
 void ws_send_json(const char *json)
 {
-    if (s_cli) esp_websocket_client_send_text(s_cli, json, strlen(json), portMAX_DELAY);
+    /* 控制消息给个有限超时：socket 断线/阻塞时宁可丢这条日志，
+     * 也不能把按键/主任务永久卡死（之前用 portMAX_DELAY 是隐患） */
+    if (s_cli) esp_websocket_client_send_text(s_cli, json, strlen(json), pdMS_TO_TICKS(300));
 }
 
 void ws_send_audio(const uint8_t *frame, size_t len)

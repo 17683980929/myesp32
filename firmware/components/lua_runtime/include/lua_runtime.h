@@ -27,5 +27,9 @@ void lua_runtime_deploy(int id, const char *code);
  *  可在任意任务调用（非 ISR）。 */
 void lua_runtime_event(const char *name);
 
+/** 作废队列里还没执行的某类事件（早于此刻入队的）。
+ *  单击关掉脚本画布后调用，清掉排队中的 key_double，防止画布刚关又被重画。 */
+void lua_runtime_event_drop_pending(const char *name);
+
 /** 是否已有脚本注册了该事件的处理器（主循环据此开关按键双击识别） */
 bool lua_runtime_has_event(const char *name);

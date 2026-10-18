@@ -2,6 +2,7 @@
  * ui.h — 界面层：主页（桌宠+信息栏）/ 功能页
  */
 #pragma once
+#include <stdint.h>
 #include "ws_client.h"
 
 typedef enum { UI_PAGE_HOME = 0, UI_PAGE_FUNC = 1, UI_PAGE_PORTAL = 2 } ui_page_t;
@@ -55,6 +56,10 @@ void ui_lua_flush(void);
 
 /** 清掉画布保鲜 + 桌宠表情覆盖（按键/语音开始时调用） */
 void ui_lua_release(void);
+
+/** 释放序号：Lua 任务在跑脚本前后对比——执行期间发生过 release
+ *  （用户单击关画布 / 语音接管）就补一次 release，保持让位 */
+uint32_t ui_lua_release_seq(void);
 
 /** 主循环用：现在是否该跳过周期重绘（画布保鲜中且没语音、在主页） */
 int ui_lua_hold_active(void);

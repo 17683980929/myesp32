@@ -86,8 +86,9 @@ typedef struct {
 static timer_slot_t    s_timers[TIMER_MAX];
 
 typedef struct {
-    int   id;                              /* ≥0：部署请求；-1：事件消息 */
-    int   evt;                             /* 事件序号（id=-1 时有效） */
+    int      id;                           /* ≥0：部署请求；-1：事件消息 */
+    int      evt;                          /* 事件序号（id=-1 时有效） */
+    uint32_t stamp;                        /* 事件入队时刻（丢弃过期事件用） */
     char *code;                            /* 部署代码（堆上；任务里释放） */
 } deploy_msg_t;
 
@@ -282,6 +283,7 @@ static int l_timer_every(lua_State *L) { return timer_add(L, 0); }
 #define EVT_COUNT 2
 static const char *const s_evt_names[EVT_COUNT] = { "key_click", "key_double" };
 static int s_evt_ref[EVT_COUNT] = { LUA_NOREF, LUA_NOREF };
+static uint32_t s_evt_min_stamp[EVT_COUNT];    /* 早于此时刻入队的同类事件作废（见 drop_pending） */
 
 static int l_sys_on(lua_State *L)
 {
@@ -406,7 +408,10 @@ static int run_code(const char *code, int persist)
     }
     s_mem_used = 0;
     timers_clear();
-    for (int i = 0; i < EVT_COUNT; i++) s_evt_ref[i] = LUA_NOREF;  /* 引用随旧状态销毁 */
+    for (int i = 0; i < EVT_COUNT; i++) {
+        s_evt_ref[i] = LUA_NOREF;              /* 引用随旧状态销毁 */
+        s_evt_min_stamp[i] = 0;
+    }
 
     s_L = lua_newstate(lua_alloc, NULL, luaL_makeseed(NULL));
     if (!s_L) {
@@ -482,11 +487,17 @@ static void handle_event(int evt)
     lua_settop(s_L, 0);
     lua_rawgeti(s_L, LUA_REGISTRYINDEX, s_evt_ref[evt]);
 
+    uint32_t rel_seq = ui_lua_release_seq();
     s_exec_start_us = esp_timer_get_time();
     s_paused_us = 0;
     s_hook_active = 1;
     int r = lua_pcall(s_L, 0, 0, 0);
     s_hook_active = 0;
+    if (ui_lua_release_seq() != rel_seq) {
+        /* 执行期间用户单击关了画布 / 语音接管：保持让位，
+         * 别让处理器结尾的 keepalive 把画布重新点亮 */
+        ui_lua_release();
+    }
 
     if (r != LUA_OK) {
         const char *err = lua_tostring(s_L, -1);
@@ -560,6 +571,11 @@ static void lua_task(void *arg)
             if (m.id >= 0) {
                 handle_deploy(&m);
                 free(m.code);
+            } else if (m.evt >= 0 && m.evt < EVT_COUNT &&
+                       (int32_t)(m.stamp - s_evt_min_stamp[m.evt]) < 0) {
+                /* 过期事件（如画布已被单击关掉，队列里还没轮到执行的重画）：
+                 * 丢弃，否则刚关掉又被重画出来 */
+                ESP_LOGI(TAG, "事件 %s 已过期，忽略", s_evt_names[m.evt]);
             } else {
                 handle_event(m.evt);
             }
@@ -635,6 +651,7 @@ void lua_runtime_deploy(int id, const char *code)
     deploy_msg_t m;
     m.id = id;
     m.evt = -1;
+    m.stamp = 0;
     m.code = strdup(code);
     if (!m.code) {
         reply(id, 0, "内存不足");
@@ -655,9 +672,22 @@ void lua_runtime_event(const char *name)
         deploy_msg_t m;
         m.id = -1;
         m.evt = i;
+        m.stamp = ms_now();
         m.code = NULL;
         if (xQueueSend(s_q, &m, 0) != pdTRUE)
             ESP_LOGW(TAG, "事件 %s 丢弃（队列满）", name);
+        return;
+    }
+}
+
+/** 作废队列里还没执行的某类事件（早于此刻入队的）。
+ *  典型场景：单击关掉脚本画布后，清掉还在排队、会把画布重画出来的 key_double。 */
+void lua_runtime_event_drop_pending(const char *name)
+{
+    if (!name) return;
+    for (int i = 0; i < EVT_COUNT; i++) {
+        if (strcmp(name, s_evt_names[i])) continue;
+        s_evt_min_stamp[i] = ms_now();
         return;
     }
 }
