@@ -4,11 +4,14 @@
  * 硬件配置对齐厂家已验证过的方案（10_FactoryProgram / 07_Audio_Test）：
  *   - I2S 先按 TDM（4 槽）建通道；esp_codec_dev 以 {16000, 2, 16} 打开编解码器时，
  *     会把通道重配成「2 槽 × 16bit」，与播放帧一致（全双工共用时钟）。
- *   - 麦克风 ES7210 选 MIC1|MIC2（普通 I2S：L=MIC1，R=MIC2），16bit。
- *     若能正常听到回声说明接线如此；若无声把 mic_selected 换成 MIC1|MIC3 再试。
+ *   - 麦克风 ES7210 四路全选（与出厂程序一致）。mic 数 ≥3 时驱动把芯片切到
+ *     TDM 输出（REG12=0x02），且 2 通道读取时槽宽减半到 8bit：每个 16bit 字
+ *     = 2 个 8bit 槽样本（偶数字 m1|m2，奇数字 m3|m4）。
+ *     （此前只选 MIC1|MIC2 → 芯片走普通 I2S 输出，与控制器 TDM 帧不匹配，
+ *      实测录音电平异常偏低约 20dB、BOOT 回声不可闻。）
  *   - 喇叭 ES8311 走 DAC，PA 使能在 AUD_PA_PIN（GPIO46）。
  *
- * 上行：麦克风 20ms×3 → 下混单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
+ * 上行：麦克风 20ms×3 → 解包单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
  * 下行：ws 二进制帧 → 队列 → 播放任务解码 → 复制双声道 → 写 I2S
  *
  * BOOT 按住 = 麦克风直通喇叭（本地自检，不经过网络）。
@@ -67,25 +70,48 @@ static volatile int   s_playing        = 0;
 
 /* ── 麦克风任务（录音 / 直通自检）────────────────────────────────────── */
 
+/* ES7210 TDM 打包布局：每个 16bit 字 = 2 个 8bit 槽样本，
+ * 偶数字 = m1|m2，奇数字 = m3|m4。分槽打印电平，判断真麦克风接在哪个输入。 */
+static void slot_rms(const int16_t *w, int words, float rms[4])
+{
+    long acc[4] = { 0 };
+    int n = words / 2;
+    for (int i = 0; i < n; i++) {
+        int8_t v[4] = {
+            (int8_t)(w[i * 2] >> 8),     (int8_t)(w[i * 2] & 0xFF),
+            (int8_t)(w[i * 2 + 1] >> 8), (int8_t)(w[i * 2 + 1] & 0xFF),
+        };
+        for (int k = 0; k < 4; k++) acc[k] += (long)v[k] * v[k];
+    }
+    for (int k = 0; k < 4; k++) rms[k] = sqrtf((float)acc[k] / n);
+}
+
 static void mic_task(void *arg)
 {
     OpusEncoder *enc = NULL;
-    static int16_t in[READ_CHUNK * 2];       /* 20ms 立体声 */
+    static int16_t in[READ_CHUNK * 2];       /* 20ms 原始数据（共 1280 字节） */
     static int16_t mono[FRAME_SAMPLES];
     static uint8_t enc_buf[MAX_OPUS_FRAME];
     int fill = 0;
     int frames = 0;
 
     for (;;) {
-        /* 自检模式：麦克风 → 喇叭（BOOT 按住） */
+        /* 自检模式：麦克风 → 喇叭（BOOT 按住）。原始数据原样直通
+         * （与出厂程序录音回放同路径），并分槽打印电平诊断。 */
         if (s_echo_on) {
             static int echo_n = 0;
             if (esp_codec_dev_read(s_rec, in, sizeof(in)) == ESP_CODEC_DEV_OK) {
                 esp_codec_dev_write(s_play, in, sizeof(in));
-                if (++echo_n % 100 == 0) {           /* 每 2 秒打一次电平，便于诊断 */
+                if (++echo_n == 1) {
+                    ESP_LOGI(TAG, "自检原始样本: %04X %04X %04X %04X",
+                             (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
+                } else if (echo_n % 100 == 0) {           /* 每 2 秒打一次电平，便于诊断 */
+                    float sr[4];
                     long acc = 0;
+                    slot_rms(in, READ_CHUNK * 2, sr);
                     for (int i = 0; i < READ_CHUNK * 2; i++) acc += (long)in[i] * in[i];
-                    ESP_LOGI(TAG, "自检麦克风电平 RMS=%.0f", sqrtf((float)acc / (READ_CHUNK * 2)));
+                    ESP_LOGI(TAG, "自检槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f（原始 RMS=%.0f）",
+                             sr[0], sr[1], sr[2], sr[3], sqrtf((float)acc / (READ_CHUNK * 2)));
                 }
             }
             continue;
@@ -121,16 +147,25 @@ static void mic_task(void *arg)
             continue;
         }
 
-        /* 下混：mono = (L + R) / 2 */
+        /* 解包：每个 16bit 字含 2 个 8bit 槽样本。暂取偶数字（m1）高 8bit 作单声道，
+         * 依诊断日志确认真正的麦克风槽位后定稿（只需改 1 行）。 */
         for (int i = 0; i < READ_CHUNK; i++)
-            mono[fill + i] = (int16_t)(((int)in[i * 2] + (int)in[i * 2 + 1]) / 2);
+            mono[fill + i] = (int16_t)((int8_t)(in[i * 2] >> 8) * 256);
         fill += READ_CHUNK;
 
         if (fill >= FRAME_SAMPLES) {
             int n = opus_encode(enc, mono, FRAME_SAMPLES, enc_buf, sizeof(enc_buf));
             if (n > 0) {
                 ws_send_audio(enc_buf, (size_t)n);
-                if (++frames == 1 || frames % 50 == 0) {
+                if (++frames == 1) {
+                    float sr[4];
+                    slot_rms(in, READ_CHUNK * 2, sr);
+                    ESP_LOGI(TAG, "上行原始样本: %04X %04X %04X %04X",
+                             (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
+                    ESP_LOGI(TAG, "上行槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f",
+                             sr[0], sr[1], sr[2], sr[3]);
+                }
+                if (frames == 1 || frames % 10 == 0) {
                     long acc = 0;
                     for (int i = 0; i < FRAME_SAMPLES; i++) acc += (long)mono[i] * mono[i];
                     ESP_LOGI(TAG, "上行第 %d 帧: %d 字节, 电平 RMS=%.0f",
@@ -300,7 +335,7 @@ esp_err_t audio_init(void)
         return ESP_FAIL;
     }
 
-    /* 4) 编解码器：ES8311（DAC + PA）+ ES7210（MIC1|MIC2） */
+    /* 4) 编解码器：ES8311（DAC + PA）+ ES7210（四路麦克风全选，TDM 输出） */
     es8311_codec_cfg_t es8311_cfg = {
         .ctrl_if = ctrl_out,
         .gpio_if = gpio_if,
@@ -321,7 +356,7 @@ esp_err_t audio_init(void)
     es7210_codec_cfg_t es7210_cfg = {
         .ctrl_if = ctrl_in,
         .master_mode = false,
-        .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2,
+        .mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4,
         .mclk_src = ES7210_MCLK_FROM_PAD,
         .mclk_div = 0,
     };
@@ -352,7 +387,7 @@ esp_err_t audio_init(void)
         return ESP_FAIL;
     }
     esp_codec_dev_set_out_vol(s_play, 85);
-    esp_codec_dev_set_in_gain(s_rec, 32.0f);
+    esp_codec_dev_set_in_gain(s_rec, 35.0f);      /* 与出厂程序一致（有效 34.5dB） */
 
     /* 5) 播放队列（优先放 PSRAM，失败退回内部 RAM）+ 两个任务 */
     uint8_t *qmem = heap_caps_malloc(PLAYQ_SLOTS * sizeof(play_frame_t), MALLOC_CAP_SPIRAM);
@@ -376,7 +411,7 @@ esp_err_t audio_init(void)
     }
 
     s_ready = 1;
-    ESP_LOGI(TAG, "音频就绪：ES8311+ES7210 @%dHz（麦克风 MIC1|MIC2，PA=GPIO%d），内部空闲堆 %u B",
+    ESP_LOGI(TAG, "音频就绪：ES8311+ES7210 @%dHz（麦克风四路 TDM，PA=GPIO%d），内部空闲堆 %u B",
              AUD_SAMPLE_HZ, AUD_PA_PIN, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     return ESP_OK;
 }
