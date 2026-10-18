@@ -20,7 +20,7 @@
 #include "lcd.h"
 #include "buttons.h"
 #include "sensors.h"
-#include "rtc.h"
+#include "pcf85063.h"
 #include "wifi_sta.h"
 #include "ws_client.h"
 #include "ui.h"
@@ -90,7 +90,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
 
     sensors_init();
-    rtc_init();
+    pcf85063_init();
     ui_init();
 
     ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);

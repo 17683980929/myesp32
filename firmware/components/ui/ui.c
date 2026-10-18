@@ -16,7 +16,7 @@
 #include "font_cjk.h"
 #include "pet_frames.h"
 #include "sensors.h"
-#include "rtc.h"
+#include "pcf85063.h"
 
 #ifndef PET_W
 #define PET_W            200
@@ -327,7 +327,7 @@ static void render_panel(void)
 
     /* 时钟：HH:MM:SS（RTC） */
     int Y = 0, Mo = 0, D = 0, Wd = 0, H = 0, Mi = 0, S = 0;
-    int rtc_ok = (rtc_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) == 0);
+    int rtc_ok = (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) == 0);
 
     if (rtc_ok) {
         char tbuf[12];

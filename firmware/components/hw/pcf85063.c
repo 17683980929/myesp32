@@ -1,14 +1,14 @@
 /**
- * rtc.c — PCF85063 实时时钟
+ * pcf85063.c — PCF85063 实时时钟
  *
  * 寄存器（BCD）：0x04 秒(bit7=OS) 0x05 分 0x06 时(24h) 0x07 日
  *                0x08 星期 0x09 月 0x0A 年
  * （0x00/0x01 控制寄存器，0x02 Offset，0x03 RAM）
  * 时间无效时（OS=1）用编译时间 +8 小时写入，保证离线也有完整时间；
- * 以后服务器连上后可用 rtc_set() 校正。
+ * 以后服务器连上后可用 pcf85063_set() 校正。
  */
 
-#include "rtc.h"
+#include "pcf85063.h"
 #include <stdio.h>
 #include <string.h>
 #include "driver/i2c_master.h"
@@ -92,7 +92,7 @@ static void compile_time(int *Y, int *Mo, int *D, int *H, int *Mi, int *S)
 
 /* ── 公共接口 ──────────────────────────────────────────────────────── */
 
-void rtc_init(void)
+void pcf85063_init(void)
 {
     i2c_master_bus_handle_t bus = sensors_i2c_bus();
     if (!bus) {
@@ -132,7 +132,7 @@ void rtc_init(void)
     Mi = sod / 60 % 60;
     S = sod % 60;
 
-    if (rtc_set(Y, Mo, D, H, Mi, S) == 0) {
+    if (pcf85063_set(Y, Mo, D, H, Mi, S) == 0) {
         ESP_LOGW(TAG, "RTC 无效，已用编译时间+8h 初始化："
                       "%04d-%02d-%02d %02d:%02d:%02d", Y, Mo, D, H, Mi, S);
     } else {
@@ -140,7 +140,7 @@ void rtc_init(void)
     }
 }
 
-int rtc_set(int year, int mon, int day, int hour, int min, int sec)
+int pcf85063_set(int year, int mon, int day, int hour, int min, int sec)
 {
     long days = days_from_civil(year, mon, day);
     int wd = (int)((days + 4) % 7);          /* 1970-01-01 是周四 */
@@ -157,8 +157,8 @@ int rtc_set(int year, int mon, int day, int hour, int min, int sec)
     return wr(b, 7);
 }
 
-int rtc_get(int *year, int *mon, int *day, int *wday,
-            int *hour, int *min, int *sec)
+int pcf85063_get(int *year, int *mon, int *day, int *wday,
+                 int *hour, int *min, int *sec)
 {
     uint8_t r[7];
     if (rd(r, 7) != 0) return -1;
