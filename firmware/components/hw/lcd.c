@@ -14,7 +14,8 @@
  * 极性约定（全工程统一）：
  *   所有绘制函数的 `ink` 参数：1 = 黑（有墨），0 = 白
  *   lcd_clear(0) = 白底，lcd_clear(1) = 黑底
- *   硬件要求 bit=1 为白，所以 fb 里 1=白、flush 时取反
+ *   帧缓冲里 1 = 黑、0 = 白（与 ink 一致）；
+ *   硬件 bit=1 才是白，所以 lcd_flush 发送前统一取反
  */
 
 #include "lcd.h"
@@ -152,11 +153,12 @@ void lcd_pixel(int x, int y, int ink)
     uint32_t index = byte_x * (LCD_H / 4) + block_y;
     uint8_t bit = 7 - ((inv_y & 3) * 2 + (x & 1));
 
-    /* ink=1 黑 → 硬件位 0；ink=0 白 → 硬件位 1 */
+    /* 帧缓冲：1 = 黑、0 = 白（与 ink 一致）。
+       flush 时会取反：fb 位 1 → 硬件位 0 → 屏上黑 */
     if (ink)
-        s_fb[index] &= ~(1 << bit);
-    else
         s_fb[index] |= (1 << bit);
+    else
+        s_fb[index] &= ~(1 << bit);
 }
 
 void lcd_blit(const uint8_t *data, int w, int h, int dx, int dy, int invert)

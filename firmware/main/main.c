@@ -58,6 +58,10 @@ static void on_ws_event(const ws_event_t *ev)
 
 static void on_button(btn_id_t id, btn_event_t ev)
 {
+    /* 诊断日志：每个按键事件都打一行（含按下/松开，看长按短按） */
+    ESP_LOGI(TAG, "btn %s %s", id == BTN_KEY ? "KEY" : "BOOT",
+             ev == BTN_DOWN ? "down" : (ev == BTN_CLICK ? "click" : "up"));
+
     if (id == BTN_KEY && ev == BTN_CLICK) {
         /* 翻页设备本地完成（不等网络），只告诉服务器一声 */
         s_page = (s_page == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
