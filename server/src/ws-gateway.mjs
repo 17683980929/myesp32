@@ -43,6 +43,9 @@ export class WsGateway {
     const cfg = this.ctx.config;
     const ip = req.socket.remoteAddress;
 
+    /* 小帧音频不能等 Nagle 攒包：攒包的几十毫秒延迟正是卡顿来源之一 */
+    try { req.socket.setNoDelay(true); } catch { /* 忽略 */ }
+
     /* 1) token 鉴权 */
     if (cfg.server.authToken) {
       const got = WsGateway.tokenOf(req);

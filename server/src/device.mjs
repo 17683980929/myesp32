@@ -4,7 +4,7 @@
  * 负责：握手、收音频、跑对话链路（ASR→LLM→TTS）、定时推送信息栏。
  *
  * 音频下行用「生产者/消费者」：LLM 每切出一句就丢进队列，
- * 发送循环按 60ms 一帧的节奏往外发。这样合成和播放能重叠，
+ * 发送循环自适应节拍往外发（见下方节拍常量注释）。这样合成和播放能重叠，
  * 不用等整段回答合成完才开始播。
  */
 
@@ -16,6 +16,17 @@ import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[dev]", ...a);
+
+/* ── 音频下发节拍控制 ─────────────────────────────────────────────────
+ * 目标：设备端始终保持 ~2 秒左右缓冲。
+ * 教训：按 60ms/帧的"实时"节奏发是错误的 —— setTimeout 实际 ≥60ms
+ * （事件循环 + 定时器精度），加上网络抖动，设备端从第一帧起就持续欠载，
+ * 表现就是全程卡顿 + 欠载爆音；句间 LLM 生成间隙也会直接断音。
+ * 方案：领先 <2s 时按 30ms 快发建立缓冲；领先够了回落到 60ms 不再堆积。
+ * 长回答也不会撑爆设备队列（96 帧 ≈ 5.7s）。 */
+const FRAME_SEND_FAST_MS = Math.round(FRAME_MS * 0.5);   /* 30ms —— 快发 */
+const FRAME_SEND_RT_MS   = FRAME_MS;                     /* 60ms —— 实时 */
+const TARGET_LEAD_MS     = 2000;                         /* 设备端目标缓冲 */
 
 export class DeviceSession {
   /**
@@ -189,6 +200,8 @@ export class DeviceSession {
 
     const sender = (async () => {
       this.send(build.ttsStart());
+      const t0 = Date.now();
+      let audioMs = 0;                         /* 累计已发音频时长 */
       while (producing || queue.length) {
         if (this.aborted) break;
         if (!queue.length) { await sleep(8); continue; }
@@ -197,7 +210,9 @@ export class DeviceSession {
         for (const f of frames) {
           if (this.aborted) break;
           this.sendBin(f);
-          await sleep(FRAME_MS);
+          audioMs += FRAME_MS;
+          const lead = audioMs - (Date.now() - t0);   /* 设备端缓冲估计 */
+          await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
         }
       }
       this.send(build.ttsStop());
@@ -248,10 +263,14 @@ export class DeviceSession {
       const { frames } = await textToOpusFrames(text, { speed: this.ctx.config.tts.speed });
       this.send(build.ttsStart());
       this.send(build.sub(text));
+      const t0 = Date.now();
+      let audioMs = 0;
       for (const f of frames) {
         if (this.aborted) break;
         this.sendBin(f);
-        await sleep(FRAME_MS);
+        audioMs += FRAME_MS;
+        const lead = audioMs - (Date.now() - t0);
+        await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
       this.send(build.ttsStop());
     } catch (e) {
