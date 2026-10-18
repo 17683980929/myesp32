@@ -15,5 +15,8 @@ esp_err_t wifi_sta_wait(int timeout_ms);
 /** 拿到 IP 后读字符串，如 "192.168.1.55" */
 void wifi_sta_ip(char *buf, int len);
 
+/** 当前是否已连上（拿到 IP） */
+int wifi_sta_connected(void);
+
 extern EventGroupHandle_t wifi_events;
 #define WIFI_EVT_GOT_IP  BIT0

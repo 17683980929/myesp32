@@ -16,6 +16,7 @@ typedef struct {
     char date[20];       /* "10月18日"（UTF-8） */
     char week[12];       /* "周日" */
     char weather[20];    /* "阴" */
+    char city[20];       /* "北京"（服务器配置的城市） */
     int  weather_temp;   /* 16，<-1 表示无 */
     int  mm, dd, wday;   /* 数字日期：月/日/星期(0=周日) */
     /* 本地读的 */

@@ -17,6 +17,7 @@
 #include "pet_frames.h"
 #include "sensors.h"
 #include "pcf85063.h"
+#include "wifi_sta.h"
 
 #ifndef PET_W
 #define PET_W            200
@@ -171,6 +172,21 @@ static void seg_time(int x, int y, const char *hhmmss, int h, int ink)
     }
 }
 
+/** 7 段串的像素宽度（用于居中） */
+static int seg_time_w(const char *s, int h)
+{
+    int t = h / 8 + 1;
+    int w = h / 2 + t;
+    int gap = h / 10 + 1;
+    int total = 0;
+
+    for (; *s; s++) {
+        if (*s == ':')                     total += t + gap;
+        else if (*s >= '0' && *s <= '9')   total += w + gap;
+    }
+    return total > 0 ? total - gap : 0;    /* 去掉末尾的间隔 */
+}
+
 /* ── 图标（程序化绘制，免字体）────────────────────────────────────── */
 
 /** 温度计：圆头 + 竖管 + 刻度 */
@@ -319,6 +335,27 @@ int ui_tick(uint32_t now)
 
 /* ── 主页右栏 ──────────────────────────────────────────────────────── */
 
+/** 天气行标签：用服务器配置的城市名（最多 2 个字），没下发就显示「天气」 */
+static void city_label(char *dst, size_t n, const char *city)
+{
+    if (!city || !city[0]) { snprintf(dst, n, "%s", "天气"); return; }
+    const char *p = city, *end = city;
+    int cnt = 0;
+    while (*p && cnt < 2) { utf8_next(&p); cnt++; end = p; }
+    size_t len = (size_t)(end - city);
+    if (len > n - 1) len = n - 1;
+    memcpy(dst, city, len);
+    dst[len] = 0;
+}
+
+/** 底部状态行：左边中文标签 + 右侧对齐的状态文字 */
+static void status_row(int y, const char *label, const char *value)
+{
+    if (has_cjk(label)) draw_cjk(PANEL_X + 4, y, label, 1, 1);
+    else                draw_text(PANEL_X + 4, y + 5, label, 1, 1);
+    draw_cjk(PANEL_X + PANEL_SEP_W - cjk_text_w(value, 1) - 4, y, value, 1, 1);
+}
+
 static void render_panel(void)
 {
     dev_info_t *info = ws_client_info();
@@ -331,52 +368,62 @@ static void render_panel(void)
     }
     int bat = sensors_battery_pct();
 
-    /* 时钟：HH:MM:SS（RTC） */
+    /* 时钟：HH:MM:SS（RTC），居中放大 */
     int Y = 0, Mo = 0, D = 0, Wd = 0, H = 0, Mi = 0, S = 0;
     int rtc_ok = (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) == 0);
 
     if (rtc_ok) {
         char tbuf[24];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", H, Mi, S);
-        seg_time(PANEL_X, 12, tbuf, 34, 1);
+        int sw = seg_time_w(tbuf, 38);
+        seg_time(PANEL_X + (PANEL_SEP_W - sw) / 2, 6, tbuf, 38, 1);
     } else {
-        draw_text(PANEL_X, 18, "--:--:--", 2, 1);
+        draw_text(PANEL_X + (PANEL_SEP_W - text_w("--:--:--", 2)) / 2, 18,
+                  "--:--:--", 2, 1);
     }
 
-    /* 日期 + 星期 */
+    /* 日期 + 星期：左右分栏 */
     static const char *WD[7] = { "SUN","MON","TUE","WED","THU","FRI","SAT" };
-    char dline[40];
-    if (rtc_ok)
-        snprintf(dline, sizeof(dline), "%04d-%02d-%02d %s", Y, Mo, D, WD[Wd % 7]);
-    else
-        snprintf(dline, sizeof(dline), "----/--/-- ---");
-    draw_text(PANEL_X, 52, dline, 2, 1);
+    if (rtc_ok) {
+        char db[40], wb[16];
+        snprintf(db, sizeof(db), "%04d-%02d-%02d", Y, Mo, D);
+        snprintf(wb, sizeof(wb), "%s", WD[Wd % 7]);
+        draw_text(PANEL_X, 50, db, 2, 1);
+        draw_text(PANEL_X + PANEL_SEP_W - text_w(wb, 2), 50, wb, 2, 1);
+    } else {
+        draw_text(PANEL_X, 50, "----/--/--", 2, 1);
+        draw_text(PANEL_X + PANEL_SEP_W - text_w("---", 2), 50, "---", 2, 1);
+    }
 
     /* 分隔线 */
     lcd_hline(PANEL_X, 72, PANEL_SEP_W, 1);
 
     int vx = PANEL_X + 76;               /* 数值列 */
 
-    /* 天气：图标 + 标签 + 天气文字（+ 室外温度） */
+    /* 天气：图标 + 城市标签 + 天气文字 + 气温（尽量 2 倍大） */
     icon_weather(PANEL_X, 80, 24, weather_kind(info->weather), 1);
-    draw_cjk(PANEL_X + 32, 84, "天气", 1, 1);
-    if (info->weather[0]) {
-        int wx;
-        if (has_cjk(info->weather)) {
-            draw_cjk(vx, 84, info->weather, 1, 1);
-            wx = cjk_text_w(info->weather, 1);
-        } else {
-            draw_text(vx, 89, info->weather, 1, 1);
-            wx = text_w(info->weather, 1);
-        }
-        if (info->weather_temp > -99 && info->weather_temp < 100 &&
-            vx + wx + 4 + 30 <= LCD_W - 8) {
-            char wt[24];
-            snprintf(wt, sizeof(wt), " %d`C", info->weather_temp);
-            draw_text(vx + wx + 4, 89, wt, 1, 1);
-        }
-    } else {
-        draw_text(vx, 89, "--", 1, 1);
+    char city[16];
+    city_label(city, sizeof(city), info->city);
+    if (has_cjk(city)) draw_cjk(PANEL_X + 32, 84, city, 1, 1);
+    else               draw_text(PANEL_X + 32, 89, city, 1, 1);
+
+    const char *wtext = info->weather[0] ? info->weather : "--";
+    char wtemp[16] = "";
+    if (info->weather_temp > -99 && info->weather_temp < 100)
+        snprintf(wtemp, sizeof(wtemp), " %d`C", info->weather_temp);
+
+    int right = PANEL_X + PANEL_SEP_W;                    /* 392 */
+    int ww2   = has_cjk(wtext) ? cjk_text_w(wtext, 2) : text_w(wtext, 2);
+    int wt2   = wtemp[0] ? text_w(wtemp, 2) : 0;
+    if (vx + ww2 + wt2 <= right) {                        /* 2 倍放得下 */
+        if (has_cjk(wtext)) draw_cjk(vx, 80, wtext, 2, 1);
+        else                draw_text(vx, 89, wtext, 2, 1);
+        if (wtemp[0]) draw_text(vx + ww2, 89, wtemp, 2, 1);
+    } else {                                              /* 文字降到 1 倍，气温保持 2 倍 */
+        int ww1 = has_cjk(wtext) ? cjk_text_w(wtext, 1) : text_w(wtext, 1);
+        if (has_cjk(wtext)) draw_cjk(vx, 88, wtext, 1, 1);
+        else                draw_text(vx, 92, wtext, 1, 1);
+        if (wtemp[0]) draw_text(vx + ww1 + 2, 89, wtemp, 2, 1);
     }
 
     /* 温度 */
@@ -402,10 +449,13 @@ static void render_panel(void)
     snprintf(bb, sizeof(bb), "%d%%", bat);
     draw_text(vx, 180, bb, 2, 1);
 
-    /* 底部状态：字幕 / 连接状态 */
+    /* 底部：连接状态（WiFi / 服务器 / 蓝牙）+ 字幕 */
     lcd_hline(PANEL_X, 212, PANEL_SEP_W, 1);
+    status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
+    status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
+    status_row(262, "蓝牙", "未启用");
     if (s_sub[0])
-        draw_text(PANEL_X, 222, s_sub, 1, 1);
+        draw_text(PANEL_X, 284, s_sub, 1, 1);
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */

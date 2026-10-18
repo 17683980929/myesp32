@@ -53,6 +53,8 @@ static void on_data(char *data, int len)
         if (w) {
             const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(w, "text"));
             if (txt) strncpy(s_info.weather, txt, sizeof(s_info.weather) - 1);
+            const char *ct = cJSON_GetStringValue(cJSON_GetObjectItem(w, "city"));
+            if (ct) strncpy(s_info.city, ct, sizeof(s_info.city) - 1);
             cJSON *tv = cJSON_GetObjectItem(w, "temp");
             s_info.weather_temp = (tv && !cJSON_IsNull(tv)) ? tv->valueint : -99;
         }

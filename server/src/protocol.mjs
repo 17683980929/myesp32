@@ -26,7 +26,7 @@ export const DEV = {
 
 export const SRV = {
   HELLO_ACK: "hello_ack",  // { t, sid, pv, page, info }
-  INFO: "info",            // { t, time, date, week, weather:{text,temp} }
+  INFO: "info",            // { t, time, date, week, weather:{text,temp,city} }
   PAGE: "page",            // { t, name: "home" | "func" }
   REC_ACK: "rec_ack",      // { t, s }
   STT: "stt",              // { t, text }            识别结果（可做字幕）
@@ -75,7 +75,7 @@ export function buildTimeInfo(weather) {
     dd: now.getUTCDate(),
     wday: now.getUTCDay(),
     weather: weather
-      ? { text: weather.text, temp: weather.temp }
-      : { text: "--", temp: null },
+      ? { text: weather.text, temp: weather.temp, city: weather.city ?? null }
+      : { text: "--", temp: null, city: null },
   };
 }
