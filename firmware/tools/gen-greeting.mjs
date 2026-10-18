@@ -40,6 +40,7 @@ ${hexRows.join("\n")}
 const unsigned short G_GREETING_LENS[] = {
 ${(function () { const rows = []; for (let i = 0; i < lens.length; i += 20) rows.push("    " + lens.slice(i, i + 20).join(", ") + ","); return rows.join("\n"); })()}
 };
+const int G_GREETING_BYTES = (int)sizeof(G_GREETING_BLOB);
 const int G_GREETING_FRAMES = ${frames.length};
 `;
 
@@ -52,6 +53,7 @@ extern "C" {
 
 extern const unsigned char G_GREETING_BLOB[];
 extern const unsigned short G_GREETING_LENS[];
+extern const int G_GREETING_BYTES;
 extern const int G_GREETING_FRAMES;
 
 #ifdef __cplusplus

@@ -467,4 +467,5 @@ const unsigned short G_GREETING_LENS[] = {
     186, 176, 180, 169, 169, 148, 172, 192, 167, 204, 181, 129, 160, 163, 171, 145, 195, 187, 200, 181,
     127, 140, 42, 44, 54, 19, 21,
 };
+const int G_GREETING_BYTES = (int)sizeof(G_GREETING_BLOB);
 const int G_GREETING_FRAMES = 47;

@@ -416,7 +416,7 @@ void audio_play_greeting(void)
     int off = 0, pushed = 0;
     for (int i = 0; i < G_GREETING_FRAMES; i++) {
         int len = G_GREETING_LENS[i];
-        if (len <= 0 || len > MAX_OPUS_FRAME || off + len > (int)sizeof(G_GREETING_BLOB)) break;
+        if (len <= 0 || len > MAX_OPUS_FRAME || off + len > G_GREETING_BYTES) break;
         f.len = (uint16_t)len;
         memcpy(f.data, G_GREETING_BLOB + off, (size_t)len);
         if (xQueueSend(s_playq, &f, 0) != pdTRUE) break;
