@@ -138,8 +138,11 @@ static void voice_start_rec_auto(int bargein)
     audio_rec_start_auto(bargein);
     ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
     voice_to(VOICE_REC);
-    ESP_LOGI(TAG, bargein ? "打断后直接聆听（说完自动结束）"
-                          : "唤醒应答后自动聆听（说完自动结束）");
+    if (bargein) {
+        ESP_LOGI(TAG, "打断后直接聆听（说完自动结束）");
+    } else {
+        ESP_LOGI(TAG, "唤醒应答后自动聆听（说完自动结束）");
+    }
 }
 
 static void voice_stop_rec(void)

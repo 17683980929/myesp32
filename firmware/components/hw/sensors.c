@@ -94,33 +94,64 @@ esp_err_t sensors_read_th(float *temp_c, float *hum)
 {
     if (!s_shtc3) return ESP_ERR_INVALID_STATE;
 
-    /* 唤醒 → 测量(T 在前, 正常模式) → 读 6 字节 → 睡眠 */
+    static float   s_last_t = 0, s_last_h = 0;
+    static int     s_have_last = 0;
+    static int     s_last_ok_ms = 0;
+
     uint8_t wake[2] = { 0x35, 0x17 };
     uint8_t meas[2] = { 0x7C, 0xA2 };
     uint8_t sleep_[2] = { 0xB0, 0x98 };
 
-    ESP_RETURN_ON_ERROR(i2c_master_transmit(s_shtc3, wake, 2, 100), TAG, "wake");
-    vTaskDelay(pdMS_TO_TICKS(1));
+    /* 串口里偶发的 "measure" 失败 = SHTC3 被上一次半途失败留在了别的状态，
+     * 或 I2C 瞬时抖动。这里重试 3 次；每次先补发 sleep 把传感器归一到
+     * 已知状态（睡眠中收到 sleep 只会被 NACK，无副作用），再走标准流程。 */
+    esp_err_t last = ESP_FAIL;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt) vTaskDelay(pdMS_TO_TICKS(5));
 
-    ESP_RETURN_ON_ERROR(i2c_master_transmit(s_shtc3, meas, 2, 100), TAG, "measure");
-    vTaskDelay(pdMS_TO_TICKS(15));
+        i2c_master_transmit(s_shtc3, sleep_, 2, 100);   /* 归一化，成败不管 */
+        vTaskDelay(pdMS_TO_TICKS(1));
 
-    uint8_t d[6];
-    esp_err_t e = i2c_master_receive(s_shtc3, d, 6, 200);
-    if (e != ESP_OK) return e;
+        last = i2c_master_transmit(s_shtc3, wake, 2, 100);
+        if (last != ESP_OK) continue;
+        vTaskDelay(pdMS_TO_TICKS(1));
 
-    i2c_master_transmit(s_shtc3, sleep_, 2, 100);       /* 读完就睡 */
+        last = i2c_master_transmit(s_shtc3, meas, 2, 100);
+        if (last != ESP_OK) continue;
+        vTaskDelay(pdMS_TO_TICKS(15));
 
-    if (crc8(d, 2) != d[2] || crc8(d + 3, 2) != d[5]) {
-        ESP_LOGW(TAG, "CRC 不匹配");
-        return ESP_ERR_INVALID_CRC;
+        uint8_t d[6];
+        last = i2c_master_receive(s_shtc3, d, 6, 200);
+        i2c_master_transmit(s_shtc3, sleep_, 2, 100);   /* 读完就睡（成败都发） */
+        if (last != ESP_OK) continue;
+
+        if (crc8(d, 2) != d[2] || crc8(d + 3, 2) != d[5]) {
+            last = ESP_ERR_INVALID_CRC;
+            continue;
+        }
+
+        uint16_t rt = (d[0] << 8) | d[1];
+        uint16_t rh = (d[3] << 8) | d[4];
+        s_last_t = -45.0f + 175.0f * rt / 65536.0f;
+        s_last_h = 100.0f * rh / 65536.0f;
+        s_have_last = 1;
+        s_last_ok_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (attempt) ESP_LOGD(TAG, "重试 %d 次后读到温湿度", attempt);
+        *temp_c = s_last_t;
+        *hum = s_last_h;
+        return ESP_OK;
     }
 
-    uint16_t rt = (d[0] << 8) | d[1];
-    uint16_t rh = (d[3] << 8) | d[4];
-    *temp_c = -45.0f + 175.0f * rt / 65536.0f;
-    *hum    = 100.0f * rh / 65536.0f;
-    return ESP_OK;
+    /* 3 次都失败：60 秒内有过好读数就先沿用旧值 —— UI 每秒都读一次，
+     * 单次瞬时失败不该让界面闪 "--"；超时才如实显示 -- */
+    if (s_have_last &&
+        (int)(xTaskGetTickCount() * portTICK_PERIOD_MS) - s_last_ok_ms < 60000) {
+        *temp_c = s_last_t;
+        *hum = s_last_h;
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "温湿度读取失败: %s", esp_err_to_name(last));
+    return last;
 }
 
 /* ── 电池 ──────────────────────────────────────────────────────────── */
