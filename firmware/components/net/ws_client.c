@@ -20,6 +20,9 @@ static ws_handler_t s_handler = NULL;
 static ws_bin_handler_t s_bin_handler = NULL;
 static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1 };
 
+/* lua 脚本暂存（≤7KB 的一帧可整包到达；仅在回调期间有效） */
+static char s_lua_code[7168];
+
 dev_info_t *ws_client_info(void) { return &s_info; }
 
 void ws_client_set_handler(ws_handler_t handler) { s_handler = handler; }
@@ -87,6 +90,14 @@ static void on_data(char *data, int len)
         ev.kind = WS_EVT_LUA;
         cJSON *v = cJSON_GetObjectItem(root, "id");
         ev.lua_id = v ? v->valueint : 0;
+        const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(root, "code"));
+        if (code && strlen(code) < sizeof(s_lua_code)) {
+            memcpy(s_lua_code, code, strlen(code) + 1);
+            ev.lua_code = s_lua_code;
+        } else {
+            ev.lua_code = NULL;          /* 缺失或过长：main 回错误给服务器 */
+            ESP_LOGW(TAG, "lua 脚本%s", code ? "过长" : "缺失");
+        }
         dispatch(&ev);
     } else if (t && !strcmp(t, "err")) {
         ev.kind = WS_EVT_ERROR;
@@ -128,7 +139,11 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
     }
     case WEBSOCKET_EVENT_DATA:
         if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
-            on_data((char *)e->data_ptr, e->data_len);
+            /* 单帧文本整包到达才解析（超过缓冲的会被分片，协议里暂不用） */
+            if (e->payload_offset == 0 && e->data_len == e->payload_len)
+                on_data((char *)e->data_ptr, e->data_len);
+            else
+                ESP_LOGW(TAG, "文本帧被分片（共 %d 字节），忽略", (int)e->payload_len);
         } else if (e->op_code == 0x2 && e->data_len > 0 && e->data_ptr &&
                    e->payload_offset == 0 && e->data_len == e->payload_len) {
             /* 二进制音频帧（Opus，单帧远小于缓冲，不会被分片） */
@@ -151,7 +166,7 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
 
     esp_websocket_client_config_t cfg = {
         .uri = url,
-        .buffer_size = 4096,
+        .buffer_size = 8192,             /* 要装下放大的 lua 帧（脚本 ≤6KB + JSON 开销） */
         .task_stack = 6144,              /* ws_event_t（含 512B 文本）在事件任务栈上构造 */
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 10000,

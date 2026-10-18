@@ -45,6 +45,7 @@ typedef struct {
     char name[16];
     int  lua_id;
     int  frames;         /* sub 专有：该句音频总帧数（0=未知，不翻页） */
+    const char *lua_code; /* lua 专有：脚本文本（仅回调期间有效；缺失/过长=NULL） */
 } ws_event_t;
 
 typedef void (*ws_handler_t)(const ws_event_t *ev);

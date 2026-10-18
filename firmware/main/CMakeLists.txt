@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES hw net ui audio nvs_flash
+    REQUIRES hw net ui audio nvs_flash lua_runtime
 )

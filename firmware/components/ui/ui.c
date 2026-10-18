@@ -11,6 +11,9 @@
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "lcd.h"
 #include "font5x7.h"
 #include "font_cjk.h"
@@ -271,6 +274,12 @@ static int s_frame_idx = 0;
 static int s_blink_phase = 0;
 static ui_voice_t s_voice = UI_VOICE_NONE;
 
+/* Lua 画布（M5）：帧缓冲互斥 + 停止周期重绘的"保鲜"窗口 + 桌宠表情覆盖 */
+static SemaphoreHandle_t s_fb_lock;
+static uint32_t s_lua_hold_until;
+static int s_lua_frame = -1;             /* ≥0 = 脚本指定的桌宠帧 */
+static int s_lua_frame_prev = -2;
+
 static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_01_idle, pet_sm_02_idle_blink, pet_sm_03_listening,
     pet_sm_04_thinking, pet_sm_05_speaking, pet_sm_06_happy,
@@ -282,7 +291,10 @@ static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
 /* 帧数据 1=墨（黑），帧背景 0=白。与全工程约定一致，不用取反 */
 static void draw_pet(void)
 {
-    const uint8_t *frame = PET_NAMES[s_frame_idx];
+    /* 脚本指定的表情优先（说话/聆听等语音状态下让位给语音状态机） */
+    int fi = (s_voice == UI_VOICE_NONE && s_lua_frame >= 0) ? s_lua_frame : s_frame_idx;
+    if (fi < 0 || fi >= PET_FRAME_COUNT) fi = 0;
+    const uint8_t *frame = PET_NAMES[fi];
     int dx = (PET_W - PET_FRAME_W) / 2;              /* 0 */
     int dy = (LCD_H - PET_FRAME_H) / 2;              /* 16 */
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
@@ -315,7 +327,11 @@ static int s_busy = 0;
 static char s_sub[512] = "";             /* 一句话最长 ~170 字（UTF-8 最多 3B/字） */
 static char s_portal_ap[32] = "";
 
-void ui_init(void) { lcd_init(); }
+void ui_init(void)
+{
+    lcd_init();
+    if (!s_fb_lock) s_fb_lock = xSemaphoreCreateMutex();
+}
 void ui_set_page(ui_page_t p) { s_page = p; }
 ui_page_t ui_get_page(void) { return s_page; }
 void ui_set_busy(int busy) { s_busy = busy; }
@@ -365,7 +381,10 @@ int ui_tick(uint32_t now)
             (s_busy ? PET_THINKING : PET_IDLE);
     pet_tick(now);
 
-    return (s_pet != prev_state) || (s_frame_idx != prev_idx);
+    int changed = (s_pet != prev_state) || (s_frame_idx != prev_idx) ||
+                  (s_lua_frame != s_lua_frame_prev);
+    s_lua_frame_prev = s_lua_frame;
+    return changed;
 }
 
 /* ── 主页右栏 ──────────────────────────────────────────────────────── */
@@ -504,7 +523,7 @@ static void render_panel(void)
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */
 
-void ui_render(void)
+static void render_frame(void)
 {
     if (s_page == UI_PAGE_PORTAL) {
         lcd_clear(0);
@@ -542,4 +561,112 @@ void ui_render(void)
 
     render_panel();
     lcd_flush();
+}
+
+void ui_render(void)
+{
+    if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    render_frame();
+    if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+}
+
+/* ── Lua 画布（M5）─────────────────────────────────────────────────── */
+
+#define LUA_HOLD_MS 30000
+
+static uint32_t now_ms_(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+/** 保鲜：每次脚本绘制都把"停止周期重绘"的窗口往后推 30 秒。
+ *  脚本只画一次 → 30 秒后主页自然回来（不会把界面卡死） */
+static void lua_keepalive(void)
+{
+    s_lua_hold_until = now_ms_() + LUA_HOLD_MS;
+}
+
+int ui_lua_hold_active(void)
+{
+    if (s_voice != UI_VOICE_NONE || s_page != UI_PAGE_HOME) return 0;
+    return (int32_t)(s_lua_hold_until - now_ms_()) > 0;
+}
+
+void ui_lua_release(void)
+{
+    s_lua_hold_until = 0;
+    s_lua_frame = -1;
+}
+
+void ui_lua_clear(void)
+{
+    lua_keepalive();
+    if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    lcd_clear(0);
+    if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+}
+
+void ui_lua_text(int x, int y, const char *s, int size)
+{
+    lua_keepalive();
+    if (!s || !*s) return;
+
+    char tmp[1025];
+    if (strlen(s) > 1024) {              /* 画不下那么多，防拖慢/越界 */
+        memcpy(tmp, s, 1024);
+        tmp[1024] = 0;
+        s = tmp;
+    }
+    if (y < 0 || y >= LCD_H) return;
+    if (x >= LCD_W || x < -32) return;
+
+    int asc = size >= 24 ? 3 : 2;        /* ASCII：字高 ~7*scale */
+    int csc = size >= 24 ? 2 : 1;        /* 中文：16*scale */
+    if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    if (has_cjk(s)) draw_cjk(x, y, s, csc, 1);
+    else            draw_text(x, y, s, asc, 1);
+    if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+}
+
+void ui_lua_rect(int x, int y, int w, int h, int filled)
+{
+    lua_keepalive();
+    if (w <= 0 || h <= 0) return;
+    if (x >= LCD_W || y >= LCD_H) return;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int cw = w, ch = h;
+    if (cw > LCD_W - x0) cw = LCD_W - x0;    /* 关键：先夹住尺寸，否则 lcd_fill 死循环 */
+    if (ch > LCD_H - y0) ch = LCD_H - y0;
+    if (cw <= 0 || ch <= 0) return;
+    if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    if (filled) lcd_fill(x0, y0, cw, ch, 1);
+    else        lcd_rect(x0, y0, cw, ch, 1);
+    if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+}
+
+void ui_lua_flush(void)
+{
+    lua_keepalive();
+    if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    lcd_flush();
+    if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+}
+
+int ui_lua_pet_state(const char *name)
+{
+    if (!name) return 0;
+    static const struct { const char *n; int idx; } names[] = {
+        { "idle", 0 }, { "blink", 1 }, { "listening", 2 }, { "thinking", 3 },
+        { "speaking", 4 }, { "happy", 5 }, { "love", 6 }, { "confused", 7 },
+        { "sleepy", 8 }, { "sleeping", 9 }, { "salute", 10 }, { "direct", 11 },
+        { "patrol", 12 }, { "note", 13 }, { "charging", 14 },
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (!strcmp(name, names[i].n)) {
+            s_lua_frame = names[i].idx;
+            return 1;
+        }
+    }
+    return 0;
 }

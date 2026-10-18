@@ -161,16 +161,22 @@ export async function handleHttp(req, res, ctx) {
       if (p === "/api/lua" && req.method === "POST") {
         const { code } = JSON.parse(await readBody(req));
         if (typeof code !== "string") return json(res, 400, { ok: false, msg: "缺少 code" });
+        if (code.length > 6000)
+          return json(res, 400, { ok: false, msg: `脚本过长（${code.length} 字符，上限 6000）` });
 
         const cfg = getConfig();
         saveConfig({ lua: { prevScript: cfg.lua.activeScript, activeScript: code } });
 
-        /* 推给所有在线设备 */
+        /* 推给所有在线设备，等执行回执（每台最多 4 秒） */
         const id = Date.now() % 100000;
-        let n = 0;
-        for (const d of ctx.devices) { d.send({ t: "lua", id, code }); n++; }
-        log(`下发 Lua 脚本 → ${n} 台设备`);
-        return json(res, 200, { ok: true, sent: n, id });
+        const list = [...ctx.devices];
+        if (!list.length) {
+          log("下发 Lua 脚本 → 0 台设备（已保存）");
+          return json(res, 200, { ok: true, sent: 0, id, results: [] });
+        }
+        const results = await Promise.all(list.map((d) => d.sendLua(id, code, 4000)));
+        log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : "失败")).join(" ")}`);
+        return json(res, 200, { ok: true, sent: list.length, id, results });
       }
 
       return json(res, 404, { ok: false, msg: "未知接口" });

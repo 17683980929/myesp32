@@ -355,13 +355,26 @@ async function refreshWeather() {
 async function deployLua() {
   const code = $("lua_code").value;
   if (!code.trim()) { setMsg($("luaMsg"), "脚本为空", "err"); return; }
-  const r = await fetch("/api/lua", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  const j = await r.json();
-  setMsg($("luaMsg"), j.ok ? `已下发给 ${j.sent} 台设备` : "下发失败", j.ok ? "ok" : "err");
+  setMsg($("luaMsg"), "下发中…", "");
+  try {
+    const r = await fetch("/api/lua", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const j = await r.json();
+    if (!j.ok) { setMsg($("luaMsg"), j.msg || "下发失败", "err"); return; }
+    if (!j.sent) { setMsg($("luaMsg"), "已保存（当前无在线设备）", "err"); return; }
+    const bad = (j.results || []).find((x) => !x.ok);
+    if (bad) {
+      setMsg($("luaMsg"), `设备执行失败：${(bad.out || "未知错误").slice(0, 80)}`, "err");
+    } else {
+      const out = ((j.results[0] && j.results[0].out) || "").trim().slice(0, 60);
+      setMsg($("luaMsg"), `设备执行成功${out ? "：" + out : ""}`, "ok");
+    }
+  } catch (e) {
+    setMsg($("luaMsg"), "请求失败", "err");
+  }
 }
 
 loadConfig();

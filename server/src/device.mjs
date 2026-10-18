@@ -85,6 +85,8 @@ export class DeviceSession {
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.timers = [];
     this.lastStat = null;
+    this.luaWaiters = new Map();   /* id → resolve(fn)：等下发的 Lua 执行回执 */
+    this.lastLua = null;           /* 最近一次 Lua 执行结果（诊断用） */
   }
 
   /* ── 发送 ─────────────────────────────────────────────────────────── */
@@ -95,6 +97,22 @@ export class DeviceSession {
 
   sendBin(buf) {
     if (this.ws.readyState === 1) this.ws.send(buf, { binary: true });
+  }
+
+  /** 下发 Lua 并等设备回执（超时按失败返回），由 /api/lua 使用 */
+  sendLua(id, code, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (r) => {
+        if (done) return;
+        done = true;
+        this.luaWaiters.delete(id);
+        resolve(r);
+      };
+      this.luaWaiters.set(id, finish);
+      this.send({ t: "lua", id, code });
+      setTimeout(() => finish({ ok: false, out: `超时（${timeoutMs}ms 无回执）` }), timeoutMs);
+    });
   }
 
   /* ── 生命周期 ─────────────────────────────────────────────────────── */
@@ -115,6 +133,8 @@ export class DeviceSession {
     this.turn++;                        /* 作废正在跑的回合（发送/生成循环立即退出） */
     this.timers.forEach(clearInterval);
     this.timers = [];
+    for (const w of this.luaWaiters.values()) w({ ok: false, out: "设备断开" });
+    this.luaWaiters.clear();
     try { this.opus.free(); } catch { /* ignore */ }
     log(`[${this.sid}] 会话结束`);
   }
@@ -141,9 +161,16 @@ export class DeviceSession {
         return this.onRecStop();
       case DEV.BTN:   return this.onBtn(m);
       case DEV.STAT:  this.lastStat = { bat: m.bat, room: m.room, at: Date.now() }; return;
-      case DEV.LUA_RESULT:
+      case DEV.LUA_RESULT: {
         log(`[${this.sid}] Lua#${m.id} ${m.ok ? "成功" : "失败"} ${m.out ?? ""}`);
+        this.lastLua = { id: m.id, ok: !!m.ok, out: m.out ?? "", at: Date.now() };
+        const w = this.luaWaiters.get(m.id);
+        if (w) {
+          this.luaWaiters.delete(m.id);
+          w({ ok: !!m.ok, out: m.out ?? "" });
+        }
         return;
+      }
       case "pong": return;
       default:
         log(`[${this.sid}] 未知消息: ${m.t}`);

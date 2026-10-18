@@ -21,6 +21,8 @@ const argOf = (f, d) => {
 const HOST = argOf("--host", "127.0.0.1");
 const PORT = argOf("--port", "8080");
 const TOKEN = has("--token") ? argOf("--token", "") : "";
+const STAY = parseInt(argOf("--stay", "8"), 10);      // 存活秒数（默认 8）
+const LUA_FAIL = has("--lua-fail");                   // 模拟 Lua 执行失败
 
 const url = `ws://${HOST}:${PORT}/device${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
 
@@ -53,12 +55,12 @@ ws.on("open", () => {
     }, 1200);
   }
 
-  /* 8 秒后收工 */
+  /* 默认 8 秒后收工（--stay 秒数可调） */
   setTimeout(() => {
     log("—— 测试结束 ——");
     ws.close();
     process.exit(0);
-  }, 8000);
+  }, STAY * 1000);
 });
 
 ws.on("message", (data, isBinary) => {
@@ -79,6 +81,15 @@ ws.on("message", (data, isBinary) => {
     case "page":
       log(`📄 page → ${m.name}`);
       break;
+    case "lua": {
+      log(`📜 收到 Lua#${m.id}（${(m.code || "").length} 字符）`);
+      setTimeout(() => {
+        const out = LUA_FAIL ? "第 1 行: 模拟错误（--lua-fail）" : "模拟执行 OK\n=> 42";
+        log(`→ lua id=${m.id} ok=${!LUA_FAIL}`);
+        ws.send(JSON.stringify({ t: "lua", id: m.id, ok: !LUA_FAIL, out }));
+      }, 200);
+      break;
+    }
     case "ping":
       ws.send(JSON.stringify({ t: "pong", ts: Date.now() }));
       break;

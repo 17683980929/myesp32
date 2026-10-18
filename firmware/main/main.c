@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -28,6 +29,7 @@
 #include "ui.h"
 #include "audio.h"
 #include "wake.h"
+#include "lua_runtime.h"
 
 static const char *TAG = "main";
 
@@ -92,6 +94,7 @@ static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进�
 static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
+    ui_lua_release();                 /* 语音优先：脚本画布让位（脚本本身继续跑） */
     /* 空闲、播报中都听唤醒词（播报中命中 → 用户优先：打断当前回答改听新的）；
      * 录音/思考中不听（录音里是用户自己的声音会自触发，思考中没意义） */
     wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK);
@@ -206,6 +209,40 @@ static void sync_time_from_server(void)
         ESP_LOGI(TAG, "RTC 校时 → %04d-%02d-%02d %02d:%02d", Y, in->mm, in->dd, hh, mi);
 }
 
+/* ── Lua 结果回执（M5）────────────────────────────────────────────── */
+
+/** 把执行结果拼成 {"t":"lua","id":..,"ok":..,"out":".."} 发给服务器 */
+static void on_lua_result(int id, bool ok, const char *out)
+{
+    const char *o = out ? out : "";
+    size_t cap = strlen(o) * 6 + 96;          /* 最坏每字符转义成 \u00XX */
+    char *buf = malloc(cap);
+    if (!buf) return;
+    size_t j = (size_t)snprintf(buf, cap, "{\"t\":\"lua\",\"id\":%d,\"ok\":%s,\"out\":\"",
+                                id, ok ? "true" : "false");
+    for (const unsigned char *p = (const unsigned char *)o; *p; p++) {
+        const char *r = NULL;
+        char e[8];
+        switch (*p) {
+        case '"':  r = "\\\""; break;
+        case '\\': r = "\\\\"; break;
+        case '\n': r = "\\n";  break;
+        case '\r': r = "\\r";  break;
+        case '\t': r = "\\t";  break;
+        default:
+            if (*p < 0x20) { snprintf(e, sizeof(e), "\\u%04x", *p); r = e; }
+            break;
+        }
+        if (r) { size_t l = strlen(r); memcpy(buf + j, r, l); j += l; }
+        else   { buf[j++] = (char)*p; }
+    }
+    buf[j++] = '"';
+    buf[j++] = '}';
+    buf[j] = 0;
+    ws_send_json(buf);
+    free(buf);
+}
+
 /* ── 服务器事件 → UI ───────────────────────────────────────────────── */
 
 static void on_ws_event(const ws_event_t *ev)
@@ -225,6 +262,17 @@ static void on_ws_event(const ws_event_t *ev)
     }
     case WS_EVT_STT:
         s_dirty = 1;
+        break;
+    case WS_EVT_LUA:
+        if (!ev->lua_code) {
+            char m[128];
+            snprintf(m, sizeof(m),
+                     "{\"t\":\"lua\",\"id\":%d,\"ok\":false,"
+                     "\"out\":\"脚本缺失或过长（上限 6KB）\"}", ev->lua_id);
+            ws_send_json(m);
+        } else {
+            lua_runtime_deploy(ev->lua_id, ev->lua_code);
+        }
         break;
     case WS_EVT_PAGE: {
         /* UI 的页面状态是唯一真相，切页必须走 ui_set_page() */
@@ -298,6 +346,7 @@ static void on_button(btn_id_t id, btn_event_t ev)
             s_key_down_at = -1;
         } else {                                        /* BTN_CLICK：短按翻页 */
             if (s_voice_state != VOICE_IDLE) return;    /* 语音中不翻页 */
+            ui_lua_release();                           /* 用户要看正经界面了 */
             ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
             ui_set_page(p);
             if (p == UI_PAGE_FUNC)
@@ -458,10 +507,12 @@ static void main_loop(void)
             s_dirty = 1;
         }
 
-        /* 每秒重绘一次（时钟走字）；脏标记或桌宠换帧时立即重绘 */
+        /* 每秒重绘一次（时钟走字）；脏标记或桌宠换帧时立即重绘。
+         * Lua 画布保鲜期内跳过重绘（脚本在接管屏幕）。 */
         int pet_changed = ui_tick(now);
         TickType_t nowT = xTaskGetTickCount();
-        if (s_dirty || pet_changed || (nowT - last) >= pdMS_TO_TICKS(1000)) {
+        if ((s_dirty || pet_changed || (nowT - last) >= pdMS_TO_TICKS(1000)) &&
+            !ui_lua_hold_active()) {
             ui_render();
             s_dirty = 0;
             last = nowT;
@@ -480,13 +531,15 @@ static void on_ws_audio(const uint8_t *data, size_t len)
     audio_play_push(data, len);
 }
 
-/** 连上 WiFi 后的正常启动：WebSocket + 按键 + 主循环（不返回） */
+/** 连上 WiFi 后的正常启动：WebSocket + 按键 + Lua + 主循环（不返回） */
 static void boot_online(const wifi_cfg_t *cfg)
 {
     ws_client_set_handler(on_ws_event);
     ws_client_set_bin_handler(on_ws_audio);
     ESP_ERROR_CHECK(ws_client_start(cfg->host, cfg->token));
     buttons_init(on_button);
+    lua_runtime_set_result_cb(on_lua_result);
+    lua_runtime_start();                     /* 挂载 fatfs、开机脚本、等下发（不阻塞） */
     ESP_LOGI(TAG, "启动完成（服务器 %s）", cfg->host);
     main_loop();
 }

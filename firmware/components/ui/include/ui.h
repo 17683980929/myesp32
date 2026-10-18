@@ -42,3 +42,24 @@ int  ui_sub_pages(const char *text);
 
 /** 显示整句的第 page 页（0 起）；page 越界时显示末页 */
 void ui_set_sub_page(const char *text, int page);
+
+/* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
+
+/** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环
+ *  停止周期重绘，脚本画面得以保留；语音对话/按 KEY 时自动让位）。
+ *  size 只是档位提示：<24 → 小字（ASCII 2x / 中文 1x），≥24 → 大字（3x / 2x） */
+void ui_lua_clear(void);
+void ui_lua_text(int x, int y, const char *s, int size);
+void ui_lua_rect(int x, int y, int w, int h, int filled);
+void ui_lua_flush(void);
+
+/** 清掉画布保鲜 + 桌宠表情覆盖（按键/语音开始时调用） */
+void ui_lua_release(void);
+
+/** 主循环用：现在是否该跳过周期重绘（画布保鲜中且没语音、在主页） */
+int ui_lua_hold_active(void);
+
+/** 脚本设置桌宠表情：idle/blink/listening/thinking/speaking/happy/love/
+ *  confused/sleepy/sleeping/salute/direct/patrol/note/charging。
+ *  返回 1 成功、0 名字不认识 */
+int ui_lua_pet_state(const char *name);
