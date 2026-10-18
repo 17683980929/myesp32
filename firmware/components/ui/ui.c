@@ -289,11 +289,17 @@ static void pet_tick(uint32_t now)
 static ui_page_t s_page = UI_PAGE_HOME;
 static int s_busy = 0;
 static char s_sub[64] = "";
+static char s_portal_ap[32] = "";
 
 void ui_init(void) { lcd_init(); }
 void ui_set_page(ui_page_t p) { s_page = p; }
 ui_page_t ui_get_page(void) { return s_page; }
 void ui_set_busy(int busy) { s_busy = busy; }
+void ui_show_portal(const char *ap_ssid)
+{
+    strlcpy(s_portal_ap, ap_ssid ? ap_ssid : "", sizeof(s_portal_ap));
+    s_page = UI_PAGE_PORTAL;
+}
 void ui_set_sub(const char *text)
 {
     strncpy(s_sub, text ? text : "", sizeof(s_sub) - 1);
@@ -406,6 +412,20 @@ static void render_panel(void)
 
 void ui_render(void)
 {
+    if (s_page == UI_PAGE_PORTAL) {
+        lcd_clear(0);
+        const char *t1 = "配网模式";
+        draw_cjk((LCD_W - cjk_text_w(t1, 2)) / 2, 30, t1, 2, 1);
+        const char *t2 = "手机连接热点";
+        draw_cjk((LCD_W - cjk_text_w(t2, 2)) / 2, 84, t2, 2, 1);
+        draw_text((LCD_W - text_w(s_portal_ap, 2)) / 2, 138, s_portal_ap, 2, 1);
+        const char *t3 = "浏览器打开";
+        draw_cjk((LCD_W - cjk_text_w(t3, 1)) / 2, 176, t3, 1, 1);
+        draw_text((LCD_W - text_w("192.168.4.1", 3)) / 2, 200, "192.168.4.1", 3, 1);
+        lcd_flush();
+        return;
+    }
+
     if (s_page == UI_PAGE_FUNC) {
         lcd_clear(0);
         draw_cjk((LCD_W - 4 * 32) / 2, 110, "敬请期待", 2, 1);

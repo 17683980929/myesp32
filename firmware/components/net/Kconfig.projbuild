@@ -1,8 +1,8 @@
 menu "MyEsp32 Network"
 
     config WIFI_SSID
-        string "WiFi SSID（2.4GHz）"
-        default "MyWiFi"
+        string "WiFi SSID（2.4GHz；留空 = 开机进配网门户）"
+        default ""
 
     config WIFI_PASSWORD
         string "WiFi 密码"

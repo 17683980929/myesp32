@@ -4,11 +4,14 @@
 #pragma once
 #include "ws_client.h"
 
-typedef enum { UI_PAGE_HOME = 0, UI_PAGE_FUNC = 1 } ui_page_t;
+typedef enum { UI_PAGE_HOME = 0, UI_PAGE_FUNC = 1, UI_PAGE_PORTAL = 2 } ui_page_t;
 
 void ui_init(void);
 void ui_set_page(ui_page_t p);
 ui_page_t ui_get_page(void);
+
+/** 切到配网页（显示热点名 + 提示），下一帧 ui_render() 画出来 */
+void ui_show_portal(const char *ap_ssid);
 
 /** 渲染当前页并刷屏（调用一次画一帧） */
 void ui_render(void);

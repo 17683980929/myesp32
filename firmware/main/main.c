@@ -1,7 +1,7 @@
 /**
  * main.c — MyEsp32 固件入口
  *
- * 启动顺序：NVS → 传感器 → 屏幕 → WiFi → WebSocket → 按键 → 主循环
+ * 启动顺序：NVS → 传感器 → 屏幕 → WiFi（连不上/长按 KEY → 配网门户）→ WebSocket → 按键 → 主循环
  *
  * 主循环职责：
  *   - 每秒刷新主页（时钟走字）
@@ -22,6 +22,8 @@
 #include "sensors.h"
 #include "pcf85063.h"
 #include "wifi_sta.h"
+#include "wifi_cfg.h"
+#include "wifi_portal.h"
 #include "ws_client.h"
 #include "ui.h"
 
@@ -115,29 +117,8 @@ static void on_button(btn_id_t id, btn_event_t ev)
 
 /* ── 主循环 ────────────────────────────────────────────────────────── */
 
-void app_main(void)
+static void main_loop(void)
 {
-    ESP_ERROR_CHECK(nvs_flash_init());
-
-    sensors_init();
-    ESP_LOGI(TAG, "电池 %d mV / %d%%", sensors_battery_mv(), sensors_battery_pct());
-    pcf85063_init();
-    ui_init();
-
-    ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
-
-    /* WiFi（配网在 M7；现在用 menuconfig 里的值） */
-    ESP_ERROR_CHECK(wifi_sta_start(CONFIG_WIFI_SSID, CONFIG_WIFI_PASSWORD));
-    if (wifi_sta_wait(15000) != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi 连接失败，仍继续启动（屏幕会显示离线状态）");
-    }
-
-    /* WebSocket */
-    ws_client_set_handler(on_ws_event);
-    ESP_ERROR_CHECK(ws_client_start(CONFIG_SERVER_HOST, CONFIG_SERVER_TOKEN));
-
-    buttons_init(on_button);
-
     TickType_t last = xTaskGetTickCount();
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -161,4 +142,63 @@ void app_main(void)
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+}
+
+/** 连上 WiFi 后的正常启动：WebSocket + 按键 + 主循环（不返回） */
+static void boot_online(const wifi_cfg_t *cfg)
+{
+    ws_client_set_handler(on_ws_event);
+    ESP_ERROR_CHECK(ws_client_start(cfg->host, cfg->token));
+    buttons_init(on_button);
+    ESP_LOGI(TAG, "启动完成（服务器 %s）", cfg->host);
+    main_loop();
+}
+
+void app_main(void)
+{
+    /* NVS：WiFi / 服务器配置存在这里（配网页写入） */
+    esp_err_t ne = nvs_flash_init();
+    if (ne == ESP_ERR_NVS_NO_FREE_PAGES || ne == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    /* 开机长按 KEY 3 秒 → 强制进配网（放最前面，一上电就能按） */
+    bool force_portal = wifi_portal_key_held();
+
+    sensors_init();
+    ESP_LOGI(TAG, "电池 %d mV / %d%%", sensors_battery_mv(), sensors_battery_pct());
+    pcf85063_init();
+    ui_init();
+    ui_render();
+
+    ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
+
+    /* 配置：NVS（配网页保存）优先，其次编译期默认（CI Secrets / menuconfig） */
+    static wifi_cfg_t cfg;
+    wifi_cfg_load(&cfg);
+
+    bool sta_running = false;
+    if (!force_portal && cfg.ssid[0]) {
+        ESP_ERROR_CHECK(wifi_sta_start(cfg.ssid, cfg.pass));
+        sta_running = true;
+        if (wifi_sta_wait(20000) == ESP_OK) {
+            char ip[20];
+            wifi_sta_ip(ip, sizeof(ip));
+            ESP_LOGI(TAG, "WiFi 已连接（%s），IP %s", cfg.ssid, ip);
+            boot_online(&cfg);                      /* 不返回 */
+        }
+        ESP_LOGW(TAG, "20 秒没连上 %s → 进配网模式", cfg.ssid);
+    } else if (force_portal) {
+        ESP_LOGW(TAG, "开机长按 KEY → 进配网模式");
+    } else {
+        ESP_LOGW(TAG, "还没有 WiFi 配置 → 进配网模式");
+    }
+
+    /* ── 配网模式：手机连热点后，浏览器打开 192.168.4.1 ── */
+    char ap[24];
+    wifi_portal_ap_name(ap, sizeof(ap));
+    ui_show_portal(ap);
+    ui_render();
+    wifi_portal_run(sta_running);                   /* 保存 / 连上后自动重启 */
 }
