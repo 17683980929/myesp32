@@ -195,7 +195,7 @@
   <!-- Lua -->
   <div class="card">
     <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
-    <textarea id="lua_code" rows="12" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()"></textarea>
+    <textarea id="lua_code" rows="12" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()&#10;-- 事件：双击 KEY 让桌宠睡 5 秒&#10;sys.on(&quot;key_double&quot;, function()&#10;  pet.state(&quot;sleeping&quot;)&#10;  timer.after(5000, function() pet.state(&quot;auto&quot;) end)&#10;end)"></textarea>
     <div class="actions">
       <button class="primary" onclick="deployLua()">下发到设备</button>
       <span class="msg" id="luaMsg"></span>

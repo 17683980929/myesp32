@@ -656,6 +656,10 @@ void ui_lua_flush(void)
 int ui_lua_pet_state(const char *name)
 {
     if (!name) return 0;
+    if (!strcmp(name, "auto")) {             /* 交还自动状态：脚本控制结束 */
+        s_lua_frame = -1;
+        return 1;
+    }
     static const struct { const char *n; int idx; } names[] = {
         { "idle", 0 }, { "blink", 1 }, { "listening", 2 }, { "thinking", 3 },
         { "speaking", 4 }, { "happy", 5 }, { "love", 6 }, { "confused", 7 },

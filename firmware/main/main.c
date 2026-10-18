@@ -322,11 +322,31 @@ static void on_ws_event(const ws_event_t *ev)
 
 /* ── 按键 → 页面 ───────────────────────────────────────────────────── */
 
+/* KEY 短按：让位脚本画布 → 翻页 → 上报 → 派发 key_click 事件。
+ * 脚本注册了 key_double 时，本动作会等 ~300ms 双击窗口裁决后才执行 */
+static void key_click_action(void)
+{
+    ui_lua_release();                               /* 用户要看正经界面了 */
+    ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
+    ui_set_page(p);
+    if (p == UI_PAGE_FUNC)
+        s_func_since = now_ms();
+    s_dirty = 1;
+
+    char msg[48];
+    snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
+    ws_send_json(msg);
+    lua_runtime_event("key_click");                 /* 在内置动作之后派发，
+                                                     * 脚本设的桌宠状态不会被 release 吃掉 */
+    ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
+}
+
 static void on_button(btn_id_t id, btn_event_t ev)
 {
-    /* 诊断日志：每个按键事件都打一行（含按下/松开，看长按短按） */
+    /* 诊断日志：每个按键事件都打一行（含按下/松开/双击，看长按短按） */
     ESP_LOGI(TAG, "btn %s %s", id == BTN_KEY ? "KEY" : "BOOT",
-             ev == BTN_DOWN ? "down" : (ev == BTN_CLICK ? "click" : "up"));
+             ev == BTN_DOWN ? "down" : ev == BTN_CLICK ? "click" :
+             ev == BTN_DOUBLE ? "double" : "up");
 
     if (id == BTN_KEY) {
         if (ev == BTN_DOWN) {
@@ -344,19 +364,13 @@ static void on_button(btn_id_t id, btn_event_t ev)
                 }
             }
             s_key_down_at = -1;
-        } else {                                        /* BTN_CLICK：短按翻页 */
+        } else if (ev == BTN_CLICK) {                   /* 短按翻页 */
             if (s_voice_state != VOICE_IDLE) return;    /* 语音中不翻页 */
-            ui_lua_release();                           /* 用户要看正经界面了 */
-            ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
-            ui_set_page(p);
-            if (p == UI_PAGE_FUNC)
-                s_func_since = now_ms();
-            s_dirty = 1;
-
-            char msg[48];
-            snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
-            ws_send_json(msg);
-            ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
+            key_click_action();
+        } else {                                        /* BTN_DOUBLE：脚本事件 */
+            if (s_voice_state != VOICE_IDLE) return;
+            ESP_LOGI(TAG, "KEY 双击 → lua 事件");
+            lua_runtime_event("key_double");
         }
     } else {                                            /* BOOT：短按=音量循环（增大→顶档静音→循环） */
         if (ev == BTN_CLICK)
@@ -376,6 +390,19 @@ static void main_loop(void)
     TickType_t last = xTaskGetTickCount();
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
+         * 没有脚本关心时立刻关掉，单击行为回到即时 */
+        {
+            static int s_dbl_evt_on = 0;
+            int want_dbl = lua_runtime_has_event("key_double");
+            if (want_dbl != s_dbl_evt_on) {
+                s_dbl_evt_on = want_dbl;
+                buttons_set_double(want_dbl);
+                ESP_LOGI(TAG, "key_double 事件 %s",
+                         want_dbl ? "启用（单击延迟 300ms 裁决）" : "停用");
+            }
+        }
 
         /* 功能页 5 秒后自动回主页 */
         if (ui_get_page() == UI_PAGE_FUNC && s_func_since &&

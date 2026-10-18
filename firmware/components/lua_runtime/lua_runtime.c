@@ -16,8 +16,10 @@
  *   display.clear()  display.text(x, y, s[, size])  display.rect(x, y, w, h[, filled])
  *   display.flush()
  *   pet.state("happy")            -- idle/blink/listening/.../charging，返回是否认识
+ *                                 -- "auto" = 交还自动状态（脚本控制结束）
  *   sensor.temp() sensor.hum() sensor.battery() sensor.voltage()
  *   sys.millis() sys.delay(ms≤1000) sys.log(...)   print(...)
+ *   sys.on("key_click"/"key_double", fn)           -- 事件绑定（重复注册=替换）
  *   timer.after(ms, fn) timer.every(ms, fn)        -- 最多 16 个
  */
 
@@ -84,8 +86,9 @@ typedef struct {
 static timer_slot_t    s_timers[TIMER_MAX];
 
 typedef struct {
-    int   id;
-    char *code;
+    int   id;                              /* ≥0：部署请求；-1：事件消息 */
+    int   evt;                             /* 事件序号（id=-1 时有效） */
+    char *code;                            /* 部署代码（堆上；任务里释放） */
 } deploy_msg_t;
 
 static uint32_t ms_now(void)
@@ -272,6 +275,28 @@ static int timer_add(lua_State *L, int one_shot)
 static int l_timer_after(lua_State *L) { return timer_add(L, 1); }
 static int l_timer_every(lua_State *L) { return timer_add(L, 0); }
 
+/* ── 事件绑定（sys.on）───────────────────────────────────────────────
+ * 处理器存在 registry 引用里，随 lua_State 一起销毁（run_code 里复位）。
+ * 事件从别的任务投递（按键任务），由 lua 任务串行执行，护栏同定时器。 */
+
+#define EVT_COUNT 2
+static const char *const s_evt_names[EVT_COUNT] = { "key_click", "key_double" };
+static int s_evt_ref[EVT_COUNT] = { LUA_NOREF, LUA_NOREF };
+
+static int l_sys_on(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    for (int i = 0; i < EVT_COUNT; i++) {
+        if (strcmp(name, s_evt_names[i])) continue;
+        if (s_evt_ref[i] != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, s_evt_ref[i]);
+        lua_pushvalue(L, 2);
+        s_evt_ref[i] = luaL_ref(L, LUA_REGISTRYINDEX);   /* 重复注册 = 替换 */
+        return 0;
+    }
+    return luaL_error(L, "不支持的事件：%s（可用：key_click / key_double）", name);
+}
+
 /* ── 注册与沙箱 ────────────────────────────────────────────────────── */
 
 static void register_apis(lua_State *L)
@@ -291,6 +316,7 @@ static void register_apis(lua_State *L)
     };
     static const luaL_Reg f_sys[] = {
         { "millis", l_sys_millis }, { "delay", l_sys_delay }, { "log", l_sys_log },
+        { "on", l_sys_on },
         { NULL, NULL }
     };
     static const luaL_Reg f_timer[] = {
@@ -380,6 +406,7 @@ static int run_code(const char *code, int persist)
     }
     s_mem_used = 0;
     timers_clear();
+    for (int i = 0; i < EVT_COUNT; i++) s_evt_ref[i] = LUA_NOREF;  /* 引用随旧状态销毁 */
 
     s_L = lua_newstate(lua_alloc, NULL, luaL_makeseed(NULL));
     if (!s_L) {
@@ -444,6 +471,32 @@ static void handle_deploy(const deploy_msg_t *m)
     }
 }
 
+/** 事件回调：护栏同定时器（2 秒超时）；出错移除处理器并记串口 */
+static void handle_event(int evt)
+{
+    if (evt < 0 || evt >= EVT_COUNT) return;
+    const char *name = s_evt_names[evt];
+    if (!s_L || s_evt_ref[evt] == LUA_NOREF) return;
+
+    ESP_LOGI(TAG, "事件 %s → 脚本处理器", name);
+    lua_settop(s_L, 0);
+    lua_rawgeti(s_L, LUA_REGISTRYINDEX, s_evt_ref[evt]);
+
+    s_exec_start_us = esp_timer_get_time();
+    s_paused_us = 0;
+    s_hook_active = 1;
+    int r = lua_pcall(s_L, 0, 0, 0);
+    s_hook_active = 0;
+
+    if (r != LUA_OK) {
+        const char *err = lua_tostring(s_L, -1);
+        ESP_LOGW(TAG, "事件 %s 处理器出错：%s（已移除）", name, err ? err : "?");
+        lua_settop(s_L, 0);
+        luaL_unref(s_L, LUA_REGISTRYINDEX, s_evt_ref[evt]);
+        s_evt_ref[evt] = LUA_NOREF;
+    }
+}
+
 /* ── fatfs 与任务 ──────────────────────────────────────────────────── */
 
 static void mount_fs(void)
@@ -504,8 +557,12 @@ static void lua_task(void *arg)
 
         deploy_msg_t m;
         if (xQueueReceive(s_q, &m, pdMS_TO_TICKS(wait_ms)) == pdTRUE) {
-            handle_deploy(&m);
-            free(m.code);
+            if (m.id >= 0) {
+                handle_deploy(&m);
+                free(m.code);
+            } else {
+                handle_event(m.evt);
+            }
             continue;
         }
 
@@ -577,6 +634,7 @@ void lua_runtime_deploy(int id, const char *code)
     }
     deploy_msg_t m;
     m.id = id;
+    m.evt = -1;
     m.code = strdup(code);
     if (!m.code) {
         reply(id, 0, "内存不足");
@@ -586,4 +644,28 @@ void lua_runtime_deploy(int id, const char *code)
         free(m.code);
         reply(id, 0, "上一个脚本还在执行，稍后再试");
     }
+}
+
+void lua_runtime_event(const char *name)
+{
+    if (!name || !s_q) return;
+    for (int i = 0; i < EVT_COUNT; i++) {
+        if (strcmp(name, s_evt_names[i])) continue;
+        if (s_evt_ref[i] == LUA_NOREF) return;      /* 没有脚本关心，直接丢 */
+        deploy_msg_t m;
+        m.id = -1;
+        m.evt = i;
+        m.code = NULL;
+        if (xQueueSend(s_q, &m, 0) != pdTRUE)
+            ESP_LOGW(TAG, "事件 %s 丢弃（队列满）", name);
+        return;
+    }
+}
+
+bool lua_runtime_has_event(const char *name)
+{
+    if (!name) return false;
+    for (int i = 0; i < EVT_COUNT; i++)
+        if (!strcmp(name, s_evt_names[i])) return s_evt_ref[i] != LUA_NOREF;
+    return false;
 }

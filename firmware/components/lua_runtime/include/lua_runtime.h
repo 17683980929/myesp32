@@ -22,3 +22,10 @@ void lua_runtime_set_result_cb(lua_result_cb_t cb);
 
 /** 下发脚本（从 WS 事件里调用；内部复制 code，排队执行） */
 void lua_runtime_deploy(int id, const char *code);
+
+/** 投递事件给脚本（sys.on 注册的处理器；没有处理器时静默忽略）。
+ *  可在任意任务调用（非 ISR）。 */
+void lua_runtime_event(const char *name);
+
+/** 是否已有脚本注册了该事件的处理器（主循环据此开关按键双击识别） */
+bool lua_runtime_has_event(const char *name);
