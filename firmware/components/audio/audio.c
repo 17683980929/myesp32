@@ -7,8 +7,8 @@
  *   - 麦克风 ES7210 四路全选（与出厂程序一致）。mic 数 ≥3 时驱动把芯片切到
  *     TDM 输出（REG12=0x02）；2 通道读取时每帧 2 个 16bit 字。
  *     串口实测：每个 16bit 字 = 一路麦克风样点（偶=麦A、奇=麦B 交织），
- *     幅度很小（空载 ±50、近距离说话 ±300）。直接按 16bit 用 + 数字增益：
- *     上行取偶数字 ×16，BOOT 回放原样 ×8。
+ *     幅度小（空载 ±12、近距离说话 ±300~1500）。直接按 16bit 用 + 数字增益：
+ *     上行取偶数字 ×8，BOOT 回放原样 ×8。
  *     （教训：16bit 字不能拆成两个 8bit 用 —— 低 8bit 是样点取模 256 的锯齿，
  *      放大后就是电流音；整字不放大又只是"小声"。）
  *   - 喇叭 ES8311 走 DAC，PA 使能在 AUD_PA_PIN（GPIO46）。
@@ -108,11 +108,11 @@ static void mic_task(void *arg)
                              (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
                 } else if (echo_n % 100 == 0) {           /* 每 2 秒打一次电平，便于诊断 */
                     float sr[4];
-                    long acc = 0;
+                    double acc = 0;                       /* double 防 32bit 溢出（曾现 nan） */
                     slot_rms(in, READ_CHUNK * 2, sr);
-                    for (int i = 0; i < READ_CHUNK * 2; i++) acc += (long)in[i] * in[i];
+                    for (int i = 0; i < READ_CHUNK * 2; i++) acc += (double)in[i] * in[i];
                     ESP_LOGI(TAG, "自检槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f（原始 RMS=%.0f）",
-                             sr[0], sr[1], sr[2], sr[3], sqrtf((float)acc / (READ_CHUNK * 2)));
+                             sr[0], sr[1], sr[2], sr[3], sqrt(acc / (READ_CHUNK * 2)));
                 }
                 for (int i = 0; i < READ_CHUNK * 2; i++) {
                     int32_t v = (int32_t)in[i] * 8;
@@ -155,10 +155,11 @@ static void mic_task(void *arg)
             continue;
         }
 
-        /* 偶数字 = 1 号麦克风 16bit 样点 → ×16 数字增益 → 单声道。
+        /* 偶数字 = 1 号麦克风 16bit 样点 → ×8 数字增益 → 单声道。
+         * （实测大声时样点 ±1500+，×16 会削顶失真；×8 兼顾小音量。）
          * 槽位/原始样本诊断日志保留，供后续复核。 */
         for (int i = 0; i < READ_CHUNK; i++) {
-            int32_t v = (int32_t)in[i * 2] * 16;
+            int32_t v = (int32_t)in[i * 2] * 8;
             if (v > 32000) v = 32000;
             else if (v < -32000) v = -32000;
             mono[fill + i] = (int16_t)v;
@@ -178,10 +179,10 @@ static void mic_task(void *arg)
                              sr[0], sr[1], sr[2], sr[3]);
                 }
                 if (frames == 1 || frames % 10 == 0) {
-                    long acc = 0;
-                    for (int i = 0; i < FRAME_SAMPLES; i++) acc += (long)mono[i] * mono[i];
+                    double acc = 0;                       /* double 防 32bit 溢出 */
+                    for (int i = 0; i < FRAME_SAMPLES; i++) acc += (double)mono[i] * mono[i];
                     ESP_LOGI(TAG, "上行第 %d 帧: %d 字节, 电平 RMS=%.0f",
-                             frames, n, sqrtf((float)acc / FRAME_SAMPLES));
+                             frames, n, sqrt(acc / FRAME_SAMPLES));
                 }
             } else {
                 ESP_LOGW(TAG, "opus_encode 返回 %d", n);
