@@ -1,4 +1,4 @@
-/* 自动生成，请勿手改。生成器: tools/gen_font_5x7.py */
+/* 自动生成，请勿手改。生成器: tools/gen_font_5x7.mjs */
 #pragma once
 #include <stdint.h>
 

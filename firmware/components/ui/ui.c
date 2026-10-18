@@ -400,30 +400,28 @@ static void render_panel(void)
 
     int vx = PANEL_X + 76;               /* 数值列 */
 
-    /* 天气：图标 + 城市标签 + 天气文字 + 气温（尽量 2 倍大） */
+    /* 天气：图标 + 城市标签 + 天气文字（1 倍）+ 气温（2 倍） */
     icon_weather(PANEL_X, 80, 24, weather_kind(info->weather), 1);
     char city[16];
     city_label(city, sizeof(city), info->city);
     if (has_cjk(city)) draw_cjk(PANEL_X + 32, 84, city, 1, 1);
     else               draw_text(PANEL_X + 32, 89, city, 1, 1);
 
+    /* 天气文字保持 1 倍（和城市标签同高），气温 2 倍（和其他数值同规格） */
     const char *wtext = info->weather[0] ? info->weather : "--";
     char wtemp[16] = "";
     if (info->weather_temp > -99 && info->weather_temp < 100)
         snprintf(wtemp, sizeof(wtemp), " %d`C", info->weather_temp);
 
-    int right = PANEL_X + PANEL_SEP_W;                    /* 392 */
-    int ww2   = has_cjk(wtext) ? cjk_text_w(wtext, 2) : text_w(wtext, 2);
-    int wt2   = wtemp[0] ? text_w(wtemp, 2) : 0;
-    if (vx + ww2 + wt2 <= right) {                        /* 2 倍放得下 */
-        if (has_cjk(wtext)) draw_cjk(vx, 80, wtext, 2, 1);
-        else                draw_text(vx, 89, wtext, 2, 1);
-        if (wtemp[0]) draw_text(vx + ww2, 89, wtemp, 2, 1);
-    } else {                                              /* 文字降到 1 倍，气温保持 2 倍 */
-        int ww1 = has_cjk(wtext) ? cjk_text_w(wtext, 1) : text_w(wtext, 1);
-        if (has_cjk(wtext)) draw_cjk(vx, 88, wtext, 1, 1);
-        else                draw_text(vx, 92, wtext, 1, 1);
-        if (wtemp[0]) draw_text(vx + ww1 + 2, 89, wtemp, 2, 1);
+    int ww1 = has_cjk(wtext) ? cjk_text_w(wtext, 1) : text_w(wtext, 1);
+    if (has_cjk(wtext)) draw_cjk(vx, 84, wtext, 1, 1);
+    else                draw_text(vx, 89, wtext, 1, 1);
+
+    if (wtemp[0]) {
+        if (vx + ww1 + text_w(wtemp, 2) <= PANEL_X + PANEL_SEP_W)
+            draw_text(vx + ww1, 84, wtemp, 2, 1);
+        else
+            draw_text(vx + ww1, 89, wtemp, 1, 1);          /* 实在放不下才降到 1 倍 */
     }
 
     /* 温度 */
@@ -442,8 +440,8 @@ static void render_panel(void)
     else        snprintf(hb, sizeof(hb), "--%%");
     draw_text(vx, 148, hb, 2, 1);
 
-    /* 电量 */
-    icon_battery(PANEL_X, 178, 26, bat, 1);
+    /* 电量（图标和文字视线对齐：文字墨迹 182..194，图标同高） */
+    icon_battery(PANEL_X, 182, 26, bat, 1);
     draw_cjk(PANEL_X + 32, 180, "电量", 1, 1);
     char bb[16];
     snprintf(bb, sizeof(bb), "%d%%", bat);
