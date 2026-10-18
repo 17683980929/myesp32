@@ -88,11 +88,24 @@ static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放�
 #define VAD_NOSPEECH_MS  6000    /* 一直没说话 6 秒 → 放弃 */
 #define VAD_MAX_MS       15000   /* 总时长上限 15 秒 */
 
+/* "有效说话"门槛：超过 VAD_SPEECH_RMS 的帧数 ≥3（180ms）才算用户真说了话；
+ * 只闪 1~2 帧（咳嗽、桌椅声、唤醒词尾音）会被当"没说话"本地静默丢弃，不送 ASR */
+#define VAD_MIN_VOICED   3
+
+/* 播报中打断进入的录音：开头几帧永远是喇叭尾音/房间混响（实测帧 1 电平
+ * 达 6000~13000），从第 5 帧（300ms）起才计有效说话，防"尾音当指令" */
+#define VAD_SKIP_BARGEIN 5
+/* KEY 按下瞬间也带 1 帧功放尾音 */
+#define VAD_SKIP_KEY     1
+
 static volatile int s_rec_auto    = 0;   /* 唤醒流程的自动录音 */
 static volatile int s_vad_stop    = 0;   /* 0=继续 1=说完 2=没说话 3=超时 */
 static int          s_vad_spoke   = 0;   /* 本段录音里已检测到说话 */
 static int          s_vad_sil_run = 0;   /* 连续安静帧数 */
 static volatile int s_rec_auto_at = 0;   /* 自动录音起始时刻（ms） */
+static int          s_vad_frames  = 0;   /* 本段录音已处理帧数 */
+static int          s_vad_voiced  = 0;   /* 有效语音帧数（"用户真说了话"的判据） */
+static int          s_vad_skip    = 0;   /* 开头跳过的帧数（尾音污染），按录音来源设置 */
 
 /* ── 麦克风任务（录音 / 喂唤醒词）──────────────────────────────────── */
 
@@ -196,10 +209,19 @@ static void mic_task(void *arg)
                 if (frames == 1 || frames % 10 == 0)
                     ESP_LOGI(TAG, "上行第 %d 帧: %d 字节, 电平 RMS=%.0f", frames, n, rms);
 
+                /* 有效语音帧计数（所有录音共用；开头跳过的帧不算 —— 打断时的
+                 * 喇叭尾音、KEY 瞬间的功放尾音都会被跳过） */
+                if (s_rec_on) {
+                    s_vad_frames++;
+                    if (rms > VAD_SPEECH_RMS && s_vad_frames > s_vad_skip)
+                        s_vad_voiced++;
+                }
+
                 /* 自动聆听：VAD 判"说完"（或一直没说话/超时）→ 由 main 收尾 */
                 if (s_rec_auto && !s_vad_stop) {
                     int t = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-                    if (rms > VAD_SPEECH_RMS) {
+                    int voiced = (rms > VAD_SPEECH_RMS) && s_vad_frames > s_vad_skip;
+                    if (voiced) {
                         s_vad_spoke = 1;
                         s_vad_sil_run = 0;
                     } else if (s_vad_spoke && ++s_vad_sil_run >= VAD_SIL_FRAMES) {
@@ -317,17 +339,26 @@ static void play_task(void *arg)
 
 int audio_ready(void) { return s_ready; }
 
-void audio_rec_start(void) { s_rec_auto = 0; s_vad_stop = 0; s_enc_reset = 1; s_rec_on = 1; }
+void audio_rec_start(void)
+{
+    s_rec_auto = 0; s_vad_stop = 0;
+    s_vad_frames = 0; s_vad_voiced = 0; s_vad_skip = VAD_SKIP_KEY;
+    s_enc_reset = 1; s_rec_on = 1;
+}
 void audio_rec_stop(void)  { s_rec_on = 0; s_rec_auto = 0; }
 int  audio_rec_active(void) { return s_rec_on; }
 
-/* 唤醒后的自动聆听：录音 + 静音检测（VAD）自动结束 */
-void audio_rec_start_auto(void)
+/* 唤醒后的自动聆听：录音 + 静音检测（VAD）自动结束。
+ * bargein=1：播报中被打断进入（开头 5 帧是喇叭尾音，不计有效说话） */
+void audio_rec_start_auto(int bargein)
 {
     s_rec_auto    = 1;
     s_vad_stop    = 0;
     s_vad_spoke   = 0;
     s_vad_sil_run = 0;
+    s_vad_frames  = 0;
+    s_vad_voiced  = 0;
+    s_vad_skip    = bargein ? VAD_SKIP_BARGEIN : 0;
     s_rec_auto_at = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_enc_reset   = 1;
     s_rec_on      = 1;
@@ -340,6 +371,10 @@ int audio_rec_vad_stop(void)
     if (v) s_vad_stop = 0;
     return v;
 }
+
+/* 本段录音里用户是否真的说了话（有效语音帧数 ≥ VAD_MIN_VOICED）；
+ * 返回 0 = 只有杂音/尾音碎片 → 本地静默收尾，不送 ASR */
+int audio_rec_heard_speech(void) { return s_vad_voiced >= VAD_MIN_VOICED; }
 
 void audio_play_reset(void)
 {

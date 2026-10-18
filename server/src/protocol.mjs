@@ -15,7 +15,7 @@ export const PROTOCOL_VERSION = 1;
 
 export const DEV = {
   HELLO: "hello",   // { t, fw, mac, caps[] }
-  REC: "rec",       // { t, s: "start" | "stop" }   录音开始/结束
+  REC: "rec",       // { t, s: "start" | "stop" | "resume" }   录音开始/结束/没说话（续播）
   BTN: "btn",       // { t, k: "key"|"boot", e: "click"|"down"|"up" }
   STAT: "stat",     // { t, bat, room:{t,h} }        板子本地状态，供服务器记录
   LUA_RESULT: "lua",// { t, id, ok, out }

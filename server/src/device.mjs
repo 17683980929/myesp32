@@ -81,6 +81,8 @@ export class DeviceSession {
     this.aborted = false;
     this.busy = false;
     this.turn = 0;              /* 对话回合号：新录音会 ++ 作废旧回合（用户打断） */
+    this.streaming = 0;         /* 正在按实时节奏发音频的回合号（可挂起/续播） */
+    this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.timers = [];
     this.lastStat = null;
   }
@@ -133,7 +135,10 @@ export class DeviceSession {
 
     switch (m.t) {
       case DEV.HELLO: return this.onHello(m);
-      case DEV.REC:   return m.s === "start" ? this.onRecStart() : this.onRecStop();
+      case DEV.REC:
+        if (m.s === "start") return this.onRecStart();
+        if (m.s === "resume") return this.onRecResume();
+        return this.onRecStop();
       case DEV.BTN:   return this.onBtn(m);
       case DEV.STAT:  this.lastStat = { bat: m.bat, room: m.room, at: Date.now() }; return;
       case DEV.LUA_RESULT:
@@ -167,15 +172,36 @@ export class DeviceSession {
 
   onRecStart() {
     if (this.busy) {
-      /* 说话/思考中用户又按了录音键 = 打断：作废本轮回答，让位给新提问
-       * （设备端已本地停播并丢弃迟到帧；这里让生成/发送循环尽快退出） */
-      log(`[${this.sid}] 用户打断，作废上一轮回答`);
-      this.turn++;
+      /* 播报中被打断：先挂起（不发新帧），等设备端判定——
+       *   用户说新话 → talk() 开新回合，自然作废旧回答；
+       *   没说话     → resume 消息，从断点续播。
+       * 非流式阶段（如短句播报/思考中）没有可续的东西，维持作废语义。 */
+      if (this.streaming) {
+        this.hold = this.streaming;
+        log(`[${this.sid}] 用户打断 → 暂停当前播报（等用户说话）`);
+      } else {
+        log(`[${this.sid}] 用户打断，作废上一轮回答`);
+        this.turn++;
+      }
     }
     this.recording = true;
     this.aborted = false;
     this.opus.reset();
     log(`[${this.sid}] 开始录音`);
+  }
+
+  /** 用户打断后没说话（设备端已本地静默）：把挂起的回答从断点续播 */
+  onRecResume() {
+    if (!this.recording) return;
+    this.recording = false;
+    this.opus.reset();                 /* 丢掉录音期间飘来的"静音"帧 */
+    if (this.hold && this.hold === this.turn) {   /* 挂起的回合仍然有效才续播 */
+      this.hold = 0;
+      log(`[${this.sid}] 用户没说话 → 从断点继续播报`);
+    } else {
+      this.hold = 0;
+      log(`[${this.sid}] 用户没说话 → 回到待命`);
+    }
   }
 
   async onRecStop() {
@@ -200,6 +226,7 @@ export class DeviceSession {
   async talk(pcm) {
     const cfg = this.ctx.config;
     const myTurn = ++this.turn;         /* 本回合编号：被新录音/断开作废时失效 */
+    if (this.hold) this.hold = 0;       /* 说新事了：旧回合的挂起一并作废 */
     this.busy = true;
 
     try {
@@ -218,6 +245,10 @@ export class DeviceSession {
       }
 
       this.send(build.stt(text));
+      /* 清掉历史上没等到回答就被打断的提问：旧请求若留在上下文里，
+       * 新问题容易被"接上"旧任务（前后串） */
+      while (this.history.length && this.history[this.history.length - 1].role === "user")
+        this.history.pop();
       this.history.push({ role: "user", content: text });
 
       /* 2) 大模型 + 语音合成，边生成边播 */
@@ -244,22 +275,47 @@ export class DeviceSession {
     let firstAt = 0;
     const t0 = Date.now();
 
+    this.streaming = myTurn;   /* 本回合可被"打断挂起"（hold），之后从断点续播 */
+
     const sender = (async () => {
       this.send(build.ttsStart());
       const t0s = Date.now();
       let audioMs = 0;                         /* 累计已发音频时长 */
-      while (producing || queue.length) {
+      let cur = null, ci = 0;                  /* 当前句 / 句内帧指针 */
+      let resend = true;                       /* 是否整句重发（首次 & 挂起恢复） */
+      let wasHeld = false;
+      while (producing || queue.length || cur) {
         if (this.stale(myTurn)) break;
-        if (!queue.length) { await sleep(8); continue; }
-        const { frames, text } = queue.shift();
-        this.send(build.sub(text, frames.length));
-        for (const f of frames) {
-          if (this.stale(myTurn)) break;
-          this.sendBin(f);
-          audioMs += FRAME_MS;
-          const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
-          await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
+        if (!cur) {
+          if (!queue.length) { await sleep(8); continue; }
+          cur = queue.shift();
+          ci = 0;
+          resend = true;
         }
+        if (this.hold === myTurn) {
+          /* 被打断挂起：不发帧；恢复时整句重发（设备端缓冲已清，
+           * 字幕与声音重新对齐，最多重听一句） */
+          resend = true;
+          ci = 0;
+          wasHeld = true;
+          await sleep(30);
+          continue;
+        }
+        if (resend) {
+          if (wasHeld) {                       /* 挂起恢复：重开设备端播放流 */
+            this.send(build.ttsStart());
+            wasHeld = false;
+          }
+          this.send(build.sub(cur.text, cur.frames.length));
+          resend = false;
+        }
+        if (this.stale(myTurn)) break;
+        this.sendBin(cur.frames[ci]);
+        audioMs += FRAME_MS;
+        ci++;
+        if (ci >= cur.frames.length) cur = null;
+        const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
+        await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
       this.send(build.ttsStop());
     })();
@@ -340,6 +396,8 @@ export class DeviceSession {
     } finally {
       producing = false;
       await sender;
+      if (this.streaming === myTurn) this.streaming = 0;
+      if (this.hold === myTurn) this.hold = 0;   /* 回合结束了，挂起一并清掉 */
     }
 
     if (full && !this.stale(myTurn)) {

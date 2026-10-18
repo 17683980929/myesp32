@@ -124,8 +124,9 @@ static void voice_start_rec(void)
     ESP_LOGI(TAG, "开始录音（松开 KEY 结束）");
 }
 
-/** 唤醒词触发后的自动聆听：VAD 判"说完"或超时后自动结束（不用按 KEY） */
-static void voice_start_rec_auto(void)
+/** 唤醒词触发后的自动聆听：VAD 判"说完"或超时后自动结束（不用按 KEY）。
+ *  bargein=1：播报中打断进入（录音开头有喇叭尾音，VAD 会跳过几帧） */
+static void voice_start_rec_auto(int bargein)
 {
     if (!audio_ready() || !ws_connected()) { voice_to(VOICE_IDLE); return; }
     if (ui_get_page() != UI_PAGE_HOME) {
@@ -134,10 +135,11 @@ static void voice_start_rec_auto(void)
     }
     s_sub_clear_at = 0;
     ui_set_sub("");
-    audio_rec_start_auto();
+    audio_rec_start_auto(bargein);
     ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
     voice_to(VOICE_REC);
-    ESP_LOGI(TAG, "唤醒应答后自动聆听（说完自动结束）");
+    ESP_LOGI(TAG, bargein ? "打断后直接聆听（说完自动结束）"
+                          : "唤醒应答后自动聆听（说完自动结束）");
 }
 
 static void voice_stop_rec(void)
@@ -147,6 +149,15 @@ static void voice_stop_rec(void)
     s_voice_deadline = now_ms() + 30000;
     voice_to(VOICE_THINK);
     ESP_LOGI(TAG, "结束录音，等服务器");
+}
+
+/** 没检测到有效说话：本地静默收尾 —— 不发录音、不说任何话。
+ *  如果刚才是在播报中打断进来的，服务器看到 resume 会从断点续播。 */
+static void voice_rec_void(void)
+{
+    audio_rec_stop();
+    voice_to(VOICE_IDLE);                               /* 先回空闲，再通知服务器 */
+    ws_send_json("{\"t\":\"rec\",\"s\":\"resume\"}");
 }
 
 /** 用户打断：停播放、清字幕与未显示队列，回空闲（随后 voice_start_rec 立即切到录音）。
@@ -271,8 +282,16 @@ static void on_button(btn_id_t id, btn_event_t ev)
             s_key_down_at = now_ms();
             s_key_voice = 0;
         } else if (ev == BTN_UP) {
-            /* 长按录音：松手结束（事件顺序：短按先 CLICK 再 UP） */
-            if (s_voice_state == VOICE_REC) voice_stop_rec();
+            /* 长按录音：松手结束（事件顺序：短按先 CLICK 再 UP）；
+             * 松手时没检测到有效说话 → 静默收尾（不发录音、不说"没听清"） */
+            if (s_voice_state == VOICE_REC) {
+                if (audio_rec_heard_speech()) {
+                    voice_stop_rec();
+                } else {
+                    ESP_LOGI(TAG, "松开 KEY 但没检测到说话 → 静默收尾");
+                    voice_rec_void();
+                }
+            }
             s_key_down_at = -1;
         } else {                                        /* BTN_CLICK：短按翻页 */
             if (s_voice_state != VOICE_IDLE) return;    /* 语音中不翻页 */
@@ -343,9 +362,9 @@ static void main_loop(void)
                 voice_to(VOICE_SPEAK);
                 ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
             } else if (s_voice_state == VOICE_SPEAK) {
-                ESP_LOGI(TAG, "播报中听到唤醒词 → 打断，优先聆听");
+                ESP_LOGI(TAG, "播报中听到唤醒词 → 打断（说新事=作废旧回答，没说=续播）");
                 voice_interrupt();
-                voice_start_rec_auto();
+                voice_start_rec_auto(1);
             }
             /* 录音/思考中唤醒未使能，理论上到不了这里 */
         }
@@ -354,19 +373,27 @@ static void main_loop(void)
         if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
             if (s_wake_greet) {
                 s_wake_greet = 0;
-                voice_start_rec_auto();
+                voice_start_rec_auto(0);
             } else {
                 s_sub_clear_at = now_ms() + 4000;
                 voice_to(VOICE_IDLE);
             }
         }
 
-        /* 自动聆听：VAD 判说完/没说话/超时 → 走正常提问流程 */
+        /* 自动聆听：VAD 判说完/没说话/超时 → 有效说话才走提问流程；
+         * 只有杂音/尾音碎片（或压根没说）→ 本地静默收尾，不送 ASR */
         if (s_voice_state == VOICE_REC) {
             int vs = audio_rec_vad_stop();
-            if (vs == 1)      { ESP_LOGI(TAG, "自动聆听结束（说完）");   voice_stop_rec(); }
-            else if (vs == 2) { ESP_LOGI(TAG, "自动聆听结束（没说话）"); voice_stop_rec(); }
-            else if (vs == 3) { ESP_LOGI(TAG, "自动聆听结束（超时）");   voice_stop_rec(); }
+            if (vs == 3 || (vs == 1 && audio_rec_heard_speech())) {
+                ESP_LOGI(TAG, "自动聆听结束（%s）", vs == 3 ? "超时" : "说完");
+                voice_stop_rec();
+            } else if (vs == 1) {
+                ESP_LOGI(TAG, "自动聆听结束（说完但没听到有效说话）→ 静默收尾");
+                voice_rec_void();
+            } else if (vs == 2) {
+                ESP_LOGI(TAG, "自动聆听结束（没说话）→ 静默收尾");
+                voice_rec_void();
+            }
         }
 
         /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音）；
