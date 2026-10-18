@@ -330,7 +330,7 @@ static void render_panel(void)
     int rtc_ok = (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) == 0);
 
     if (rtc_ok) {
-        char tbuf[12];
+        char tbuf[24];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", H, Mi, S);
         seg_time(PANEL_X, 12, tbuf, 34, 1);
     } else {
@@ -339,7 +339,7 @@ static void render_panel(void)
 
     /* 日期 + 星期 */
     static const char *WD[7] = { "SUN","MON","TUE","WED","THU","FRI","SAT" };
-    char dline[24];
+    char dline[40];
     if (rtc_ok)
         snprintf(dline, sizeof(dline), "%04d-%02d-%02d %s", Y, Mo, D, WD[Wd % 7]);
     else
@@ -363,8 +363,9 @@ static void render_panel(void)
             draw_text(vx, 89, info->weather, 1, 1);
             wx = text_w(info->weather, 1);
         }
-        if (info->weather_temp > -99 && vx + wx + 4 + 30 <= LCD_W - 8) {
-            char wt[12];
+        if (info->weather_temp > -99 && info->weather_temp < 100 &&
+            vx + wx + 4 + 30 <= LCD_W - 8) {
+            char wt[24];
             snprintf(wt, sizeof(wt), " %d`C", info->weather_temp);
             draw_text(vx + wx + 4, 89, wt, 1, 1);
         }
@@ -375,9 +376,9 @@ static void render_panel(void)
     /* 温度 */
     icon_therm(PANEL_X, 114, 22, 1);
     draw_cjk(PANEL_X + 32, 116, "温度", 1, 1);
-    char tb[16];
-    if (t > -50) snprintf(tb, sizeof(tb), "%.1f`C", t);
-    else         snprintf(tb, sizeof(tb), "--`C");
+    char tb[32];
+    if (t > -50 && t < 150) snprintf(tb, sizeof(tb), "%.1f`C", t);
+    else                    snprintf(tb, sizeof(tb), "--`C");
     draw_text(vx, 116, tb, 2, 1);
 
     /* 湿度 */
@@ -391,7 +392,7 @@ static void render_panel(void)
     /* 电量 */
     icon_battery(PANEL_X, 178, 26, bat, 1);
     draw_cjk(PANEL_X + 32, 180, "电量", 1, 1);
-    char bb[12];
+    char bb[16];
     snprintf(bb, sizeof(bb), "%d%%", bat);
     draw_text(vx, 180, bb, 2, 1);
 
