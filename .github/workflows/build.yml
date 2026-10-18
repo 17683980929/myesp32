@@ -21,6 +21,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 仓库公开：WiFi 凭据只存在于 GitHub Secrets，编译时注入 sdkconfig.defaults，
+      # 不会进入任何提交。Secrets 在仓库 Settings → Secrets and variables → Actions 配置。
+      - name: Inject WiFi/server settings from repo secrets
+        working-directory: firmware
+        shell: bash
+        env:
+          WIFI_SSID: ${{ secrets.WIFI_SSID }}
+          WIFI_PASSWORD: ${{ secrets.WIFI_PASSWORD }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+          if [ -n "$WIFI_SSID" ]; then
+            printf 'CONFIG_WIFI_SSID="%s"\n' "$(esc "$WIFI_SSID")" >> sdkconfig.defaults
+            printf 'CONFIG_WIFI_PASSWORD="%s"\n' "$(esc "$WIFI_PASSWORD")" >> sdkconfig.defaults
+            echo "WiFi 凭据已注入（来自仓库 Secrets）"
+          else
+            echo "::warning::未配置仓库 Secret WIFI_SSID，固件将使用默认值 MyWiFi"
+          fi
+          if [ -n "$SERVER_HOST" ]; then
+            printf 'CONFIG_SERVER_HOST="%s"\n' "$(esc "$SERVER_HOST")" >> sdkconfig.defaults
+            echo "SERVER_HOST 已注入：$SERVER_HOST"
+          fi
+
       - name: Build
         working-directory: firmware
         shell: bash

@@ -19,12 +19,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry++ < 20) {
-            esp_wifi_connect();
+        /* 永远重试：路由器重启、信号恢复、SSID 后补等场景都能自动回来 */
+        s_retry++;
+        esp_wifi_connect();
+        if (s_retry <= 10 || s_retry % 50 == 0)
             ESP_LOGW(TAG, "断开，重连(%d)", s_retry);
-        } else {
-            ESP_LOGE(TAG, "重连次数用尽");
-        }
         xEventGroupClearBits(wifi_events, WIFI_EVT_GOT_IP);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;

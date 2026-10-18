@@ -30,12 +30,42 @@ static const char *TAG = "main";
 static int s_func_since = 0;
 static volatile int s_dirty = 1;        /* 需要重绘 */
 
+/* ── 服务器校时 ────────────────────────────────────────────────────── */
+
+/** 用服务器下发的 info 校准 RTC；偏差大于 90 秒才写，避免秒位被反复重置 */
+static void sync_time_from_server(void)
+{
+    dev_info_t *in = ws_client_info();
+    if (in->mm < 1 || in->mm > 12 || in->dd < 1 || in->dd > 31) return;
+
+    int hh = 0, mi = 0;
+    if (sscanf(in->time, "%d:%d", &hh, &mi) != 2) return;
+    if (hh < 0 || hh > 23 || mi < 0 || mi > 59) return;
+
+    int Y, Mo, D, Wd, H, M, S;
+    if (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &M, &S) != 0) return;   /* 年份沿用 RTC */
+
+    if (Mo == in->mm && D == in->dd) {
+        int rtc_sod = H * 3600 + M * 60 + S;
+        int srv_sod = hh * 3600 + mi * 60;
+        int diff = rtc_sod > srv_sod ? rtc_sod - srv_sod : srv_sod - rtc_sod;
+        if (diff > 43200) diff = 86400 - diff;      /* 跨午夜 */
+        if (diff <= 90) return;
+    }
+
+    if (pcf85063_set(Y, in->mm, in->dd, hh, mi, 0) == 0)
+        ESP_LOGI(TAG, "RTC 校时 → %04d-%02d-%02d %02d:%02d", Y, in->mm, in->dd, hh, mi);
+}
+
 /* ── 服务器事件 → UI ───────────────────────────────────────────────── */
 
 static void on_ws_event(const ws_event_t *ev)
 {
     switch (ev->kind) {
     case WS_EVT_INFO:
+        sync_time_from_server();
+        s_dirty = 1;
+        break;
     case WS_EVT_SUB:
         ui_set_sub(ev->text);
         s_dirty = 1;

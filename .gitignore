@@ -13,6 +13,7 @@ firmware/managed_components/
 
 # ── 服务器本地配置（以后会有密钥，绝不进仓库）────────────────
 server/config.json
+server/*.log
 
 # ── 临时文件 ─────────────────────────────────────────────────
 w.json
