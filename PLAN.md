@@ -2,7 +2,7 @@
 
 > 自研固件 + 自建服务器的 ESP32-S3 桌面宠物
 >
-> 状态：方案待确认　｜　最后更新：2026-10-18
+> 状态：M2/M3/M6 已真机验证；SoftAP 配网门户已写完待验证　｜　最后更新：2026-10-18
 
 ---
 
@@ -413,7 +413,7 @@ steps:
 | 天气数据源 | **wttr.in**（免注册） | 实测可用。`lang=zh` 参数不可靠（返回英文），已在服务器侧自建英文→中文映射表 |
 | TTS 引擎 | **百度翻译接口**（免费） | 已验证，有限流，已做退避重试 |
 | 服务器位置 | **公网云服务器** | 你的 Windows Server 2025 + Node.js 直接能跑（Node 很轻，不需要 Linux/torch） |
-| WiFi 配网 | **SoftAP 配网页** | 设备开热点，手机连上填 WiFi，存 NVS |
+| WiFi 配网 | **SoftAP 配网页** | 设备开热点，手机连上填 WiFi，存 NVS（已实现 `net/wifi_portal.c`，开机长按 KEY 可重配） |
 
 ### 公网部署必须做的两件事
 
@@ -438,23 +438,25 @@ steps:
 | 阶段 | 状态 |
 |---|---|
 | **M1 服务器骨架** | ✅ **已完成并验证**（见下） |
-| **M2 固件骨架** | 🟡 **代码已写完**，待云端编译验证 |
-| **M3 主页渲染** | 🟡 随 M2 一起写了（等真机验证） |
+| **M2 固件骨架** | ✅ 屏幕/按键/传感器/RTC 真机验证；WiFi+WS 待配网后实测 |
+| **M3 主页渲染** | ✅ 真机验证：桌宠、时钟（秒级）、日期、温湿度、电量 |
 | M4 语音对话 | ⬜ 服务器侧已就绪，等固件音频 |
 | M5 Lua 解释器 | ⬜ |
-| **M6 功能页** | 🟡 页面已写（ASCII 版），中文"敬请期待"待生成点阵 |
-| M7 收尾 | ⬜（WiFi 用 menuconfig 配置，SoftAP 配网待做） |
+| **M6 功能页** | ✅ 真机验证：KEY 切页 → 敬请期待 → 5 秒回主页 |
+| **配网门户** | 🟡 代码已写完，待真机验证（无配置 / 连不上 / 长按 KEY → 热点里配网） |
+| M7 收尾 | 🟡 CI 一键出固件 ✅；烧录脚本、文档待补 |
 
 ### M2 固件（已写完，`firmware/`）
 
 ```
 firmware/
 ├── CMakeLists.txt / partitions.csv / sdkconfig.defaults
-├── main/{main.c, app_config.h}
+├── main/main.c
 ├── components/
-│   ├── hw/    lcd.c(ST7305+1bpp帧缓冲) buttons.c(KEY=18/BOOT=0) sensors.c(SHTC3+电池)
-│   ├── net/   wifi_sta.c ws_client.c(esp_websocket_client) + Kconfig.projbuild
-│   └── ui/    ui.c(绘制+布局+桌宠动画) font5x7.c pet_frames.c
+│   ├── hw/    lcd.c(ST7305+1bpp) buttons.c(KEY=18/BOOT=0) sensors.c(SHTC3+电池)
+│   │         pcf85063.c(RTC, I2C 0x51)
+│   ├── net/   wifi_sta.c wifi_cfg.c(NVS配置) wifi_portal.c(配网门户) ws_client.c + Kconfig
+│   └── ui/    ui.c(绘制+布局+桌宠动画) font5x7.c pet_frames.c font_cjk.c(中文16×16,gen_cjk.ps1生成)
 └── .github/workflows/build.yml   ← 云端编译（espressif/idf:release-v5.5）
 ```
 
@@ -464,7 +466,9 @@ firmware/
 - 桌宠帧 1=墨、硬件 1=白 → 全工程约定 `ink=1` 黑，blit 不取反
 - 字体：自写 5x7 点阵（58 字形 406 字节），支持 1/2/3 倍放大；时钟用 7 段绘制
 - 屏幕右栏用**图标+数字**（温度计/水滴/电池/天气图标程序化绘制），绕开中文字体
-- 日期/星期由服务器下发数字字段（`mm/dd/wday`），设备渲染成 `10/18 SUN`
+- 时间走本地 PCF85063 RTC（7 段绘制 HH:MM:SS + 全日期 + 星期），服务器连上后自动校时（偏差超过 90 秒才会写回）
+- 中文标签：16×16 点阵 font_cjk（tools/gen_cjk.ps1 生成，微软雅黑），共 33 字
+- 配网门户：开放热点 MyEsp32-XXXX + DNS 劫持 + 配网页（扫附近 WiFi / 填服务器地址），凭据存 NVS，重启生效
 
 ### M1 实测结果
 
