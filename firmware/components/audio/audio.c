@@ -5,10 +5,12 @@
  *   - I2S 先按 TDM（4 槽）建通道；esp_codec_dev 以 {16000, 2, 16} 打开编解码器时，
  *     会把通道重配成「2 槽 × 16bit」，与播放帧一致（全双工共用时钟）。
  *   - 麦克风 ES7210 四路全选（与出厂程序一致）。mic 数 ≥3 时驱动把芯片切到
- *     TDM 输出（REG12=0x02），且 2 通道读取时槽宽减半到 8bit：每个 16bit 字
- *     = 2 个 8bit 槽样本（偶数字 m1|m2，奇数字 m3|m4）。
- *     （此前只选 MIC1|MIC2 → 芯片走普通 I2S 输出，与控制器 TDM 帧不匹配，
- *      实测录音电平异常偏低约 20dB、BOOT 回声不可闻。）
+ *     TDM 输出（REG12=0x02），且 2 通道读取时槽宽减半到 8bit。
+ *     串口实测本板：32bit 帧 = [0xFF][活麦A][0xFF][活麦B] —— 槽 1/3 是真麦克风
+ *     的 8bit 数据（直流偏置约 0xD0，说话时随音量摆动），槽 0/2 恒 0xFF（无麦）。
+ *     上行/回放统一取槽 1：去直流（一阶跟踪）→ 放大 → 16bit 单声道。
+ *     （此前只选 MIC1|MIC2 → 芯片走普通 I2S 输出，帧结构不匹配，
+ *      且恰好是两个"死"槽，实测录音电平异常偏低、BOOT 回声不可闻。）
  *   - 喇叭 ES8311 走 DAC，PA 使能在 AUD_PA_PIN（GPIO46）。
  *
  * 上行：麦克风 20ms×3 → 解包单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
@@ -70,8 +72,8 @@ static volatile int   s_playing        = 0;
 
 /* ── 麦克风任务（录音 / 直通自检）────────────────────────────────────── */
 
-/* ES7210 TDM 打包布局：每个 16bit 字 = 2 个 8bit 槽样本，
- * 偶数字 = m1|m2，奇数字 = m3|m4。分槽打印电平，判断真麦克风接在哪个输入。 */
+/* 槽位诊断：每个 16bit 字 = 2 个 8bit 槽样本（高字节 = 槽0/2，低字节 = 槽1/3）。
+ * 实测：槽 0/2 恒 0xFF（板上无对应麦克风），槽 1/3 为真实麦克风。 */
 static void slot_rms(const int16_t *w, int words, float rms[4])
 {
     long acc[4] = { 0 };
@@ -86,6 +88,19 @@ static void slot_rms(const int16_t *w, int words, float rms[4])
     for (int k = 0; k < 4; k++) rms[k] = sqrtf((float)acc[k] / n);
 }
 
+/* 槽位 8bit → 16bit PCM：一阶去直流（初始偏置 ≈0xD0<<4）+ 放大 16 倍。
+ * 满摆幅 ±2032×16 ≈ ±32512，留了余量并有保护，不会削顶爆音。 */
+static int32_t s_dc = 3328;
+static inline int16_t slot8_to_pcm(uint8_t b)
+{
+    int32_t x = (int32_t)b << 4;             /* ×16 定点 */
+    s_dc += (x - s_dc) >> 6;                 /* 截止 ~40Hz @16kHz */
+    int32_t y = (x - s_dc) * 16;
+    if (y > 32000) y = 32000;
+    else if (y < -32000) y = -32000;
+    return (int16_t)y;
+}
+
 static void mic_task(void *arg)
 {
     OpusEncoder *enc = NULL;
@@ -96,12 +111,18 @@ static void mic_task(void *arg)
     int frames = 0;
 
     for (;;) {
-        /* 自检模式：麦克风 → 喇叭（BOOT 按住）。原始数据原样直通
-         * （与出厂程序录音回放同路径），并分槽打印电平诊断。 */
+        /* 自检模式：麦克风 → 喇叭（BOOT 按住）。
+         * 取槽 1（偶数字低 8bit 活麦）→ 去直流+放大 → 单声道复制双声道回放。 */
         if (s_echo_on) {
+            static int16_t ost[READ_CHUNK * 2];
             static int echo_n = 0;
             if (esp_codec_dev_read(s_rec, in, sizeof(in)) == ESP_CODEC_DEV_OK) {
-                esp_codec_dev_write(s_play, in, sizeof(in));
+                for (int i = 0; i < READ_CHUNK; i++) {
+                    int16_t v = slot8_to_pcm((uint8_t)(in[i * 2] & 0xFF));
+                    ost[i * 2] = v;
+                    ost[i * 2 + 1] = v;
+                }
+                esp_codec_dev_write(s_play, ost, sizeof(ost));
                 if (++echo_n == 1) {
                     ESP_LOGI(TAG, "自检原始样本: %04X %04X %04X %04X",
                              (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
@@ -147,10 +168,10 @@ static void mic_task(void *arg)
             continue;
         }
 
-        /* 解包：每个 16bit 字含 2 个 8bit 槽样本。暂取偶数字（m1）高 8bit 作单声道，
-         * 依诊断日志确认真正的麦克风槽位后定稿（只需改 1 行）。 */
+        /* 解包：取偶数字低 8bit（槽 1 = 活麦A）→ 去直流+放大 → 单声道。
+         * 顶槽诊断日志（槽位/原始样本）保留，供后续复核或切换槽位。 */
         for (int i = 0; i < READ_CHUNK; i++)
-            mono[fill + i] = (int16_t)((int8_t)(in[i * 2] >> 8) * 256);
+            mono[fill + i] = slot8_to_pcm((uint8_t)(in[i * 2] & 0xFF));
         fill += READ_CHUNK;
 
         if (fill >= FRAME_SAMPLES) {
