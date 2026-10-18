@@ -27,6 +27,7 @@
 #include "ws_client.h"
 #include "ui.h"
 #include "audio.h"
+#include "wake.h"
 
 static const char *TAG = "main";
 
@@ -86,9 +87,12 @@ static void subq_push(const char *text, int at_frame, int n_frames)
 
 static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
+static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进入自动聆听） */
+
 static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
+    wake_set_enabled(v == VOICE_IDLE);   /* 只在空闲时听唤醒词（说话/录音中会自触发） */
     switch (v) {
     case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
     case VOICE_THINK: ui_set_voice(UI_VOICE_THINKING);  break;
@@ -118,6 +122,22 @@ static void voice_start_rec(void)
     ESP_LOGI(TAG, "开始录音（松开 KEY 结束）");
 }
 
+/** 唤醒词触发后的自动聆听：VAD 判"说完"或超时后自动结束（不用按 KEY） */
+static void voice_start_rec_auto(void)
+{
+    if (!audio_ready() || !ws_connected()) { voice_to(VOICE_IDLE); return; }
+    if (ui_get_page() != UI_PAGE_HOME) {
+        ui_set_page(UI_PAGE_HOME);
+        s_func_since = 0;
+    }
+    s_sub_clear_at = 0;
+    ui_set_sub("");
+    audio_rec_start_auto();
+    ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
+    voice_to(VOICE_REC);
+    ESP_LOGI(TAG, "唤醒应答后自动聆听（说完自动结束）");
+}
+
 static void voice_stop_rec(void)
 {
     audio_rec_stop();
@@ -132,6 +152,7 @@ static void voice_stop_rec(void)
  *  on_ws_audio 的 REC/THINK 过滤丢弃。 */
 static void voice_interrupt(void)
 {
+    s_wake_greet = 0;
     audio_play_stop();
     audio_rec_stop();
     subq_clear();
@@ -302,10 +323,35 @@ static void main_loop(void)
             voice_start_rec();
         }
 
-        /* 播放结束 → 回空闲（字幕保留 4 秒） */
+        /* 语音唤醒：空闲时听到"你好小智" → 本地应答"我在" → 应答完自动聆听 */
+        if (s_voice_state == VOICE_IDLE && !s_wake_greet && wake_take_hit()) {
+            audio_play_greeting();
+            s_wake_greet = 1;
+            s_sub_clear_at = 0;
+            subq_clear();
+            sub_cur_clear();
+            ui_set_sub("");
+            voice_to(VOICE_SPEAK);
+            ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
+        }
+
+        /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录 */
         if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
-            s_sub_clear_at = now_ms() + 4000;
-            voice_to(VOICE_IDLE);
+            if (s_wake_greet) {
+                s_wake_greet = 0;
+                voice_start_rec_auto();
+            } else {
+                s_sub_clear_at = now_ms() + 4000;
+                voice_to(VOICE_IDLE);
+            }
+        }
+
+        /* 自动聆听：VAD 判说完/没说话/超时 → 走正常提问流程 */
+        if (s_voice_state == VOICE_REC) {
+            int vs = audio_rec_vad_stop();
+            if (vs == 1)      { ESP_LOGI(TAG, "自动聆听结束（说完）");   voice_stop_rec(); }
+            else if (vs == 2) { ESP_LOGI(TAG, "自动聆听结束（没说话）"); voice_stop_rec(); }
+            else if (vs == 3) { ESP_LOGI(TAG, "自动聆听结束（超时）");   voice_stop_rec(); }
         }
 
         /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音）；
@@ -326,7 +372,12 @@ static void main_loop(void)
             if (s_sub_cur[0] && s_sub_cur_frames > 0) {
                 int pages = ui_sub_pages(s_sub_cur);
                 if (pages > 1) {
-                    int prog = played - s_sub_cur_at;
+                    /* 翻页滞后：TTS 句首有静音、句尾略慢，纯按比例翻会早几个字
+                     * （实测反馈：上一页最后几个字还没念完就翻了）→ 留 10% 余量 */
+                    int lag = s_sub_cur_frames / 10;
+                    if (lag < 3) lag = 3;
+                    if (lag > 14) lag = 14;
+                    int prog = played - s_sub_cur_at - lag;
                     if (prog < 0) prog = 0;
                     if (prog > s_sub_cur_frames) prog = s_sub_cur_frames;
                     int page = (int)((long long)prog * pages / s_sub_cur_frames);
@@ -413,8 +464,11 @@ void app_main(void)
     ui_init();
     ui_render();
 
-    if (audio_init() != ESP_OK)
+    if (audio_init() != ESP_OK) {
         ESP_LOGE(TAG, "音频初始化失败（语音对话不可用）");
+    } else if (wake_init() != 0) {
+        ESP_LOGW(TAG, "语音唤醒不可用（其余功能正常）");
+    }
 
     ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
 

@@ -5,4 +5,6 @@ otadata,   data, ota,      0xF000,    0x2000
 phy_init,  data, phy,      0x11000,   0x1000
 ota_0,     app,  ota_0,    0x20000,   0x640000
 ota_1,     app,  ota_1,    0x660000,  0x640000
-fatfs,     data, fat,      0xCA0000,  0x360000
+# 语音模型（ESP-SR：唤醒词）——烧录分区表 + srmodels.bin 即可，NVS 不受影响
+model,     data, spiffs,   0xCA0000,  0x300000
+fatfs,     data, fat,      0xFA0000,  0x60000

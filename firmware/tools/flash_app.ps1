@@ -13,6 +13,12 @@
 #       newline, merging a comment with the following code line (this happened once:
 #       the "$bytes = ..." line was eaten by the comment above it, leaving $bytes
 #       null). ASCII-only text is immune to any codepage misinterpretation.
+#
+# v2026-10: layout v2 (model partition) is out. The merged image is now padded with
+#           ~11 MB of 0xFF between app and model, so this app-only slicer against a
+#           v2 merged zip writes a lot of padding into the unused ota_1/fatfs area
+#           (harmless but slow) and does not bring the model partition. Deploying v2
+#           the first time goes through flash_bins.ps1 instead.
 
 param(
     [Parameter(Mandatory = $true)][string]$Zip,

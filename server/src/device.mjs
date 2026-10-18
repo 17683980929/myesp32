@@ -27,6 +27,30 @@ function withTimeout(p, ms) {
   ]).finally(() => clearTimeout(t));
 }
 
+/* ── "要多久"解析（用户点名时长的长内容 → 用续讲把长度补到目标）───────
+ * 例："讲一个5分钟的白雪公主" → 目标 5×240 = 1200 字。
+ * 普通问答解析结果为 0，不续讲 —— 长度跟着内容走。 */
+const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+function durationTargetChars(text) {
+  let minutes = 0;
+  let m = text.match(/(\d+(?:\.\d+)?)\s*分钟/);
+  if (m) minutes = parseFloat(m[1]);
+  if (!minutes) {
+    m = text.match(/([一二两三四五六七八九十])\s*分钟/);
+    if (m) minutes = CN_NUM[m[1]] || 0;
+  }
+  if (!minutes) {
+    m = text.match(/半小时|半个小时/);
+    if (m) minutes = 30;
+  }
+  if (!minutes) {
+    m = text.match(/(\d+(?:\.\d+)?|[一两二])\s*个?\s*小时/);
+    if (m) minutes = (CN_NUM[m[1]] || parseFloat(m[1])) * 60;
+  }
+  if (!minutes || minutes < 1 || minutes > 60) return 0;
+  return Math.round(minutes * 240);
+}
+
 /* ── 音频下发节拍控制 ─────────────────────────────────────────────────
  * 目标：设备端始终保持 ~2 秒左右缓冲。
  * 教训：按 60ms/帧的"实时"节奏发是错误的 —— setTimeout 实际 ≥60ms
@@ -242,37 +266,73 @@ export class DeviceSession {
 
     let full = "";
     let sent = 0;
+    const genOpts = {
+      apiKey: cfg.llm.apiKey,
+      baseUrl: cfg.llm.baseUrl,
+      model: cfg.llm.model,
+      maxTokens: cfg.llm.maxTokens,
+      temperature: cfg.llm.temperature,
+    };
+
+    /* 单句：累计文本 + 合成 + 入队；返回 false = 合成失败，应停止后续 */
+    const pushSentence = async (sentence) => {
+      full += sentence;
+      if (!firstAt) {
+        firstAt = Date.now();
+        log(`[${this.sid}] 首句延迟 ${firstAt - t0}ms`);
+      }
+      /* 单句合成加超时：卡住的句子不能拖死整段回答（设备端会沉默卡"说话中"） */
+      let frames;
+      try {
+        ({ frames } = await withTimeout(textToOpusFrames(sentence, { speed: cfg.tts.speed }), TTS_TIMEOUT_MS));
+      } catch (e) {
+        log(`[${this.sid}] 句子合成失败: ${e.message}`);
+        if (sent === 0) throw e;      /* 一句都没成 → 走道歉流程 */
+        return false;                 /* 已有内容 → 干净收尾，设备播完队列自然结束 */
+      }
+      sent++;
+      queue.push({ frames, text: sentence.trim() });
+      return true;
+    };
+
     try {
       for await (const sentence of chatSentences({
-        apiKey: cfg.llm.apiKey,
-        baseUrl: cfg.llm.baseUrl,
-        model: cfg.llm.model,
+        ...genOpts,
         messages: [
           { role: "system", content: cfg.llm.systemPrompt },
           ...this.history.slice(-8),
         ],
-        maxTokens: cfg.llm.maxTokens,
-        temperature: cfg.llm.temperature,
       })) {
         if (this.stale(myTurn)) break;
-        full += sentence;
+        if (!(await pushSentence(sentence))) break;
+      }
 
-        if (!firstAt) {
-          firstAt = Date.now();
-          log(`[${this.sid}] 首句延迟 ${firstAt - t0}ms`);
+      /* 用户点名了时长（"5 分钟的故事"）而第一轮没写够 → 续讲补到目标长度。
+       * 音频按实时节奏发送（可能要好几分钟），续讲生成只要几秒，并行不占耳；
+       * 被打断（stale）随时停；最多补 3 轮，防止模型原地绕圈。 */
+      const targetChars = durationTargetChars(userText);
+      for (let round = 1; targetChars > 0 && round <= 3 && !this.stale(myTurn) &&
+                         full.length < targetChars * 0.9; round++) {
+        const need = Math.max(120, targetChars - full.length);
+        log(`[${this.sid}] 续讲第 ${round} 轮（已 ${full.length} 字 / 目标 ${targetChars} 字，还差约 ${need} 字）`);
+        let added = 0;
+        for await (const sentence of chatSentences({
+          ...genOpts,
+          messages: [
+            { role: "system", content: cfg.llm.systemPrompt },
+            ...this.history.slice(-8),
+            { role: "assistant", content: full },
+            { role: "user",
+              content: `继续把刚才的回答讲完整：从刚才断掉的地方接着往下讲，不要重复已经讲过的内容，` +
+                       `再多讲大约 ${need} 字（用户要的时长还没到），除非内容真的已经讲完了，` +
+                       `否则不要做总结收尾，直接接着讲就行。` },
+          ],
+        })) {
+          if (this.stale(myTurn)) break;
+          if (!(await pushSentence(sentence))) break;
+          added += sentence.length;
         }
-
-        /* 单句合成加超时：卡住的句子不能拖死整段回答（设备端会沉默卡"说话中"） */
-        let frames;
-        try {
-          ({ frames } = await withTimeout(textToOpusFrames(sentence, { speed: cfg.tts.speed }), TTS_TIMEOUT_MS));
-        } catch (e) {
-          log(`[${this.sid}] 句子合成失败: ${e.message}`);
-          if (sent === 0) throw e;      /* 一句都没成 → 走道歉流程 */
-          break;                        /* 已有内容 → 干净收尾，设备播完队列自然结束 */
-        }
-        sent++;
-        queue.push({ frames, text: sentence.trim() });
+        if (added < 20) break;        /* 模型没得讲了，别硬凑 */
       }
     } catch (e) {
       log(`[${this.sid}] LLM 失败: ${e.message}`);

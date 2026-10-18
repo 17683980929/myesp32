@@ -84,6 +84,7 @@ jobs:
             firmware/build/ota_data_initial.bin
             firmware/build/edge_agent.bin
             firmware/build/myesp32.bin
+            firmware/build/srmodels/srmodels.bin
             firmware/build/flash_args
           if-no-files-found: warn
           retention-days: 14

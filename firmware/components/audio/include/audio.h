@@ -26,6 +26,13 @@ void audio_play_stop(void);                             /* 立即停止（断线
 int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
 void audio_play_stats(int *pushed, int *played);        /* 帧计数（tts_start 清零）：已入队 / 已播 */
 
+/* ── 唤醒应答（本地内置"我在"，不经过网络；播完走 audio_play_finished()）── */
+void audio_play_greeting(void);
+
+/* ── 自动聆听（唤醒流程：录音 + 静音检测自动结束，无需按 KEY）────────── */
+void audio_rec_start_auto(void);
+int  audio_rec_vad_stop(void);  /* 读一次即清：1=说完 2=没说话 3=超时 0=继续 */
+
 /* ── 自检 ───────────────────────────────────────────────────────────── */
 void audio_echo_set(int on);    /* 按住 BOOT：录音到 PSRAM，松手回放（半双工，防啸叫） */
 int  audio_echo_active(void);

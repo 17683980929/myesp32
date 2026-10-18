@@ -38,6 +38,8 @@
 #include "hw_config.h"
 #include "sensors.h"
 #include "ws_client.h"
+#include "wake.h"
+#include "greeting_opus.h"
 
 static const char *TAG = "audio";
 
@@ -79,6 +81,19 @@ static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） 
  * （服务器句子合成超时 12 秒；正常到不了）→ 判本轮结束并复位，
  * 防止服务器中途没了 tts_stop 时主状态机永远停在"说话中"。 */
 #define PLAY_WATCHDOG_MS 15000
+
+/* ── 自动聆听（唤醒流程）：静音检测自动结束录音 ─────────────────────── */
+
+#define VAD_SPEECH_RMS   600     /* 高于此电平判定"在说话"（空闲底噪 ≈150~350） */
+#define VAD_SIL_FRAMES   22      /* 说完后连续安静 22×60ms ≈1.3 秒 → 结束 */
+#define VAD_NOSPEECH_MS  6000    /* 一直没说话 6 秒 → 放弃 */
+#define VAD_MAX_MS       15000   /* 总时长上限 15 秒 */
+
+static volatile int s_rec_auto    = 0;   /* 唤醒流程的自动录音 */
+static volatile int s_vad_stop    = 0;   /* 0=继续 1=说完 2=没说话 3=超时 */
+static int          s_vad_spoke   = 0;   /* 本段录音里已检测到说话 */
+static int          s_vad_sil_run = 0;   /* 连续安静帧数 */
+static volatile int s_rec_auto_at = 0;   /* 自动录音起始时刻（ms） */
 
 /* ── BOOT 自检（半双工语音便签：按住录音，松手回放）──────────────────── */
 
@@ -152,6 +167,21 @@ static void mic_task(void *arg)
 
         if (!s_rec_on) {
             fill = 0;
+            /* 空闲且唤醒开启时常读麦克风喂唤醒词（与上行走同一个麦，同样 ×8 增益） */
+            if (wake_ready() && wake_enabled()) {
+                if (esp_codec_dev_read(s_rec, in, sizeof(in)) == ESP_CODEC_DEV_OK) {
+                    for (int i = 0; i < READ_CHUNK; i++) {
+                        int32_t v = (int32_t)in[i * 2] * 8;
+                        if (v > 32000) v = 32000;
+                        else if (v < -32000) v = -32000;
+                        mono[i] = (int16_t)v;
+                    }
+                    wake_feed(mono, READ_CHUNK);
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
+                continue;
+            }
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
@@ -203,11 +233,29 @@ static void mic_task(void *arg)
                     ESP_LOGI(TAG, "上行槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f",
                              sr[0], sr[1], sr[2], sr[3]);
                 }
-                if (frames == 1 || frames % 10 == 0) {
-                    double acc = 0;                       /* double 防 32bit 溢出 */
-                    for (int i = 0; i < FRAME_SAMPLES; i++) acc += (double)mono[i] * mono[i];
-                    ESP_LOGI(TAG, "上行第 %d 帧: %d 字节, 电平 RMS=%.0f",
-                             frames, n, sqrt(acc / FRAME_SAMPLES));
+                double acc = 0;                       /* double 防 32bit 溢出 */
+                for (int i = 0; i < FRAME_SAMPLES; i++) acc += (double)mono[i] * mono[i];
+                float rms = (float)sqrt(acc / FRAME_SAMPLES);
+                if (frames == 1 || frames % 10 == 0)
+                    ESP_LOGI(TAG, "上行第 %d 帧: %d 字节, 电平 RMS=%.0f", frames, n, rms);
+
+                /* 自动聆听：VAD 判"说完"（或一直没说话/超时）→ 由 main 收尾 */
+                if (s_rec_auto && !s_vad_stop) {
+                    int t = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+                    if (rms > VAD_SPEECH_RMS) {
+                        s_vad_spoke = 1;
+                        s_vad_sil_run = 0;
+                    } else if (s_vad_spoke && ++s_vad_sil_run >= VAD_SIL_FRAMES) {
+                        s_vad_stop = 1;
+                        ESP_LOGI(TAG, "自动聆听：安静 %.1f 秒 → 判说完", VAD_SIL_FRAMES * 0.06f);
+                    } else if (!s_vad_spoke && t - s_rec_auto_at > VAD_NOSPEECH_MS) {
+                        s_vad_stop = 2;
+                        ESP_LOGW(TAG, "自动聆听：%d 秒没等到说话", VAD_NOSPEECH_MS / 1000);
+                    }
+                    if (!s_vad_stop && t - s_rec_auto_at > VAD_MAX_MS) {
+                        s_vad_stop = 3;
+                        ESP_LOGW(TAG, "自动聆听：超 %d 秒强制结束", VAD_MAX_MS / 1000);
+                    }
                 }
             } else {
                 ESP_LOGW(TAG, "opus_encode 返回 %d", n);
@@ -298,9 +346,29 @@ static void play_task(void *arg)
 
 int audio_ready(void) { return s_ready; }
 
-void audio_rec_start(void) { s_enc_reset = 1; s_rec_on = 1; }
-void audio_rec_stop(void)  { s_rec_on = 0; }
+void audio_rec_start(void) { s_rec_auto = 0; s_vad_stop = 0; s_enc_reset = 1; s_rec_on = 1; }
+void audio_rec_stop(void)  { s_rec_on = 0; s_rec_auto = 0; }
 int  audio_rec_active(void) { return s_rec_on; }
+
+/* 唤醒后的自动聆听：录音 + 静音检测（VAD）自动结束 */
+void audio_rec_start_auto(void)
+{
+    s_rec_auto    = 1;
+    s_vad_stop    = 0;
+    s_vad_spoke   = 0;
+    s_vad_sil_run = 0;
+    s_rec_auto_at = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_enc_reset   = 1;
+    s_rec_on      = 1;
+}
+
+/* 读一次即清：1=说完 2=没说话 3=超时 0=继续录 */
+int audio_rec_vad_stop(void)
+{
+    int v = s_vad_stop;
+    if (v) s_vad_stop = 0;
+    return v;
+}
 
 void audio_play_reset(void)
 {
@@ -330,6 +398,35 @@ void audio_play_push(const uint8_t *opus, size_t len)
 }
 
 void audio_play_finish(void) { if (s_ready) s_play_finishing = 1; }
+
+/* 本地内置应答（唤醒词"我在"）：没有 tts_stop，直接标记收尾，队列播完即完成 */
+void audio_play_greeting(void)
+{
+    if (!s_ready || !s_playq) return;
+    play_frame_t f;
+
+    s_play_finishing = 0;
+    s_play_done      = 0;
+    s_stream_open    = 1;
+    s_stream_act_ms  = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_frames_pushed  = 0;
+    s_frames_played  = 0;
+    xQueueReset(s_playq);
+
+    int off = 0, pushed = 0;
+    for (int i = 0; i < G_GREETING_FRAMES; i++) {
+        int len = G_GREETING_LENS[i];
+        if (len <= 0 || len > MAX_OPUS_FRAME || off + len > (int)sizeof(G_GREETING_BLOB)) break;
+        f.len = (uint16_t)len;
+        memcpy(f.data, G_GREETING_BLOB + off, (size_t)len);
+        if (xQueueSend(s_playq, &f, 0) != pdTRUE) break;
+        off += len;
+        pushed++;
+    }
+    s_frames_pushed  = pushed;
+    s_play_finishing = 1;
+    ESP_LOGI(TAG, "本地应答播放（%d 帧）", pushed);
+}
 
 void audio_play_stop(void)
 {
