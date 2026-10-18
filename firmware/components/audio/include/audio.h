@@ -1,0 +1,33 @@
+/**
+ * audio.h — 语音链路对外接口（ES8311 喇叭 + ES7210 麦克风 + Opus）
+ *
+ * 上行：录音 → Opus 60ms 帧 → ws_send_audio()
+ * 下行：ws 二进制帧 → audio_play_push()
+ */
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include "esp_err.h"
+
+/** 初始化（需在 sensors_init 之后调用；失败返回非 0，语音功能不可用） */
+esp_err_t audio_init(void);
+int  audio_ready(void);
+
+/* ── 上行（录音）────────────────────────────────────────────────────── */
+void audio_rec_start(void);     /* 开始采集 + 编码 + 发送 */
+void audio_rec_stop(void);
+int  audio_rec_active(void);
+
+/* ── 下行（播放 TTS）────────────────────────────────────────────────── */
+void audio_play_reset(void);                            /* tts_start：清队列 */
+void audio_play_push(const uint8_t *opus, size_t len);  /* 一帧 opus（可在 ws 回调里调） */
+void audio_play_finish(void);                           /* tts_stop：队列播完即结束 */
+void audio_play_stop(void);                             /* 立即停止（断线等） */
+int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
+
+/* ── 自检 ───────────────────────────────────────────────────────────── */
+void audio_echo_set(int on);    /* 按住 BOOT：麦克风直通喇叭 */
+int  audio_echo_active(void);
+
+/* ── 音量 ───────────────────────────────────────────────────────────── */
+void audio_set_volume(int vol); /* 0..100 */

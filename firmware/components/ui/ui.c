@@ -258,11 +258,12 @@ static int weather_kind(const char *text)
 
 /* ── 桌宠 ─────────────────────────────────────────────────────────── */
 
-typedef enum { PET_IDLE, PET_BLINK, PET_THINKING, PET_SPEAKING } pet_state_t;
+typedef enum { PET_IDLE, PET_BLINK, PET_LISTENING, PET_THINKING, PET_SPEAKING } pet_state_t;
 
 static pet_state_t s_pet = PET_IDLE;
 static int s_frame_idx = 0;
 static int s_blink_phase = 0;
+static ui_voice_t s_voice = UI_VOICE_NONE;
 
 static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_01_idle, pet_sm_02_idle_blink, pet_sm_03_listening,
@@ -295,6 +296,7 @@ static void pet_tick(uint32_t now)
             s_blink_phase = 0;
         }
         break;
+    case PET_LISTENING: s_frame_idx = 2; break;
     case PET_THINKING: s_frame_idx = 3; break;
     case PET_SPEAKING: s_frame_idx = 4; break;
     }
@@ -311,6 +313,7 @@ void ui_init(void) { lcd_init(); }
 void ui_set_page(ui_page_t p) { s_page = p; }
 ui_page_t ui_get_page(void) { return s_page; }
 void ui_set_busy(int busy) { s_busy = busy; }
+void ui_set_voice(ui_voice_t v) { s_voice = v; }
 void ui_show_portal(const char *ap_ssid)
 {
     strlcpy(s_portal_ap, ap_ssid ? ap_ssid : "", sizeof(s_portal_ap));
@@ -327,7 +330,10 @@ int ui_tick(uint32_t now)
     pet_state_t prev_state = s_pet;
     int prev_idx = s_frame_idx;
 
-    s_pet = s_busy ? PET_THINKING : PET_IDLE;
+    s_pet = (s_voice == UI_VOICE_LISTENING) ? PET_LISTENING :
+            (s_voice == UI_VOICE_THINKING)  ? PET_THINKING  :
+            (s_voice == UI_VOICE_SPEAKING)  ? PET_SPEAKING  :
+            (s_busy ? PET_THINKING : PET_IDLE);
     pet_tick(now);
 
     return (s_pet != prev_state) || (s_frame_idx != prev_idx);
@@ -452,8 +458,10 @@ static void render_panel(void)
     status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
     status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
     status_row(262, "蓝牙", "未启用");
-    if (s_sub[0])
-        draw_text(PANEL_X, 284, s_sub, 1, 1);
+    if (s_sub[0]) {
+        if (has_cjk(s_sub)) draw_cjk(PANEL_X, 284, s_sub, 1, 1);
+        else                draw_text(PANEL_X, 284, s_sub, 1, 1);
+    }
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */
@@ -486,6 +494,14 @@ void ui_render(void)
     /* ── 主页 ── */
     lcd_clear(0);
     draw_pet();
+
+    /* 语音状态字（桌宠区顶部居中）：录音中 / 思考中 / 说话中 */
+    static const char *VOICE_TXT[] = { "", "录音中", "思考中", "说话中" };
+    if (s_voice != UI_VOICE_NONE) {
+        const char *vt = VOICE_TXT[s_voice];
+        draw_cjk((PET_W - cjk_text_w(vt, 1)) / 2, 0, vt, 1, 1);
+    }
+
     render_panel();
     lcd_flush();
 }

@@ -26,11 +26,65 @@
 #include "wifi_portal.h"
 #include "ws_client.h"
 #include "ui.h"
+#include "audio.h"
 
 static const char *TAG = "main";
 
 static int s_func_since = 0;
 static volatile int s_dirty = 1;        /* 需要重绘 */
+
+/* ── 语音状态机（M4）───────────────────────────────────────────────── */
+
+typedef enum { VOICE_IDLE = 0, VOICE_REC, VOICE_THINK, VOICE_SPEAK } voice_state_t;
+
+static voice_state_t s_voice_state = VOICE_IDLE;
+static int s_key_down_at = -1;          /* KEY 按下时刻（ms）；-1 = 未按 */
+static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
+static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
+static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
+
+static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
+
+static void voice_to(voice_state_t v)
+{
+    s_voice_state = v;
+    switch (v) {
+    case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
+    case VOICE_THINK: ui_set_voice(UI_VOICE_THINKING);  break;
+    case VOICE_SPEAK: ui_set_voice(UI_VOICE_SPEAKING);  break;
+    default:
+        ui_set_voice(UI_VOICE_NONE);
+        s_voice_deadline = 0;
+        break;
+    }
+    s_dirty = 1;
+}
+
+static void voice_start_rec(void)
+{
+    if (!audio_ready()) { ESP_LOGW(TAG, "录音不可用：音频未就绪"); return; }
+    if (!ws_connected()) { ESP_LOGW(TAG, "录音不可用：未连接服务器"); return; }
+
+    if (ui_get_page() != UI_PAGE_HOME) {
+        ui_set_page(UI_PAGE_HOME);
+        s_func_since = 0;
+    }
+    s_sub_clear_at = 0;
+    ui_set_sub("");
+    audio_rec_start();
+    ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
+    voice_to(VOICE_REC);
+    ESP_LOGI(TAG, "开始录音（松开 KEY 结束）");
+}
+
+static void voice_stop_rec(void)
+{
+    audio_rec_stop();
+    ws_send_json("{\"t\":\"rec\",\"s\":\"stop\"}");
+    s_voice_deadline = now_ms() + 30000;
+    voice_to(VOICE_THINK);
+    ESP_LOGI(TAG, "结束录音，等服务器");
+}
 
 /* ── 服务器校时 ────────────────────────────────────────────────────── */
 
@@ -87,6 +141,28 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_CONNECTED:
         s_dirty = 1;
         break;
+    case WS_EVT_TTS_START:
+        audio_play_reset();
+        s_sub_clear_at = 0;
+        ui_set_sub("");
+        if (s_voice_state != VOICE_REC) voice_to(VOICE_SPEAK);
+        s_dirty = 1;
+        break;
+    case WS_EVT_TTS_STOP:
+        audio_play_finish();
+        break;
+    case WS_EVT_ERROR:
+        ESP_LOGW(TAG, "服务器错误: %s", ev->text);
+        ui_set_sub(ev->text);
+        s_dirty = 1;
+        break;
+    case WS_EVT_DISCONNECTED:
+        audio_play_stop();
+        audio_rec_stop();
+        s_key_down_at = -1;
+        if (s_voice_state != VOICE_IDLE) voice_to(VOICE_IDLE);
+        s_dirty = 1;
+        break;
     default:
         break;
     }
@@ -100,18 +176,33 @@ static void on_button(btn_id_t id, btn_event_t ev)
     ESP_LOGI(TAG, "btn %s %s", id == BTN_KEY ? "KEY" : "BOOT",
              ev == BTN_DOWN ? "down" : (ev == BTN_CLICK ? "click" : "up"));
 
-    if (id == BTN_KEY && ev == BTN_CLICK) {
-        /* 翻页设备本地完成（不等网络），只告诉服务器一声 */
-        ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
-        ui_set_page(p);
-        if (p == UI_PAGE_FUNC)
-            s_func_since = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        s_dirty = 1;
+    if (id == BTN_KEY) {
+        if (ev == BTN_DOWN) {
+            s_key_down_at = now_ms();
+            s_key_voice = 0;
+        } else if (ev == BTN_UP) {
+            /* 长按录音：松手结束（事件顺序：短按先 CLICK 再 UP） */
+            if (s_voice_state == VOICE_REC) voice_stop_rec();
+            s_key_down_at = -1;
+        } else {                                        /* BTN_CLICK：短按翻页 */
+            if (s_voice_state != VOICE_IDLE) return;    /* 语音中不翻页 */
+            ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
+            ui_set_page(p);
+            if (p == UI_PAGE_FUNC)
+                s_func_since = now_ms();
+            s_dirty = 1;
 
-        char msg[48];
-        snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
-        ws_send_json(msg);
-        ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
+            char msg[48];
+            snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
+            ws_send_json(msg);
+            ESP_LOGI(TAG, "KEY → %s", p == UI_PAGE_HOME ? "home" : "func");
+        }
+    } else {                                            /* BOOT：按住=麦克风直通自检 */
+        if (ev == BTN_DOWN) {
+            if (s_voice_state == VOICE_IDLE) audio_echo_set(1);
+        } else if (ev == BTN_UP) {
+            audio_echo_set(0);
+        }
     }
 }
 
@@ -131,6 +222,33 @@ static void main_loop(void)
             ESP_LOGI(TAG, "功能页超时 → home");
         }
 
+        /* KEY 长按 350ms → 开始录音（短按翻页不受影响） */
+        if (s_key_down_at >= 0 && !s_key_voice && s_voice_state == VOICE_IDLE &&
+            now - (uint32_t)s_key_down_at >= 350) {
+            s_key_voice = 1;
+            voice_start_rec();
+        }
+
+        /* 播放结束 → 回空闲（字幕保留 4 秒） */
+        if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
+            s_sub_clear_at = now_ms() + 4000;
+            voice_to(VOICE_IDLE);
+        }
+
+        /* 等服务器超时保护 */
+        if (s_voice_state == VOICE_THINK && s_voice_deadline &&
+            now > (uint32_t)s_voice_deadline) {
+            ESP_LOGW(TAG, "等服务器超时，回空闲");
+            voice_to(VOICE_IDLE);
+        }
+
+        /* 字幕延迟清除 */
+        if (s_sub_clear_at && now >= (uint32_t)s_sub_clear_at) {
+            s_sub_clear_at = 0;
+            ui_set_sub("");
+            s_dirty = 1;
+        }
+
         /* 每秒重绘一次（时钟走字）；脏标记或桌宠换帧时立即重绘 */
         int pet_changed = ui_tick(now);
         TickType_t nowT = xTaskGetTickCount();
@@ -144,10 +262,17 @@ static void main_loop(void)
     }
 }
 
+/** 服务器下行的 Opus 帧 → 播放队列 */
+static void on_ws_audio(const uint8_t *data, size_t len)
+{
+    audio_play_push(data, len);
+}
+
 /** 连上 WiFi 后的正常启动：WebSocket + 按键 + 主循环（不返回） */
 static void boot_online(const wifi_cfg_t *cfg)
 {
     ws_client_set_handler(on_ws_event);
+    ws_client_set_bin_handler(on_ws_audio);
     ESP_ERROR_CHECK(ws_client_start(cfg->host, cfg->token));
     buttons_init(on_button);
     ESP_LOGI(TAG, "启动完成（服务器 %s）", cfg->host);
@@ -171,6 +296,9 @@ void app_main(void)
     pcf85063_init();
     ui_init();
     ui_render();
+
+    if (audio_init() != ESP_OK)
+        ESP_LOGE(TAG, "音频初始化失败（语音对话不可用）");
 
     ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
 

@@ -6,6 +6,14 @@
 
 typedef enum { UI_PAGE_HOME = 0, UI_PAGE_FUNC = 1, UI_PAGE_PORTAL = 2 } ui_page_t;
 
+/** 语音状态（影响桌宠表情 + 左区顶部状态字） */
+typedef enum {
+    UI_VOICE_NONE = 0,
+    UI_VOICE_LISTENING,     /* 录音中 */
+    UI_VOICE_THINKING,      /* 思考中 */
+    UI_VOICE_SPEAKING,      /* 说话中 */
+} ui_voice_t;
+
 void ui_init(void);
 void ui_set_page(ui_page_t p);
 ui_page_t ui_get_page(void);
@@ -22,6 +30,9 @@ int ui_tick(uint32_t now_ms);
 
 /** 服务器忙/空闲（影响桌宠状态） */
 void ui_set_busy(int busy);
+
+/** 语音状态（录音/思考/说话；NONE 时回到普通状态机） */
+void ui_set_voice(ui_voice_t v);
 
 /** 设置字幕（显示在信息栏底部） */
 void ui_set_sub(const char *text);

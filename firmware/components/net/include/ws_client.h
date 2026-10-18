@@ -47,9 +47,13 @@ typedef struct {
 } ws_event_t;
 
 typedef void (*ws_handler_t)(const ws_event_t *ev);
+typedef void (*ws_bin_handler_t)(const uint8_t *data, size_t len);
 
 /** 注册事件回调（收到 info/page/sub 等消息时调用） */
 void ws_client_set_handler(ws_handler_t handler);
+
+/** 注册二进制帧回调（服务器下行的 Opus 音频帧） */
+void ws_client_set_bin_handler(ws_bin_handler_t handler);
 
 /** 服务器下发的信息栏数据（time/date/week/weather），本地项由 UI 自己填 */
 dev_info_t *ws_client_info(void);

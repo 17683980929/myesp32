@@ -17,11 +17,14 @@
 static const char *TAG = "ws";
 static esp_websocket_client_handle_t s_cli = NULL;
 static ws_handler_t s_handler = NULL;
+static ws_bin_handler_t s_bin_handler = NULL;
 static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1 };
 
 dev_info_t *ws_client_info(void) { return &s_info; }
 
 void ws_client_set_handler(ws_handler_t handler) { s_handler = handler; }
+
+void ws_client_set_bin_handler(ws_bin_handler_t handler) { s_bin_handler = handler; }
 
 static void dispatch(const ws_event_t *ev) { if (s_handler) s_handler(ev); }
 
@@ -122,8 +125,13 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         break;
     }
     case WEBSOCKET_EVENT_DATA:
-        if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr)
+        if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
             on_data((char *)e->data_ptr, e->data_len);
+        } else if (e->op_code == 0x2 && e->data_len > 0 && e->data_ptr &&
+                   e->payload_offset == 0 && e->data_len == e->payload_len) {
+            /* 二进制音频帧（Opus，单帧远小于缓冲，不会被分片） */
+            if (s_bin_handler) s_bin_handler((const uint8_t *)e->data_ptr, (size_t)e->data_len);
+        }
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "错误");
