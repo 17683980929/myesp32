@@ -17,9 +17,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# 1. 解包到临时目录
-$tmp = Join-Path $env:TEMP ("myesp32-app-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
-New-Item -ItemType Directory -Path $tmp | Out-Null
+# 1. 解包到项目内的临时目录（不用 $env:TEMP——某些子 shell 里 TEMP 为空
+#    会导致 Join-Path 直接失败；firmware\build 已在 .gitignore 里）
+$buildRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'build'
+$tmp = Join-Path $buildRoot ("flash-tmp-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 Expand-Archive -Path $Zip -DestinationPath $tmp -Force
 
 # 2. 从 flash_args 里找 app 的烧录地址（myesp32.bin 那一行）
