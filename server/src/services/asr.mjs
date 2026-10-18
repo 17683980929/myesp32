@@ -77,6 +77,22 @@ export class TencentASR {
   async recognize(audio, { voiceFormat = "pcm", timeoutMs = 15000 } = {}) {
     if (!audio || audio.length === 0) throw new Error("音频为空");
 
+    /* 偶发的网关 404 / 网络抖动重试一次，别让整轮对话白费 */
+    let lastErr;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await this.#recognizeOnce(audio, voiceFormat, timeoutMs);
+      } catch (e) {
+        lastErr = e;
+        if (!e.retriable || attempt === 2) break;
+        console.error(`[asr] 第 ${attempt} 次失败（${e.message}），400ms 后重试…`);
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    throw lastErr;
+  }
+
+  async #recognizeOnce(audio, voiceFormat, timeoutMs) {
     const query = this.#buildQuery({ voice_format: voiceFormat });
     const url = `https://${HOST}${PATH_BASE}/${this.appId}?${query}`;
 
@@ -98,13 +114,24 @@ export class TencentASR {
       });
     } catch (e) {
       clearTimeout(timer);
-      if (e.name === "AbortError") throw new Error("ASR 请求超时");
-      throw new Error(`ASR 网络错误: ${e.message}`);
+      const err = new Error(e.name === "AbortError" ? "ASR 请求超时" : `ASR 网络错误: ${e.message}`);
+      err.retriable = true;
+      throw err;
     }
     clearTimeout(timer);
 
-    const body = await res.json().catch(() => null);
-    if (!body) throw new Error(`ASR 返回非 JSON（HTTP ${res.status}）`);
+    /* 先读原文再解析：失败时能留下响应体证据，事后可查 */
+    const raw = await res.text().catch(() => "");
+    let body = null;
+    try { body = JSON.parse(raw); } catch { /* 非 JSON */ }
+    if (!body) {
+      const head = raw.replace(/\s+/g, " ").slice(0, 200);
+      console.error(`[asr] 非 JSON 响应: HTTP ${res.status} server=${res.headers.get("server")} ct=${res.headers.get("content-type")} body="${head}"`);
+      console.error(`[asr] 失败请求 URL: ${url.slice(0, 180)}`);
+      const err = new Error(`ASR 返回非 JSON（HTTP ${res.status}）`);
+      err.retriable = true;
+      throw err;
+    }
 
     if (body.code !== 0) {
       const why = ERRORS[body.code] ?? body.message ?? "未知错误";

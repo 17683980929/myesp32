@@ -331,6 +331,29 @@ void ui_set_sub(const char *text)
     s_sub[sizeof(s_sub) - 1] = 0;
 }
 
+int ui_sub_pages(const char *text)
+{
+    if (!text) return 0;
+    int n = 0;
+    const char *p = text;
+    while (*p) { utf8_next(&p); n++; }
+    return (n + 23) / 24;                    /* 每页 24 字（16px/字，整行全宽） */
+}
+
+void ui_set_sub_page(const char *text, int page)
+{
+    if (!text || page < 0) { ui_set_sub(""); return; }
+    const char *p = text;
+    for (int i = 0; i < page * 24 && *p; i++) utf8_next(&p);
+    const char *q = p;
+    int n = 0;
+    while (*q && n < 24) { utf8_next(&q); n++; }
+    size_t len = (size_t)(q - p);
+    if (len >= sizeof(s_sub)) len = sizeof(s_sub) - 1;
+    memcpy(s_sub, p, len);
+    s_sub[len] = 0;
+}
+
 int ui_tick(uint32_t now)
 {
     pet_state_t prev_state = s_pet;

@@ -29,7 +29,8 @@ export async function* chatStream(o) {
     thinking = false,
     maxTokens = 300,
     temperature = 0.7,
-    timeoutMs = 30000,
+    /* 流是"边收边用"的：长故事可能要连续生成 1~3 分钟，只要流还在动就不该掐 */
+    timeoutMs = 180000,
   } = o;
 
   if (!apiKey) throw new Error("未配置 LLM API Key");

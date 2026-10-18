@@ -80,6 +80,8 @@ static void on_data(char *data, int len)
         ev.kind = WS_EVT_SUB;
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
         strncpy(ev.text, n ?: "", sizeof(ev.text) - 1);
+        cJSON *fr = cJSON_GetObjectItem(root, "frames");
+        ev.frames = (fr && cJSON_IsNumber(fr)) ? fr->valueint : 0;
         dispatch(&ev);
     } else if (t && !strcmp(t, "lua")) {
         ev.kind = WS_EVT_LUA;

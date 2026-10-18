@@ -36,3 +36,9 @@ void ui_set_voice(ui_voice_t v);
 
 /** 设置字幕（显示在信息栏底部） */
 void ui_set_sub(const char *text);
+
+/** 整句的页数（每页 24 字）；用于长句按播放进度翻页 */
+int  ui_sub_pages(const char *text);
+
+/** 显示整句的第 page 页（0 起）；page 越界时显示末页 */
+void ui_set_sub_page(const char *text, int page);

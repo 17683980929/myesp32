@@ -59,7 +59,7 @@ static volatile int s_echo_on   = 0;
 
 /* ── 下行 ───────────────────────────────────────────────────────────── */
 
-#define PLAYQ_SLOTS  96
+#define PLAYQ_SLOTS  160         /* ≈9.6 秒缓冲：设备端偶发卡顿 1 秒也不至于撑爆丢帧 */
 typedef struct {
     uint16_t len;
     uint8_t  data[MAX_OPUS_FRAME];
@@ -325,7 +325,7 @@ void audio_play_push(const uint8_t *opus, size_t len)
         s_frames_pushed++;
         s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     } else {
-        ESP_LOGW(TAG, "播放队列满，丢帧");
+        ESP_LOGW(TAG, "播放队列满，丢帧 (queue=%d)", (int)uxQueueMessagesWaiting(s_playq));
     }
 }
 

@@ -53,6 +53,7 @@ static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
 typedef struct {
     char text[SUB_MAX];
     int  at_frame;                  /* 本条字幕句子的首帧序号（收到时已入队帧数） */
+    int  n_frames;                  /* 该句总帧数（服务器下发；0=未知，不翻页） */
 } sub_item_t;
 
 static sub_item_t s_subq[SUBQ_MAX];
@@ -60,7 +61,18 @@ static int s_subq_head = 0, s_subq_tail = 0;
 
 static void subq_clear(void) { s_subq_head = s_subq_tail = 0; }
 
-static void subq_push(const char *text, int at_frame)
+/* 当前正在播放的句子：长句超过一页（24 字）时按播放进度翻页 */
+static char s_sub_cur[SUB_MAX] = "";
+static int  s_sub_cur_at = 0;           /* 该句首帧序号 */
+static int  s_sub_cur_frames = 0;       /* 该句总帧数（0=不翻页） */
+static int  s_sub_cur_page = 0;         /* 当前显示到第几页 */
+static void sub_cur_clear(void)
+{
+    s_sub_cur[0] = 0;
+    s_sub_cur_at = s_sub_cur_frames = s_sub_cur_page = 0;
+}
+
+static void subq_push(const char *text, int at_frame, int n_frames)
 {
     int next = (s_subq_tail + 1) % SUBQ_MAX;
     if (next == s_subq_head)                       /* 满：丢最旧 */
@@ -68,6 +80,7 @@ static void subq_push(const char *text, int at_frame)
     sub_item_t *it = &s_subq[s_subq_tail];
     snprintf(it->text, SUB_MAX, "%s", text ? text : "");
     it->at_frame = at_frame;
+    it->n_frames = n_frames;
     s_subq_tail = next;
 }
 
@@ -122,6 +135,7 @@ static void voice_interrupt(void)
     audio_play_stop();
     audio_rec_stop();
     subq_clear();
+    sub_cur_clear();
     ui_set_sub("");
     s_sub_clear_at = 0;
     s_dirty = 1;
@@ -169,7 +183,7 @@ static void on_ws_event(const ws_event_t *ev)
          * 先记下「收到时已入队帧数」，等对应首帧真的播出去再显示（主循环里处理） */
         int pushed = 0;
         audio_play_stats(&pushed, NULL);
-        subq_push(ev->text, pushed);
+        subq_push(ev->text, pushed, ev->frames);
         break;
     }
     case WS_EVT_STT:
@@ -190,6 +204,7 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_TTS_START:
         audio_play_reset();
         subq_clear();
+        sub_cur_clear();
         s_sub_clear_at = 0;
         ui_set_sub("");
         if (s_voice_state != VOICE_REC) voice_to(VOICE_SPEAK);
@@ -200,6 +215,7 @@ static void on_ws_event(const ws_event_t *ev)
         break;
     case WS_EVT_ERROR:
         ESP_LOGW(TAG, "服务器错误: %s", ev->text);
+        sub_cur_clear();
         ui_set_sub(ev->text);
         s_dirty = 1;
         break;
@@ -207,6 +223,7 @@ static void on_ws_event(const ws_event_t *ev)
         audio_play_stop();
         audio_rec_stop();
         subq_clear();
+        sub_cur_clear();
         ui_set_sub("");
         s_sub_clear_at = 0;
         s_key_down_at = -1;
@@ -291,14 +308,42 @@ static void main_loop(void)
             voice_to(VOICE_IDLE);
         }
 
-        /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音） */
-        if (s_subq_head != s_subq_tail) {
-            int played = 0;
-            audio_play_stats(NULL, &played);
+        /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音）；
+         * 长句超过一页（24 字）时按播放进度翻页，保证整句都看得到 */
+        {
+            int pushed = 0, played = 0;
+            audio_play_stats(&pushed, &played);
             while (s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
-                ui_set_sub(s_subq[s_subq_head].text);
+                sub_item_t *it = &s_subq[s_subq_head];
+                snprintf(s_sub_cur, sizeof(s_sub_cur), "%s", it->text);
+                s_sub_cur_at     = it->at_frame;
+                s_sub_cur_frames = it->n_frames;
+                s_sub_cur_page   = 0;
+                ui_set_sub(s_sub_cur);
                 s_dirty = 1;
                 s_subq_head = (s_subq_head + 1) % SUBQ_MAX;
+            }
+            if (s_sub_cur[0] && s_sub_cur_frames > 0) {
+                int pages = ui_sub_pages(s_sub_cur);
+                if (pages > 1) {
+                    int prog = played - s_sub_cur_at;
+                    if (prog < 0) prog = 0;
+                    if (prog > s_sub_cur_frames) prog = s_sub_cur_frames;
+                    int page = (int)((long long)prog * pages / s_sub_cur_frames);
+                    if (page >= pages) page = pages - 1;
+                    if (page != s_sub_cur_page) {
+                        s_sub_cur_page = page;
+                        ui_set_sub_page(s_sub_cur, page);
+                        s_dirty = 1;
+                    }
+                }
+            }
+            /* 诊断：说话中每 5 秒一行播放统计（纯 ASCII，抓包可直接分析） */
+            static uint32_t s_play_log_at = 0;
+            if (s_voice_state == VOICE_SPEAK && now - s_play_log_at > 5000) {
+                s_play_log_at = now;
+                ESP_LOGI(TAG, "play: pushed=%d played=%d inflight=%d",
+                         pushed, played, pushed - played);
             }
         }
 
@@ -312,6 +357,7 @@ static void main_loop(void)
         /* 字幕延迟清除 */
         if (s_sub_clear_at && now >= (uint32_t)s_sub_clear_at) {
             s_sub_clear_at = 0;
+            sub_cur_clear();
             ui_set_sub("");
             s_dirty = 1;
         }

@@ -48,11 +48,14 @@ export const DEFAULT_CONFIG = {
     baseUrl: "https://api.deepseek.com",
     apiKey: "",
     model: "deepseek-flash",
-    maxTokens: 300,
+    maxTokens: 4096,
     temperature: 0.7,
     systemPrompt:
       "你叫小智，是一个桌面语音助手，说话简洁口语化。" +
-      "回答控制在两三句话以内，不要列表、不要 markdown、不要解释思考过程。",
+      "默认回答控制在两三句话以内，不要列表、不要 markdown、不要解释思考过程。" +
+      "当用户明确要求讲故事、讲得更详细或更长、或指定了时长时，必须按时长讲足：" +
+      "每分钟口播约 240 字，要求 N 分钟就写足 N×240 字（5 分钟至少 1200 字），缺情节就加对话和细节；" +
+      "讲够长度之前绝对不能收尾或总结，不许压缩成梗概，宁可写长也不要写短。",
   },
   asr: {
     provider: "tencent",

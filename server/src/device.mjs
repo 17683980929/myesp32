@@ -228,7 +228,7 @@ export class DeviceSession {
         if (this.stale(myTurn)) break;
         if (!queue.length) { await sleep(8); continue; }
         const { frames, text } = queue.shift();
-        this.send(build.sub(text));
+        this.send(build.sub(text, frames.length));
         for (const f of frames) {
           if (this.stale(myTurn)) break;
           this.sendBin(f);
@@ -295,7 +295,7 @@ export class DeviceSession {
       const { frames } = await withTimeout(textToOpusFrames(text, { speed: this.ctx.config.tts.speed }), TTS_TIMEOUT_MS);
       if (this.stale(myTurn)) return;
       this.send(build.ttsStart());
-      this.send(build.sub(text));
+      this.send(build.sub(text, frames.length));
       const t0 = Date.now();
       let audioMs = 0;
       for (const f of frames) {

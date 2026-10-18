@@ -48,7 +48,7 @@ export const build = {
   stt: (text) => ({ t: SRV.STT, text }),
   ttsStart: () => ({ t: SRV.TTS_START }),
   ttsStop: () => ({ t: SRV.TTS_STOP }),
-  sub: (text) => ({ t: SRV.SUB, text }),
+  sub: (text, frames = 0) => ({ t: SRV.SUB, text, frames }),
   lua: (id, code) => ({ t: SRV.LUA, id, code }),
   err: (msg) => ({ t: SRV.ERROR, msg }),
   ping: () => ({ t: SRV.PING, ts: Date.now() }),
