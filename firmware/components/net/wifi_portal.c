@@ -437,8 +437,10 @@ void wifi_portal_run(bool keep_sta)
     }
 
     /* 2. AP netif（默认 IP 192.168.4.1 + DHCP 服务器） */
-    if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF"))
-        ESP_ERROR_CHECK(esp_netif_create_default_wifi_ap());
+    if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF")) {
+        esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+        if (!ap_netif) ESP_LOGE(TAG, "创建 AP netif 失败");
+    }
 
     /* 3. 切 APSTA（STA 短暂停一下会自己继续重连） */
     if (started) esp_wifi_stop();
