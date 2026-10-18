@@ -5,12 +5,12 @@
  *   - I2S 先按 TDM（4 槽）建通道；esp_codec_dev 以 {16000, 2, 16} 打开编解码器时，
  *     会把通道重配成「2 槽 × 16bit」，与播放帧一致（全双工共用时钟）。
  *   - 麦克风 ES7210 四路全选（与出厂程序一致）。mic 数 ≥3 时驱动把芯片切到
- *     TDM 输出（REG12=0x02），且 2 通道读取时槽宽减半到 8bit。
- *     串口实测本板：32bit 帧 = [0xFF][活麦A][0xFF][活麦B] —— 槽 1/3 是真麦克风
- *     的 8bit 数据（直流偏置约 0xD0，说话时随音量摆动），槽 0/2 恒 0xFF（无麦）。
- *     上行/回放统一取槽 1：去直流（一阶跟踪）→ 放大 → 16bit 单声道。
- *     （此前只选 MIC1|MIC2 → 芯片走普通 I2S 输出，帧结构不匹配，
- *      且恰好是两个"死"槽，实测录音电平异常偏低、BOOT 回声不可闻。）
+ *     TDM 输出（REG12=0x02）；2 通道读取时每帧 2 个 16bit 字。
+ *     串口实测：每个 16bit 字 = 一路麦克风样点（偶=麦A、奇=麦B 交织），
+ *     幅度很小（空载 ±50、近距离说话 ±300）。直接按 16bit 用 + 数字增益：
+ *     上行取偶数字 ×16，BOOT 回放原样 ×8。
+ *     （教训：16bit 字不能拆成两个 8bit 用 —— 低 8bit 是样点取模 256 的锯齿，
+ *      放大后就是电流音；整字不放大又只是"小声"。）
  *   - 喇叭 ES8311 走 DAC，PA 使能在 AUD_PA_PIN（GPIO46）。
  *
  * 上行：麦克风 20ms×3 → 解包单声道 960 采样 → Opus 编码（60ms/帧）→ ws_send_audio()
@@ -72,8 +72,8 @@ static volatile int   s_playing        = 0;
 
 /* ── 麦克风任务（录音 / 直通自检）────────────────────────────────────── */
 
-/* 槽位诊断：每个 16bit 字 = 2 个 8bit 槽样本（高字节 = 槽0/2，低字节 = 槽1/3）。
- * 实测：槽 0/2 恒 0xFF（板上无对应麦克风），槽 1/3 为真实麦克风。 */
+/* 槽位诊断：把每个 16bit 字拆成高/低 8bit 观察分布。
+ * 实测：偶/奇字都载有信号（麦A/麦B 样点交织），低字节为取模值、不可当音频用。 */
 static void slot_rms(const int16_t *w, int words, float rms[4])
 {
     long acc[4] = { 0 };
@@ -88,19 +88,6 @@ static void slot_rms(const int16_t *w, int words, float rms[4])
     for (int k = 0; k < 4; k++) rms[k] = sqrtf((float)acc[k] / n);
 }
 
-/* 槽位 8bit → 16bit PCM：一阶去直流（初始偏置 ≈0xD0<<4）+ 放大 16 倍。
- * 满摆幅 ±2032×16 ≈ ±32512，留了余量并有保护，不会削顶爆音。 */
-static int32_t s_dc = 3328;
-static inline int16_t slot8_to_pcm(uint8_t b)
-{
-    int32_t x = (int32_t)b << 4;             /* ×16 定点 */
-    s_dc += (x - s_dc) >> 6;                 /* 截止 ~40Hz @16kHz */
-    int32_t y = (x - s_dc) * 16;
-    if (y > 32000) y = 32000;
-    else if (y < -32000) y = -32000;
-    return (int16_t)y;
-}
-
 static void mic_task(void *arg)
 {
     OpusEncoder *enc = NULL;
@@ -112,17 +99,10 @@ static void mic_task(void *arg)
 
     for (;;) {
         /* 自检模式：麦克风 → 喇叭（BOOT 按住）。
-         * 取槽 1（偶数字低 8bit 活麦）→ 去直流+放大 → 单声道复制双声道回放。 */
+         * 原始样点 ×8 数字增益后直通（原始直通用户实测"偏小"）。 */
         if (s_echo_on) {
-            static int16_t ost[READ_CHUNK * 2];
             static int echo_n = 0;
             if (esp_codec_dev_read(s_rec, in, sizeof(in)) == ESP_CODEC_DEV_OK) {
-                for (int i = 0; i < READ_CHUNK; i++) {
-                    int16_t v = slot8_to_pcm((uint8_t)(in[i * 2] & 0xFF));
-                    ost[i * 2] = v;
-                    ost[i * 2 + 1] = v;
-                }
-                esp_codec_dev_write(s_play, ost, sizeof(ost));
                 if (++echo_n == 1) {
                     ESP_LOGI(TAG, "自检原始样本: %04X %04X %04X %04X",
                              (uint16_t)in[0], (uint16_t)in[1], (uint16_t)in[2], (uint16_t)in[3]);
@@ -134,6 +114,13 @@ static void mic_task(void *arg)
                     ESP_LOGI(TAG, "自检槽位 m1=%.0f m2=%.0f m3=%.0f m4=%.0f（原始 RMS=%.0f）",
                              sr[0], sr[1], sr[2], sr[3], sqrtf((float)acc / (READ_CHUNK * 2)));
                 }
+                for (int i = 0; i < READ_CHUNK * 2; i++) {
+                    int32_t v = (int32_t)in[i] * 8;
+                    if (v > 32000) v = 32000;
+                    else if (v < -32000) v = -32000;
+                    in[i] = (int16_t)v;
+                }
+                esp_codec_dev_write(s_play, in, sizeof(in));
             }
             continue;
         }
@@ -168,10 +155,14 @@ static void mic_task(void *arg)
             continue;
         }
 
-        /* 解包：取偶数字低 8bit（槽 1 = 活麦A）→ 去直流+放大 → 单声道。
-         * 顶槽诊断日志（槽位/原始样本）保留，供后续复核或切换槽位。 */
-        for (int i = 0; i < READ_CHUNK; i++)
-            mono[fill + i] = slot8_to_pcm((uint8_t)(in[i * 2] & 0xFF));
+        /* 偶数字 = 1 号麦克风 16bit 样点 → ×16 数字增益 → 单声道。
+         * 槽位/原始样本诊断日志保留，供后续复核。 */
+        for (int i = 0; i < READ_CHUNK; i++) {
+            int32_t v = (int32_t)in[i * 2] * 16;
+            if (v > 32000) v = 32000;
+            else if (v < -32000) v = -32000;
+            mono[fill + i] = (int16_t)v;
+        }
         fill += READ_CHUNK;
 
         if (fill >= FRAME_SAMPLES) {
