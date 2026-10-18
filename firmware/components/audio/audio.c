@@ -365,11 +365,18 @@ esp_err_t audio_init(void)
         return ESP_FAIL;
     }
 
-    xTaskCreatePinnedToCore(mic_task,  "audio_mic",  6144, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(play_task, "audio_play", 6144, NULL, 5, NULL, 1);
+    /* 栈必须给足：esp-opus 以 -DUSE_ALLOCA 编译，opus_encode/opus_decode 的临时
+     * 缓冲全部走任务栈 —— 实测 6KB 第一帧编码就栈溢出（串口：
+     * "***ERROR*** A stack overflow in task audio_mic"，随后崩溃重启）。
+     * 编码峰值约 30KB，这里给 40KB；解码路径给 16KB。 */
+    if (xTaskCreatePinnedToCore(mic_task,  "audio_mic",  40960, NULL, 5, NULL, 1) != pdPASS ||
+        xTaskCreatePinnedToCore(play_task, "audio_play", 16384, NULL, 5, NULL, 1) != pdPASS) {
+        ESP_LOGE(TAG, "音频任务创建失败（内存不足？）");
+        return ESP_FAIL;
+    }
 
     s_ready = 1;
-    ESP_LOGI(TAG, "音频就绪：ES8311+ES7210 @%dHz（麦克风 MIC1|MIC2，PA=GPIO%d）",
-             AUD_SAMPLE_HZ, AUD_PA_PIN);
+    ESP_LOGI(TAG, "音频就绪：ES8311+ES7210 @%dHz（麦克风 MIC1|MIC2，PA=GPIO%d），内部空闲堆 %u B",
+             AUD_SAMPLE_HZ, AUD_PA_PIN, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     return ESP_OK;
 }
