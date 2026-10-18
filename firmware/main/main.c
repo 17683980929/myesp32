@@ -323,7 +323,7 @@ static void main_loop(void)
             voice_start_rec();
         }
 
-        /* 语音唤醒：空闲时听到"你好小智" → 本地应答"我在" → 应答完自动聆听 */
+        /* 语音唤醒：空闲时听到"小鱼同学"（模型小宇同学）→ 本地应答"我在" → 应答完自动聆听 */
         if (s_voice_state == VOICE_IDLE && !s_wake_greet && wake_take_hit()) {
             audio_play_greeting();
             s_wake_greet = 1;

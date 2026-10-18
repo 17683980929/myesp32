@@ -38,12 +38,12 @@ CONFIG_COMPILER_CXX_RTTI=n
 # 事件循环任务栈
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 
-# ── 语音唤醒词（ESP-SR WakeNet9，中文"你好小智"）────────────────────────
-# 模型从 flash 的 model 分区读；只启用"你好小智"一个唤醒词
-# （NSN/VADN 用 WebRTC 版、MultiNet 全关 —— 都不需要额外模型文件）
+# ── 语音唤醒词（ESP-SR WakeNet9，中文"小宇同学"）────────────────────────
+# 模型从 flash 的 model 分区读；只启用"小宇同学"一个唤醒词
+# （喊"小鱼同学"即可触发——同音只差声调；NSN/VADN 用 WebRTC 版、MultiNet 全关）
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_SR_NSN_WEBRTC=y
 CONFIG_SR_VADN_WEBRTC=y
-CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+CONFIG_SR_WN_WN9_XIAOYUTONGXUE_TTS2=y
 CONFIG_SR_MN_CN_NONE=y
 CONFIG_SR_MN_EN_NONE=y

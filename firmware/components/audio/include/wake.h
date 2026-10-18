@@ -1,9 +1,9 @@
 /**
- * wake.h — 语音唤醒词（ESP-SR WakeNet9，中文"你好小智"）
+ * wake.h — 语音唤醒词（ESP-SR WakeNet9，中文"小宇同学"，喊"小鱼同学"触发）
  *
  * 空闲时常开麦克风 → wake_feed() 喂 16k 单声道 → 命中后 main 接管
  * （本地应答"我在"→ 自动聆听）。模型来自 "model" 分区，
- * 具体哪个模型由 sdkconfig 的 SR_WN_* 选项决定（现在只有 nihaoxiaozhi_tts）。
+ * 具体哪个模型由 sdkconfig 的 SR_WN_* 选项决定（现在只有 xiaoyutongxue_tts2）。
  */
 #pragma once
 #include <stdint.h>
