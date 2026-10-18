@@ -1,12 +1,18 @@
-# flash_app.ps1 - 只烧 app 分区（0x20000），保留 NVS 里的 WiFi/服务器配置
+# flash_app.ps1 - flash ONLY the app partition (0x20000), keep NVS (WiFi/server config).
 #
-# 适用：只改了固件代码的迭代（UI、逻辑等）。烧完不用重新配网。
-# 不适用：bootloader / 分区表 / sdkconfig 改了的时候 —— 那些必须整包烧
-#         （整包烧会清掉配网配置，需要重新配网）。
+# Use for: firmware-only iterations (UI, logic, audio). No re-provisioning needed.
+# NOT for: bootloader / partition table / sdkconfig changes - those require a full
+#          flash, which erases provisioning (and NVS).
 #
-# 用法：
+# Usage:
 #   powershell -File flash_app.ps1 -Zip ..\build\myesp32-merged.zip
 #   powershell -File flash_app.ps1 -Zip <zip> -Port COM3
+#
+# NOTE: keep this file PURE ASCII. Windows PowerShell 5.1 reads BOM-less files as
+#       ANSI (cp936 here) and mangles UTF-8: CJK comment bytes can swallow the next
+#       newline, merging a comment with the following code line (this happened once:
+#       the "$bytes = ..." line was eaten by the comment above it, leaving $bytes
+#       null). ASCII-only text is immune to any codepage misinterpretation.
 
 param(
     [Parameter(Mandatory = $true)][string]$Zip,
@@ -17,30 +23,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# 1. 解包到项目内的临时目录（不用 $env:TEMP——某些子 shell 里 TEMP 为空
-#    会导致 Join-Path 直接失败；firmware\build 已在 .gitignore 里）
+# 1. Extract into firmware\build (git-ignored). Avoid $env:TEMP: in some child
+#    shells it is empty and Join-Path then fails outright.
 $buildRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'build'
 $tmp = Join-Path $buildRoot ("flash-tmp-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 Expand-Archive -Path $Zip -DestinationPath $tmp -Force
 
-# 2. 从 flash_args 里找 app 的烧录地址（myesp32.bin 那一行）
+# 2. Find the app flash offset in flash_args (the "... myesp32.bin" line).
 $line = Get-Content (Join-Path $tmp "flash_args") |
     Where-Object { $_ -match '\smyesp32\.bin$' } | Select-Object -First 1
-if (-not $line) { throw "flash_args 里没找到 myesp32.bin" }
-$offset = ($line -split '\s+')[0]
+if (-not $line) { throw "myesp32.bin not found in flash_args" }
+$offset = ($line.Trim() -split '\s+')[0]
 $offsetInt = [Convert]::ToInt32($offset, 16)
 
-# 3. 从 merged 镜像里切出 app 部分（该偏移到文件尾）
+# 3. Cut the app slice out of the merged image (offset .. end of file).
 $bytes = [IO.File]::ReadAllBytes((Join-Path $tmp "merged-binary.bin"))
-$app = $bytes[$offsetInt..($bytes.Length - 1)]
+$app = [byte[]]::new($bytes.Length - $offsetInt)
+[Array]::Copy($bytes, $offsetInt, $app, 0, $app.Length)
 $appPath = Join-Path $tmp "app-only.bin"
 [IO.File]::WriteAllBytes($appPath, $app)
 
-"app 分区: offset=$offset, size=$($app.Length) bytes（NVS 不动，配置保留）"
+Write-Host ("app partition: offset={0} size={1} bytes (NVS untouched)" -f $offset, $app.Length)
 
-# 4. 烧录
+# 4. Flash.
 & $Esptool -p $Port -b $Baud write_flash -z $offset $appPath
 
 Remove-Item $tmp -Recurse -Force
-"完成"
+Write-Host "done"
