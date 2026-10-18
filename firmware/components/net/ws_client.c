@@ -150,6 +150,7 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
     esp_websocket_client_config_t cfg = {
         .uri = url,
         .buffer_size = 4096,
+        .task_stack = 6144,              /* ws_event_t（含 512B 文本）在事件任务栈上构造 */
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 10000,
     };

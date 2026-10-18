@@ -1,95 +1,116 @@
 # gen_cjk.ps1 - generate 16x16 CJK bitmap font for the RLCD UI
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File gen_cjk.ps1
 # Output: ../components/ui/font_cjk.c and ../components/ui/font_cjk.h
-Add-Type -AssemblyName System.Drawing
+#
+# 字库 = 完整 GB2312（A1-F7 区，约 7500 字：符号/标点 + 一级 + 二级汉字）。
+# 早期版本只有界面标签用的几十个字，回答字幕大面积缺字 —— 已改为全字库。
+# ASCII 不收录（UI 里走 font5x7 小点阵，draw_cjk 里有回退）。
+#
+# 实现说明：栅格化走 Add-Type 内联 C#（System.Drawing.* 嵌套类型在 PowerShell
+# 脚本里做类型字面量解析不可靠，曾被全部渲染成空字）；批量一次调用，
+# LockBits 取像素，7000+ 字几秒钟完成。
 
-# Codepoints (sorted ascending):
-# 0x4E00 yi(one), 0x4E0D bu(not), 0x4E2D zhong(mid), 0x4E86 le,
-# 0x4E91 yun, 0x4EAC jing(capital), 0x4F60 ni(you),
-# 0x518D zai(again), 0x51FA chu(out), 0x52A1 wu(service), 0x5317 bei(north),
-# 0x5417 ma(question), 0x542C ting(listen), 0x542F qi(open), 0x5668 qi(device),
-# 0x591A duo, 0x5929 tian, 0x597D hao(good),
-# 0x5DF2 yi(already), 0x5EA6 du, 0x5F00 kai, 0x5F0F shi(form),
-# 0x5F55 lu(record), 0x5F85 dai, 0x601D si(think), 0x6211 wo(me),
-# 0x624B shou, 0x6253 da, 0x62B1 bao(hug), 0x63A5 jie, 0x656C jing,
-# 0x6674 qing(sunny), 0x670D fu(serve), 0x671F qi, 0x672A wei(not),
-# 0x673A ji, 0x6A21 mo, 0x6B21 ci(times), 0x6B49 qian(sorry), 0x6C14 qi(air),
-# 0x6CA1 mei(not), 0x6D4F liu, 0x6E05 qing(clear), 0x6E29 wen, 0x6E7F shi(humid),
-# 0x70B9 dian(point), 0x70ED re, 0x7259 ya, 0x7528 yong, 0x7535 dian(elec),
-# 0x7F51 wang, 0x8003 kao(think), 0x84DD lan(blue), 0x89C8 lan(view),
-# 0x8BDD hua(speech), 0x8BF4 shuo(speak), 0x8BF7 qing(please), 0x8FB9 bian(side),
-# 0x8FD9 zhe(this), 0x8FDE lian, 0x914D pei, 0x91CF liang,
-# 0x95EE wen(ask), 0x9634 yin, 0x96E8 yu, 0x96F7 lei, 0x96FE wu,
-# 0x97F3 yin(sound), 0x9898 ti(problem)
-$cps = @(
-    0x4E00, 0x4E0D, 0x4E2D, 0x4E86, 0x4E91, 0x4EAC,
-    0x4F60, 0x518D, 0x51FA, 0x52A1, 0x5317, 0x5417,
-    0x542C, 0x542F, 0x5668, 0x591A, 0x5929, 0x597D,
-    0x5DF2, 0x5EA6, 0x5F00, 0x5F0F, 0x5F55, 0x5F85,
-    0x601D, 0x6211, 0x624B, 0x6253, 0x62B1, 0x63A5,
-    0x656C, 0x6674, 0x670D, 0x671F, 0x672A, 0x673A,
-    0x6A21, 0x6B21, 0x6B49, 0x6C14, 0x6CA1, 0x6D4F,
-    0x6E05, 0x6E29, 0x6E7F, 0x70B9, 0x70ED, 0x7259,
-    0x7528, 0x7535, 0x7F51, 0x8003, 0x84DD, 0x89C8,
-    0x8BDD, 0x8BF4, 0x8BF7, 0x8FB9, 0x8FD9, 0x8FDE,
-    0x914D, 0x91CF, 0x95EE, 0x9634, 0x96E8, 0x96F7,
-    0x96FE, 0x97F3, 0x9898
-)
+$src = @'
+using System;
+using System.Drawing;
+using System.Drawing.Text;
+using System.Runtime.InteropServices;
 
-$fontName = 'Microsoft YaHei'
-$fontSize = 15
-$cell = 16
+public static class GlyphRasterizer
+{
+    public static ushort[][] RasterizeAll(int[] cps)
+    {
+        var result = new ushort[cps.Length][];
+        using (var bmp = new Bitmap(16, 16, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+        using (var g = Graphics.FromImage(bmp))
+        using (var font = new Font("Microsoft YaHei", 15f, FontStyle.Regular, GraphicsUnit.Pixel))
+        {
+            g.TextRenderingHint = TextRenderingHint.SingleBitPerPixelGridFit;
+            var sf = StringFormat.GenericTypographic;
+            var rect = new Rectangle(0, 0, 16, 16);
+            var buf = new byte[16 * 16 * 4];
+            for (int i = 0; i < cps.Length; i++)
+            {
+                g.Clear(Color.White);
+                /* y=-2: glyph body is 13px tall; offset centers it in the 16px cell (rows 2..14) */
+                g.DrawString(((char)cps[i]).ToString(), font, Brushes.Black, 0, -2, sf);
 
-$font = New-Object System.Drawing.Font($fontName, $fontSize, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-$sf = [System.Drawing.StringFormat]::GenericTypographic
+                var bd = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                                      System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                Marshal.Copy(bd.Scan0, buf, 0, buf.Length);
+                bmp.UnlockBits(bd);
 
-$rows = @()
-foreach ($cp in $cps) {
-    $ch = [string][char]$cp
-    $bmp = New-Object System.Drawing.Bitmap $cell, $cell
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.Clear([System.Drawing.Color]::White)
-    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
-    # y=-2: glyph body is 13px tall; offset centers it in the 16px cell (rows 2..14)
-    $g.DrawString($ch, $font, [System.Drawing.Brushes]::Black, 0, -2, $sf)
-    $g.Dispose()
-
-    $data = New-Object 'System.UInt16[]' $cell
-    for ($y = 0; $y -lt $cell; $y++) {
-        $v = 0
-        for ($x = 0; $x -lt $cell; $x++) {
-            $p = $bmp.GetPixel($x, $y)
-            if ($p.R -lt 128) { $v = $v -bor (1 -shl (15 - $x)) }
+                var data = new ushort[16];
+                for (int y = 0; y < 16; y++)
+                {
+                    int v = 0, basei = y * 16 * 4;
+                    for (int x = 0; x < 16; x++)
+                        if (buf[basei + x * 4 + 2] < 128) v |= 1 << (15 - x);   /* R 通道 < 128 = 墨点 */
+                    data[y] = (ushort)v;
+                }
+                result[i] = data;
+            }
         }
-        $data[$y] = [uint16]$v
+        return result;
     }
-    $bmp.Dispose()
-    $rows += , $data
 }
-$font.Dispose()
+'@
+Add-Type -TypeDefinition $src -ReferencedAssemblies 'System.Drawing' -ErrorAction Stop
 
+# ── 1) 枚举 GB2312 字符（码页 936 解码双字节）─────────────────────────
+$enc = [System.Text.Encoding]::GetEncoding(936)
+$list = New-Object System.Collections.Generic.List[uint32]
+for ($hi = 0xA1; $hi -le 0xF7; $hi++) {
+    for ($lo = 0xA1; $lo -le 0xFE; $lo++) {
+        $s = $enc.GetString([byte[]]@($hi, $lo))
+        if ($s.Length -eq 1 -and [int][char]$s[0] -gt 0x7F) {
+            $list.Add([uint32][char]$s[0])
+        }
+    }
+}
+$cps = @($list | Sort-Object -Unique)
+$ints = New-Object 'int[]' $cps.Count
+for ($i = 0; $i -lt $cps.Count; $i++) { $ints[$i] = [int]$cps[$i] }
+Write-Host "charset: $($cps.Count) glyphs"
+
+# ── 2) 批量栅格化 ─────────────────────────────────────────────────────
+$t0 = Get-Date
+$glyphs = [GlyphRasterizer]::RasterizeAll($ints)
+Write-Host "rasterized $($glyphs.Length) glyphs in $([int]((Get-Date) - $t0).TotalSeconds)s"
+
+# ── 3) 输出 ───────────────────────────────────────────────────────────
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('/* Auto-generated by tools/gen_cjk.ps1 - do not edit by hand. */')
-[void]$sb.AppendLine('/* 16x16 CJK glyphs, one uint16_t per row, MSB = leftmost pixel. */')
+[void]$sb.AppendLine("/* 16x16 CJK glyphs (GB2312, $($cps.Count) chars), one uint16_t per row, MSB = leftmost pixel. */")
 [void]$sb.AppendLine('#include "font_cjk.h"')
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('static const uint16_t cjk_rows[][16] = {')
 for ($i = 0; $i -lt $cps.Count; $i++) {
     $label = ('U+{0:X4}' -f $cps[$i])
-    $vals = ($rows[$i] | ForEach-Object { '0x{0:X4}' -f $_ }) -join ','
+    $vals = ($glyphs[$i] | ForEach-Object { '0x{0:X4}' -f $_ }) -join ','
     [void]$sb.AppendLine("    { $vals }, /* $label */")
 }
 [void]$sb.AppendLine('};')
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('static const uint32_t cjk_cps[] = {')
-$cpsList = ($cps | ForEach-Object { '0x{0:X4}' -f $_ }) -join ', '
-[void]$sb.AppendLine("    $cpsList")
+for ($i = 0; $i -lt $cps.Count; $i += 10) {
+    $end = [Math]::Min($i + 9, $cps.Count - 1)
+    $chunk = @()
+    for ($j = $i; $j -le $end; $j++) { $chunk += ('0x{0:X4}' -f $cps[$j]) }
+    $suffix = if ($end -lt $cps.Count - 1) { ',' } else { '' }
+    [void]$sb.AppendLine('    ' + ($chunk -join ', ') + $suffix)
+}
 [void]$sb.AppendLine('};')
 [void]$sb.AppendLine('')
+[void]$sb.AppendLine('/* binary search; cps array is sorted ascending */')
 [void]$sb.AppendLine('const uint16_t *cjk_glyph(uint32_t cp)')
 [void]$sb.AppendLine('{')
-[void]$sb.AppendLine('    for (unsigned i = 0; i < sizeof(cjk_cps) / sizeof(cjk_cps[0]); i++) {')
-[void]$sb.AppendLine('        if (cjk_cps[i] == cp) return cjk_rows[i];')
+[void]$sb.AppendLine('    unsigned lo = 0, hi = sizeof(cjk_cps) / sizeof(cjk_cps[0]);')
+[void]$sb.AppendLine('    while (lo < hi) {')
+[void]$sb.AppendLine('        unsigned mid = (lo + hi) / 2;')
+[void]$sb.AppendLine('        if (cjk_cps[mid] == cp) return cjk_rows[mid];')
+[void]$sb.AppendLine('        if (cjk_cps[mid] < cp) lo = mid + 1;')
+[void]$sb.AppendLine('        else                   hi = mid;')
 [void]$sb.AppendLine('    }')
 [void]$sb.AppendLine('    return 0;')
 [void]$sb.AppendLine('}')
@@ -106,4 +127,4 @@ $dstH = Join-Path $dir '..\components\ui\font_cjk.h'
 /* Return 16 rows of a 16x16 glyph (MSB = leftmost), or NULL if not present. */
 const uint16_t *cjk_glyph(uint32_t cp);
 '@, (New-Object System.Text.UTF8Encoding $false))
-"generated: $dstC"
+Write-Host "generated: $dstC ($((Get-Item $dstC).Length) bytes)"

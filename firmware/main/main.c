@@ -43,6 +43,34 @@ static int s_key_voice = 0;             /* 本次按键已触发录音（防重�
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
 
+/* ── 字幕按播放进度显示 ──────────────────────────────────────────────
+ * 服务器为了让设备端有缓冲，发帧比实时快（字幕消息也随之提前 ~2 秒到）。
+ * 直接显示会"音画不同步"——把字幕连同「收到时的已入队帧数」入队，
+ * 主循环里等播放帧计数追上再显示。 */
+#define SUB_MAX   512
+#define SUBQ_MAX  12
+
+typedef struct {
+    char text[SUB_MAX];
+    int  at_frame;                  /* 本条字幕句子的首帧序号（收到时已入队帧数） */
+} sub_item_t;
+
+static sub_item_t s_subq[SUBQ_MAX];
+static int s_subq_head = 0, s_subq_tail = 0;
+
+static void subq_clear(void) { s_subq_head = s_subq_tail = 0; }
+
+static void subq_push(const char *text, int at_frame)
+{
+    int next = (s_subq_tail + 1) % SUBQ_MAX;
+    if (next == s_subq_head)                       /* 满：丢最旧 */
+        s_subq_head = (s_subq_head + 1) % SUBQ_MAX;
+    sub_item_t *it = &s_subq[s_subq_tail];
+    snprintf(it->text, SUB_MAX, "%s", text ? text : "");
+    it->at_frame = at_frame;
+    s_subq_tail = next;
+}
+
 static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
 static void voice_to(voice_state_t v)
@@ -86,6 +114,20 @@ static void voice_stop_rec(void)
     ESP_LOGI(TAG, "结束录音，等服务器");
 }
 
+/** 用户打断：停播放、清字幕与未显示队列，回空闲（随后 voice_start_rec 立即切到录音）。
+ *  服务器收到新的 rec start 会作废上一轮回答（turn 失效），旧的迟到帧由
+ *  on_ws_audio 的 REC/THINK 过滤丢弃。 */
+static void voice_interrupt(void)
+{
+    audio_play_stop();
+    audio_rec_stop();
+    subq_clear();
+    ui_set_sub("");
+    s_sub_clear_at = 0;
+    s_dirty = 1;
+    voice_to(VOICE_IDLE);
+}
+
 /* ── 服务器校时 ────────────────────────────────────────────────────── */
 
 /** 用服务器下发的 info 校准 RTC；偏差大于 90 秒才写，避免秒位被反复重置 */
@@ -122,10 +164,14 @@ static void on_ws_event(const ws_event_t *ev)
         sync_time_from_server();
         s_dirty = 1;
         break;
-    case WS_EVT_SUB:
-        ui_set_sub(ev->text);
-        s_dirty = 1;
+    case WS_EVT_SUB: {
+        /* 服务器发帧领先声音约 2 秒（缓冲），字幕消息也是提前到的——
+         * 先记下「收到时已入队帧数」，等对应首帧真的播出去再显示（主循环里处理） */
+        int pushed = 0;
+        audio_play_stats(&pushed, NULL);
+        subq_push(ev->text, pushed);
         break;
+    }
     case WS_EVT_STT:
         s_dirty = 1;
         break;
@@ -143,6 +189,7 @@ static void on_ws_event(const ws_event_t *ev)
         break;
     case WS_EVT_TTS_START:
         audio_play_reset();
+        subq_clear();
         s_sub_clear_at = 0;
         ui_set_sub("");
         if (s_voice_state != VOICE_REC) voice_to(VOICE_SPEAK);
@@ -159,6 +206,9 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_DISCONNECTED:
         audio_play_stop();
         audio_rec_stop();
+        subq_clear();
+        ui_set_sub("");
+        s_sub_clear_at = 0;
         s_key_down_at = -1;
         if (s_voice_state != VOICE_IDLE) voice_to(VOICE_IDLE);
         s_dirty = 1;
@@ -222,10 +272,16 @@ static void main_loop(void)
             ESP_LOGI(TAG, "功能页超时 → home");
         }
 
-        /* KEY 长按 350ms → 开始录音（短按翻页不受影响） */
-        if (s_key_down_at >= 0 && !s_key_voice && s_voice_state == VOICE_IDLE &&
+        /* KEY 长按 350ms → 开始录音（短按翻页不受影响）；
+         * 说话/思考中长按 = 用户优先：打断当前回答，直接开始新提问 */
+        if (s_key_down_at >= 0 && !s_key_voice && s_voice_state != VOICE_REC &&
             now - (uint32_t)s_key_down_at >= 350) {
             s_key_voice = 1;
+            if (s_voice_state == VOICE_SPEAK || s_voice_state == VOICE_THINK) {
+                ESP_LOGI(TAG, "用户打断（%s）→ 开始新录音",
+                         s_voice_state == VOICE_SPEAK ? "说话中" : "思考中");
+                voice_interrupt();
+            }
             voice_start_rec();
         }
 
@@ -233,6 +289,17 @@ static void main_loop(void)
         if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
             s_sub_clear_at = now_ms() + 4000;
             voice_to(VOICE_IDLE);
+        }
+
+        /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音） */
+        if (s_subq_head != s_subq_tail) {
+            int played = 0;
+            audio_play_stats(NULL, &played);
+            while (s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
+                ui_set_sub(s_subq[s_subq_head].text);
+                s_dirty = 1;
+                s_subq_head = (s_subq_head + 1) % SUBQ_MAX;
+            }
         }
 
         /* 等服务器超时保护 */
@@ -265,6 +332,9 @@ static void main_loop(void)
 /** 服务器下行的 Opus 帧 → 播放队列 */
 static void on_ws_audio(const uint8_t *data, size_t len)
 {
+    /* 录音/思考阶段属于新的语音回合：此时到达的都是上一轮回答的迟到帧
+     * （用户打断场景），直接丢弃，避免旧声音盖在新录音上 */
+    if (s_voice_state == VOICE_REC || s_voice_state == VOICE_THINK) return;
     audio_play_push(data, len);
 }
 

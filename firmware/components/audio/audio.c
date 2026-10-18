@@ -70,6 +70,15 @@ static StaticQueue_t  s_playq_static;
 static volatile int   s_play_finishing = 0;   /* tts_stop 已到 */
 static volatile int   s_play_done      = 0;   /* 队列播完（main 读一次清） */
 static volatile int   s_playing        = 0;
+static volatile int   s_stream_open    = 0;   /* tts_start 后开闸；结束后丢迟到帧 */
+static volatile int   s_stream_act_ms  = 0;   /* 最近一次帧活动时刻（看门狗用） */
+static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步，tts_start 清零） */
+static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
+
+/* 播放流沉默超时：tts_start 后 15 秒既没有帧流入、也没有声音在放
+ * （服务器句子合成超时 12 秒；正常到不了）→ 判本轮结束并复位，
+ * 防止服务器中途没了 tts_stop 时主状态机永远停在"说话中"。 */
+#define PLAY_WATCHDOG_MS 15000
 
 /* ── BOOT 自检（半双工语音便签：按住录音，松手回放）──────────────────── */
 
@@ -225,6 +234,16 @@ static void play_task(void *arg)
     }
 
     for (;;) {
+        /* 看门狗：流开着但 15 秒无任何帧活动 → 判本轮结束（防卡"说话中"） */
+        if (s_stream_open && !s_play_finishing &&
+            (int)(xTaskGetTickCount() * portTICK_PERIOD_MS) - s_stream_act_ms > PLAY_WATCHDOG_MS) {
+            ESP_LOGW(TAG, "播放流沉默超过 %d 秒，按播放结束处理", PLAY_WATCHDOG_MS / 1000);
+            s_stream_open = 0;
+            s_playing = 0;
+            xQueueReset(s_playq);
+            s_play_done = 1;
+        }
+
         /* BOOT 自检回放（此时麦克风不录音，半双工不会回授） */
         if (s_memo && s_memo_play_pos < s_memo_play_end) {
             int pos = s_memo_play_pos;
@@ -243,7 +262,11 @@ static void play_task(void *arg)
 
         if (!s_playing) {
             if (xQueueReceive(s_playq, &f, pdMS_TO_TICKS(100)) != pdTRUE) {
-                if (s_play_finishing) { s_play_finishing = 0; s_play_done = 1; }
+                if (s_play_finishing) {
+                    s_play_finishing = 0;
+                    s_stream_open = 0;
+                    s_play_done = 1;
+                }
                 continue;
             }
             s_playing = 1;
@@ -251,6 +274,7 @@ static void play_task(void *arg)
             if (s_play_finishing) {
                 s_playing = 0;
                 s_play_finishing = 0;
+                s_stream_open = 0;
                 s_play_done = 1;             /* 队列播完 → 通知 main 回空闲 */
             } else {
                 vTaskDelay(pdMS_TO_TICKS(5)); /* 等下一帧（网络抖动） */
@@ -262,6 +286,8 @@ static void play_task(void *arg)
         if (n > 0) {
             for (int i = 0; i < n; i++) { st[i * 2] = pcm[i]; st[i * 2 + 1] = pcm[i]; }
             esp_codec_dev_write(s_play, st, n * 4);
+            s_frames_played++;
+            s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         } else if (n < 0) {
             ESP_LOGW(TAG, "opus 解码失败: %d", n);
         }
@@ -281,17 +307,26 @@ void audio_play_reset(void)
     if (!s_ready) return;
     s_play_finishing = 0;
     s_play_done = 0;
+    s_stream_open = 1;
+    s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_frames_pushed = 0;
+    s_frames_played = 0;
     xQueueReset(s_playq);
 }
 
 void audio_play_push(const uint8_t *opus, size_t len)
 {
     if (!s_ready || !s_playq || len == 0 || len > MAX_OPUS_FRAME) return;
+    if (!s_stream_open) return;                  /* 流已结束/被打断：丢弃迟到帧 */
     play_frame_t f;
     f.len = (uint16_t)len;
     memcpy(f.data, opus, len);
-    if (xQueueSend(s_playq, &f, 0) != pdTRUE)
+    if (xQueueSend(s_playq, &f, 0) == pdTRUE) {
+        s_frames_pushed++;
+        s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    } else {
         ESP_LOGW(TAG, "播放队列满，丢帧");
+    }
 }
 
 void audio_play_finish(void) { if (s_ready) s_play_finishing = 1; }
@@ -300,6 +335,7 @@ void audio_play_stop(void)
 {
     if (!s_ready) return;
     xQueueReset(s_playq);
+    s_stream_open = 0;           /* 迟到帧丢弃，等下一次 tts_start 重新开闸 */
     s_play_finishing = 1;
     s_playing = 1;              /* 让播放任务尽快走「空 + finishing」分支收敛 */
 }
@@ -309,6 +345,12 @@ int audio_play_finished(void)
     int d = s_play_done;
     if (d) s_play_done = 0;
     return d;
+}
+
+void audio_play_stats(int *pushed, int *played)
+{
+    if (pushed) *pushed = s_frames_pushed;
+    if (played) *played = s_frames_played;
 }
 
 void audio_echo_set(int on)
@@ -455,7 +497,7 @@ esp_err_t audio_init(void)
         ESP_LOGE(TAG, "编解码器打开失败: play=%d rec=%d", r1, r2);
         return ESP_FAIL;
     }
-    esp_codec_dev_set_out_vol(s_play, 85);
+    esp_codec_dev_set_out_vol(s_play, 65);        /* 85→65：压低功放电流尖峰，缓解 BOD 欠压复位 */
     esp_codec_dev_set_in_gain(s_rec, 35.0f);      /* 与出厂程序一致（有效 34.5dB） */
 
     /* 5) 播放队列（优先放 PSRAM，失败退回内部 RAM）+ 两个任务 */

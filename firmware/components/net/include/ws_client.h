@@ -40,8 +40,8 @@ typedef enum {
 
 typedef struct {
     ws_event_kind_t kind;
-    /* 按类型取用 */
-    char text[128];
+    /* 按类型取用（sub 是整句文本，UTF-8 最长 3B/字，留足 512） */
+    char text[512];
     char name[16];
     int  lua_id;
 } ws_event_t;

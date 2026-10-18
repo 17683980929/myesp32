@@ -17,6 +17,16 @@ import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[dev]", ...a);
 
+/** 单句 TTS 合成超时：Baidu 偶发卡住会让设备端"沉默卡在说话中"，超时后干净收尾 */
+const TTS_TIMEOUT_MS = 12000;
+function withTimeout(p, ms) {
+  let t;
+  return Promise.race([
+    p,
+    new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`合成超时 ${ms}ms`)), ms); }),
+  ]).finally(() => clearTimeout(t));
+}
+
 /* ── 音频下发节拍控制 ─────────────────────────────────────────────────
  * 目标：设备端始终保持 ~2 秒左右缓冲。
  * 教训：按 60ms/帧的"实时"节奏发是错误的 —— setTimeout 实际 ≥60ms
@@ -46,6 +56,7 @@ export class DeviceSession {
     this.history = [];
     this.aborted = false;
     this.busy = false;
+    this.turn = 0;              /* 对话回合号：新录音会 ++ 作废旧回合（用户打断） */
     this.timers = [];
     this.lastStat = null;
   }
@@ -75,11 +86,15 @@ export class DeviceSession {
 
   close() {
     this.aborted = true;
+    this.turn++;                        /* 作废正在跑的回合（发送/生成循环立即退出） */
     this.timers.forEach(clearInterval);
     this.timers = [];
     try { this.opus.free(); } catch { /* ignore */ }
     log(`[${this.sid}] 会话结束`);
   }
+
+  /** 某回合是否已作废（被新录音打断 / 会话关闭） */
+  stale(turn) { return this.aborted || turn !== this.turn; }
 
   /* ── 消息分发 ─────────────────────────────────────────────────────── */
 
@@ -128,8 +143,10 @@ export class DeviceSession {
 
   onRecStart() {
     if (this.busy) {
-      this.send(build.err("正在说话，请稍后"));
-      return;
+      /* 说话/思考中用户又按了录音键 = 打断：作废本轮回答，让位给新提问
+       * （设备端已本地停播并丢弃迟到帧；这里让生成/发送循环尽快退出） */
+      log(`[${this.sid}] 用户打断，作废上一轮回答`);
+      this.turn++;
     }
     this.recording = true;
     this.aborted = false;
@@ -158,6 +175,7 @@ export class DeviceSession {
 
   async talk(pcm) {
     const cfg = this.ctx.config;
+    const myTurn = ++this.turn;         /* 本回合编号：被新录音/断开作废时失效 */
     this.busy = true;
 
     try {
@@ -167,10 +185,11 @@ export class DeviceSession {
 
       const t0 = Date.now();
       const { text } = await asr.recognize(pcm);
+      if (this.stale(myTurn)) return;
       log(`[${this.sid}] ASR ${Date.now() - t0}ms → "${text}"`);
 
       if (!text) {
-        await this.speakOne("我没听清，再说一次好吗？");
+        await this.speakOne("我没听清，再说一次好吗？", myTurn);
         return;
       }
 
@@ -178,18 +197,21 @@ export class DeviceSession {
       this.history.push({ role: "user", content: text });
 
       /* 2) 大模型 + 语音合成，边生成边播 */
-      await this.streamAnswer(text);
+      await this.streamAnswer(text, myTurn);
     } catch (e) {
+      if (this.stale(myTurn)) return;   /* 已被打断：连道歉都别播了 */
       log(`[${this.sid}] 对话失败: ${e.message}`);
       this.send(build.err(e.message));
-      await this.speakOne("抱歉，我这边出了点问题。");
+      await this.speakOne("抱歉，我这边出了点问题。", myTurn);
     } finally {
-      this.busy = false;
-      this.aborted = false;
+      if (myTurn === this.turn) {       /* 只有最新回合负责收尾 */
+        this.busy = false;
+        this.aborted = false;
+      }
     }
   }
 
-  async streamAnswer(userText) {
+  async streamAnswer(userText, myTurn) {
     const cfg = this.ctx.config;
 
     /* 生产者/消费者：LLM 出句 → 队列 → 发送循环按实时节奏发 */
@@ -200,18 +222,18 @@ export class DeviceSession {
 
     const sender = (async () => {
       this.send(build.ttsStart());
-      const t0 = Date.now();
+      const t0s = Date.now();
       let audioMs = 0;                         /* 累计已发音频时长 */
       while (producing || queue.length) {
-        if (this.aborted) break;
+        if (this.stale(myTurn)) break;
         if (!queue.length) { await sleep(8); continue; }
         const { frames, text } = queue.shift();
         this.send(build.sub(text));
         for (const f of frames) {
-          if (this.aborted) break;
+          if (this.stale(myTurn)) break;
           this.sendBin(f);
           audioMs += FRAME_MS;
-          const lead = audioMs - (Date.now() - t0);   /* 设备端缓冲估计 */
+          const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
           await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
         }
       }
@@ -219,6 +241,7 @@ export class DeviceSession {
     })();
 
     let full = "";
+    let sent = 0;
     try {
       for await (const sentence of chatSentences({
         apiKey: cfg.llm.apiKey,
@@ -231,7 +254,7 @@ export class DeviceSession {
         maxTokens: cfg.llm.maxTokens,
         temperature: cfg.llm.temperature,
       })) {
-        if (this.aborted) break;
+        if (this.stale(myTurn)) break;
         full += sentence;
 
         if (!firstAt) {
@@ -239,7 +262,16 @@ export class DeviceSession {
           log(`[${this.sid}] 首句延迟 ${firstAt - t0}ms`);
         }
 
-        const { frames } = await textToOpusFrames(sentence, { speed: cfg.tts.speed });
+        /* 单句合成加超时：卡住的句子不能拖死整段回答（设备端会沉默卡"说话中"） */
+        let frames;
+        try {
+          ({ frames } = await withTimeout(textToOpusFrames(sentence, { speed: cfg.tts.speed }), TTS_TIMEOUT_MS));
+        } catch (e) {
+          log(`[${this.sid}] 句子合成失败: ${e.message}`);
+          if (sent === 0) throw e;      /* 一句都没成 → 走道歉流程 */
+          break;                        /* 已有内容 → 干净收尾，设备播完队列自然结束 */
+        }
+        sent++;
         queue.push({ frames, text: sentence.trim() });
       }
     } catch (e) {
@@ -250,23 +282,24 @@ export class DeviceSession {
       await sender;
     }
 
-    if (full) {
+    if (full && !this.stale(myTurn)) {
       this.history.push({ role: "assistant", content: full });
       if (this.history.length > 20) this.history = this.history.slice(-20);
       log(`[${this.sid}] 回答 ${full.length} 字`);
     }
   }
 
-  /** 不经过 LLM，直接播一句话 */
-  async speakOne(text) {
+  /** 不经过 LLM，直接播一句话（沿用调用者的回合号，被打断即停） */
+  async speakOne(text, myTurn = this.turn) {
     try {
-      const { frames } = await textToOpusFrames(text, { speed: this.ctx.config.tts.speed });
+      const { frames } = await withTimeout(textToOpusFrames(text, { speed: this.ctx.config.tts.speed }), TTS_TIMEOUT_MS);
+      if (this.stale(myTurn)) return;
       this.send(build.ttsStart());
       this.send(build.sub(text));
       const t0 = Date.now();
       let audioMs = 0;
       for (const f of frames) {
-        if (this.aborted) break;
+        if (this.stale(myTurn)) break;
         this.sendBin(f);
         audioMs += FRAME_MS;
         const lead = audioMs - (Date.now() - t0);

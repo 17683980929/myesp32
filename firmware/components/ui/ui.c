@@ -112,6 +112,12 @@ static void draw_cjk(int x, int y, const char *s, int scale, int ink)
 {
     while (*s) {
         uint32_t cp = utf8_next(&s);
+        if (cp < 0x80) {             /* ASCII：用 5x7 小点阵居中填进 16px 格（数字/字母不再空白） */
+            char tmp[2] = { (char)cp, 0 };
+            draw_text(x + (11 * scale) / 2, y + (9 * scale) / 2, tmp, scale, ink);
+            x += 16 * scale;
+            continue;
+        }
         const uint16_t *g = cjk_glyph(cp);
         if (g) {
             for (int row = 0; row < 16; row++) {
@@ -306,7 +312,7 @@ static void pet_tick(uint32_t now)
 
 static ui_page_t s_page = UI_PAGE_HOME;
 static int s_busy = 0;
-static char s_sub[64] = "";
+static char s_sub[512] = "";             /* 一句话最长 ~170 字（UTF-8 最多 3B/字） */
 static char s_portal_ap[32] = "";
 
 void ui_init(void) { lcd_init(); }
@@ -459,8 +465,17 @@ static void render_panel(void)
     status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
     status_row(262, "蓝牙", "未启用");
     if (s_sub[0]) {
-        if (has_cjk(s_sub)) draw_cjk(PANEL_X, 284, s_sub, 1, 1);
-        else                draw_text(PANEL_X, 284, s_sub, 1, 1);
+        /* 字幕：整行全宽放在桌宠下方（16px/字），最多 24 字（超出截断），居中显示。
+         * 原来只画右栏 11 字——长句"看起来缺字"就有它一份。 */
+        const char *p = s_sub;
+        int cnt = 0;
+        while (*p && cnt < 24) { utf8_next(&p); cnt++; }
+        size_t blen = (size_t)(p - s_sub);
+        char line[80];
+        if (blen > sizeof(line) - 1) blen = sizeof(line) - 1;
+        memcpy(line, s_sub, blen);
+        line[blen] = 0;
+        draw_cjk((LCD_W - cnt * 16) / 2, 284, line, 1, 1);
     }
 }
 
