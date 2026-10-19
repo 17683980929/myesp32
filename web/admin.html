@@ -187,9 +187,29 @@
 
   <!-- TTS -->
   <div class="card">
-    <h2>语音合成 <span class="tag">百度（免费）</span></h2>
-    <label>语速（0-15）</label>
-    <input id="t_speed" type="number" min="0" max="15">
+    <h2>语音合成 <span class="tag">TTS</span></h2>
+    <div class="row">
+      <div>
+        <label>引擎</label>
+        <select id="t_provider">
+          <option value="tencent">腾讯云（大模型音色）</option>
+          <option value="baidu">百度（免费备用）</option>
+        </select>
+      </div>
+      <div>
+        <label>百度语速（0-15）</label>
+        <input id="t_speed" type="number" min="0" max="15">
+      </div>
+    </div>
+    <div class="row">
+      <div><label>腾讯 SecretId</label><input id="t_sid" type="password"></div>
+      <div><label>腾讯 SecretKey</label><input id="t_skey" type="password"></div>
+    </div>
+    <div class="row">
+      <div><label>腾讯音色 VoiceType</label><input id="t_voice" type="number" placeholder="101001"></div>
+      <div><label>腾讯语速（-2~6，0=常速）</label><input id="t_tspeed" type="number" step="0.1" min="-2" max="6"></div>
+    </div>
+    <p class="hint">音色示例：101001 智瑜（女·大模型）/ 101004 智云（男·大模型）/ 1001 智瑜（精品）/ 0 基础女声1。密钥与语音识别可用同一腾讯账号；未配密钥或腾讯调用失败时自动回退百度。</p>
   </div>
 
   <!-- Lua -->
@@ -248,6 +268,11 @@ async function loadConfig() {
   $("a_skey").value = cfg.asr.secretKey;
 
   $("t_speed").value = cfg.tts.speed;
+  $("t_provider").value = cfg.tts.provider || "baidu";
+  $("t_sid").value = cfg.tts.tencent?.secretId || "";
+  $("t_skey").value = cfg.tts.tencent?.secretKey || "";
+  $("t_voice").value = cfg.tts.tencent?.voiceType ?? 101001;
+  $("t_tspeed").value = cfg.tts.tencent?.speed ?? 0;
 
   $("lua_code").value = cfg.lua.activeScript || "";
 
@@ -289,7 +314,16 @@ async function saveAll() {
       secretId: $("a_sid").value,
       secretKey: $("a_skey").value,
     },
-    tts: { speed: +$("t_speed").value },
+    tts: {
+      provider: $("t_provider").value,
+      speed: +$("t_speed").value,
+      tencent: {
+        secretId: $("t_sid").value,
+        secretKey: $("t_skey").value,
+        voiceType: +$("t_voice").value,
+        speed: +$("t_tspeed").value,
+      },
+    },
   };
 
   const r = await fetch("/api/config", {

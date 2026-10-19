@@ -381,7 +381,7 @@ export class DeviceSession {
       /* 单句合成加超时：卡住的句子不能拖死整段回答（设备端会沉默卡"说话中"） */
       let frames;
       try {
-        ({ frames } = await withTimeout(textToOpusFrames(sentence, { speed: cfg.tts.speed }), TTS_TIMEOUT_MS));
+        ({ frames } = await withTimeout(textToOpusFrames(sentence, cfg.tts), TTS_TIMEOUT_MS));
       } catch (e) {
         log(`[${this.sid}] 句子合成失败: ${e.message}`);
         if (sent === 0) throw e;      /* 一句都没成 → 走道歉流程 */
@@ -500,7 +500,7 @@ export class DeviceSession {
   /** 不经过 LLM，直接播一句话（沿用调用者的回合号，被打断即停） */
   async speakOne(text, myTurn = this.turn) {
     try {
-      const { frames } = await withTimeout(textToOpusFrames(text, { speed: this.ctx.config.tts.speed }), TTS_TIMEOUT_MS);
+      const { frames } = await withTimeout(textToOpusFrames(text, this.ctx.config.tts), TTS_TIMEOUT_MS);
       if (this.stale(myTurn)) return;
       this.send(build.ttsStart());
       this.send(build.sub(text, frames.length));

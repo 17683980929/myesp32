@@ -1,11 +1,16 @@
 /**
- * services/tts.mjs — 语音合成（百度翻译接口，免费）
+ * services/tts.mjs — 语音合成
  *
- * 链路：文字 → 百度 TTS(MP3) → mpg123 解码 → 16kHz 单声道 PCM → Opus 帧
+ * 链路：文字 → TTS(MP3) → mpg123 解码 → 16kHz 单声道 PCM → Opus 帧
+ *
+ * 两套引擎（config.tts.provider 选择）：
+ *   - tencent：腾讯云语音合成（云 API 3.0 TextToVoice，TC3-HMAC-SHA256 签名）
+ *   - baidu  ：百度翻译免费接口（备用/无密钥可用）
  *
  * 设备侧协议要求：Opus 16kHz 单声道 60ms 一帧（960 采样）。
  */
 
+import crypto from "node:crypto";
 import { MPEGDecoder } from "mpg123-decoder";
 import OpusScript from "opusscript";
 
@@ -41,6 +46,150 @@ async function baiduTTS(text, { speed = 5, retries = 3 } = {}) {
     }
   }
   throw new Error(`TTS 连续失败: ${lastErr.message}`);
+}
+
+/* ── 腾讯云语音合成（TextToVoice，云 API 3.0）────────────────────────────
+ * 签名 TC3-HMAC-SHA256，返回 base64 MP3。
+ * 密钥与「语音识别」可共用同一个腾讯云账号。 */
+
+const TTS_HOST = "tts.tencentcloudapi.com";
+const TTS_ERRORS = {
+  "AuthFailure.SignatureFailure": "签名错误（检查 SecretId / SecretKey）",
+  "AuthFailure.SecretIdNotFound": "SecretId 不存在",
+  "FailedOperation.NoFreeAmount": "免费额度/资源包已用尽",
+  "FailedOperation.UserNotRegistered": "未开通语音合成服务",
+  "FailedOperation.ServiceIsolate": "服务被停用（多为欠费）",
+  "LimitExceeded": "请求过于频繁（QPS 超限）",
+  "RequestLimitExceeded": "请求过于频繁（QPS 超限）",
+  "InvalidParameterValue": "参数不合法",
+};
+
+const sha256hex = (s) => crypto.createHash("sha256").update(s).digest("hex");
+const hmac256 = (key, s) => crypto.createHmac("sha256", key).update(s).digest();
+
+/** 腾讯云 TTS：一段文字 → MP3（Buffer）。失败抛错（含中文原因）。 */
+export async function tencentTTS(text, cfg = {}) {
+  const {
+    secretId, secretKey, voiceType = 101001, speed = 0, volume = 0,
+    region = "ap-guangzhou", timeoutMs = 8000, retries = 1,
+  } = cfg;
+  if (!secretId || !secretKey) throw new Error("未配置腾讯云 SecretId / SecretKey");
+
+  const body = JSON.stringify({
+    Text: text,
+    SessionId: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    VoiceType: voiceType,
+    Speed: speed,
+    Volume: volume,
+    SampleRate: SAMPLE_RATE,
+    Codec: "mp3",
+  });
+
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await tencentOnce(body, { secretId, secretKey, region, timeoutMs });
+    } catch (e) {
+      lastErr = e;
+      if (!e.retriable || attempt === retries) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw lastErr;
+}
+
+async function tencentOnce(body, { secretId, secretKey, region, timeoutMs }) {
+  /* TC3-HMAC-SHA256 签名 */
+  const timestamp = Math.floor(Date.now() / 1000);
+  const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+  const canonicalRequest =
+    "POST\n/\n\n" +
+    `content-type:application/json; charset=utf-8\nhost:${TTS_HOST}\n\n` +
+    "content-type;host\n" +
+    sha256hex(body);
+  const scope = `${date}/tts/tc3_request`;
+  const stringToSign =
+    `TC3-HMAC-SHA256\n${timestamp}\n${scope}\n${sha256hex(canonicalRequest)}`;
+  const kDate = hmac256("TC3" + secretKey, date);
+  const kService = hmac256(kDate, "tts");
+  const kSigning = hmac256(kService, "tc3_request");
+  const signature = crypto.createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`https://${TTS_HOST}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Host: TTS_HOST,
+        "X-TC-Action": "TextToVoice",
+        "X-TC-Timestamp": String(timestamp),
+        "X-TC-Version": "2019-08-23",
+        "X-TC-Region": region,
+        Authorization:
+          `TC3-HMAC-SHA256 Credential=${secretId}/${scope}, ` +
+          `SignedHeaders=content-type;host, Signature=${signature}`,
+      },
+      body,
+      signal: ac.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    const err = new Error(e.name === "AbortError" ? "腾讯 TTS 请求超时" : `腾讯 TTS 网络错误: ${e.message}`);
+    err.retriable = true;
+    throw err;
+  }
+  clearTimeout(timer);
+
+  const raw = await res.text().catch(() => "");
+  let j = null;
+  try { j = JSON.parse(raw); } catch { /* 非 JSON */ }
+  if (!j || !j.Response) {
+    const head = raw.replace(/\s+/g, " ").slice(0, 200);
+    const err = new Error(`腾讯 TTS 返回异常（HTTP ${res.status}）：${head}`);
+    err.retriable = res.status >= 500;
+    throw err;
+  }
+  const r = j.Response;
+  if (r.Error) {
+    const why = TTS_ERRORS[r.Error.Code] || r.Error.Message || "未知错误";
+    const err = new Error(`腾讯 TTS 失败 [${r.Error.Code}] ${why}`);
+    err.retriable = r.Error.Code === "InternalError" || r.Error.Code === "RequestLimitExceeded";
+    throw err;
+  }
+  const mp3 = Buffer.from(r.Audio || "", "base64");
+  if (mp3.length < 800) throw new Error(`腾讯 TTS 音频过小（${mp3.length}B）`);
+  return mp3;
+}
+
+/* ── 文本切分（腾讯单次上限约 150 汉字，英文按 1/3 折算）─────────────── */
+
+/** 超长文本切成多段，优先在标点处断；limit 单位≈汉字数 */
+export function splitTtsText(text, limit = 100) {
+  const out = [];
+  let cur = "";
+  let w = 0;
+  let lastBreak = -1;
+  const weight = (ch) => (ch.codePointAt(0) > 0x2e7f ? 1 : 0.34);
+  const isBreak = (ch) => "，。！？；：、,.!?;:—…～~ \n".includes(ch);
+
+  for (const ch of text) {
+    cur += ch;
+    w += weight(ch);
+    if (isBreak(ch)) lastBreak = cur.length;
+    if (w >= limit) {
+      const cut = lastBreak > 0 && lastBreak < cur.length ? lastBreak : cur.length;
+      const head = cur.slice(0, cut);
+      cur = cur.slice(cut);
+      if (head.trim()) out.push(head);
+      w = [...cur].reduce((a, c) => a + weight(c), 0);
+      lastBreak = -1;
+    }
+  }
+  if (cur.trim()) out.push(cur);
+  return out.length ? out : [text];
 }
 
 /** MP3 → 16kHz 单声道 PCM（Int16 小端）。混单声道 + 线性重采样。 */
@@ -95,12 +244,34 @@ function pcmToOpusFrames(pcm) {
 }
 
 /**
- * 一步到位：文字 → Opus 帧
+ * 一步到位：文字 → Opus 帧（按 provider 选引擎；腾讯失败可回退百度）
+ * @param {string} text
+ * @param {{provider?:string, speed?:number, tencent?:object}} opts 通常直接传 config.tts
  * @returns {Promise<{frames:Buffer[], durationMs:number}>}
  */
 export async function textToOpusFrames(text, opts = {}) {
-  const mp3 = await baiduTTS(text, opts);
-  const pcm = await mp3ToPcm16k(mp3);
+  const provider = opts.provider || "baidu";
+  const chunks = splitTtsText(text, provider === "tencent" ? 100 : 140);
+
+  const parts = [];
+  for (const chunk of chunks) {
+    let mp3;
+    if (provider === "tencent") {
+      try {
+        mp3 = await tencentTTS(chunk, opts.tencent || {});
+      } catch (e) {
+        const fb = opts.tencent ? opts.tencent.fallbackBaidu : true;
+        if (fb === false) throw e;
+        console.error(`[tts] 腾讯合成失败（${e.message}），本句回退百度`);
+        mp3 = await baiduTTS(chunk, { speed: opts.speed });
+      }
+    } else {
+      mp3 = await baiduTTS(chunk, opts);
+    }
+    parts.push(await mp3ToPcm16k(mp3));
+  }
+
+  const pcm = parts.length === 1 ? parts[0] : Buffer.concat(parts);
   const frames = pcmToOpusFrames(pcm);
   return { frames, durationMs: (pcm.length / 2 / SAMPLE_RATE) * 1000 };
 }

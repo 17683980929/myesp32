@@ -7,6 +7,7 @@
  *   POST /api/config         保存配置
  *   GET  /api/status         运行状态（在线设备、天气缓存）
  *   POST /api/weather/refresh 强制刷一次天气
+ *   POST /api/say            让在线设备播报一句话（调试/通知）
  *   POST /api/lua            下发 Lua 脚本
  *   GET  /api/lua            读当前脚本
  *   GET  /                   静态文件（web/ 目录）
@@ -152,6 +153,16 @@ export async function handleHttp(req, res, ctx) {
         ctx.weather.fetchedAt = 0;
         const w = await ctx.weather.get(getConfig().weather);
         return json(res, 200, { ok: !!w, weather: w, error: ctx.weather.lastError });
+      }
+
+      if (p === "/api/say" && req.method === "POST") {
+        const { text } = JSON.parse(await readBody(req));
+        if (typeof text !== "string" || !text.trim())
+          return json(res, 400, { ok: false, msg: "缺少 text" });
+        const list = [...ctx.devices];
+        for (const d of list) d.speakOne(text.trim()).catch(() => {});
+        log(`让设备播报 → ${list.length} 台`);
+        return json(res, 200, { ok: true, sent: list.length });
       }
 
       if (p === "/api/lua" && req.method === "GET") {
