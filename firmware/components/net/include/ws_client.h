@@ -35,6 +35,7 @@ typedef enum {
     WS_EVT_TTS_STOP,
     WS_EVT_SUB,
     WS_EVT_LUA,
+    WS_EVT_EVT,          /* 脚本事件（{t:"evt",n:"open_timetable"}）→ sys.on 处理器 */
     WS_EVT_ERROR,
 } ws_event_kind_t;
 

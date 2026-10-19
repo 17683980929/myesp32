@@ -73,6 +73,11 @@ static void on_data(char *data, int len)
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "name"));
         strncpy(ev.name, n ?: "home", sizeof(ev.name) - 1);
         dispatch(&ev);
+    } else if (t && !strcmp(t, "evt")) {
+        ev.kind = WS_EVT_EVT;
+        const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "n"));
+        strncpy(ev.name, n ?: "", sizeof(ev.name) - 1);
+        dispatch(&ev);
     } else if (t && !strcmp(t, "stt")) {
         ev.kind = WS_EVT_STT;
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));

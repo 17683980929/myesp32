@@ -11,6 +11,7 @@
 import http from "node:http";
 import { getConfig, CONFIG_PATH } from "./config.mjs";
 import { WeatherCache } from "./services/weather.mjs";
+import { getHotNews } from "./services/news.mjs";
 import { WsGateway } from "./ws-gateway.mjs";
 import { handleHttp } from "./http-admin.mjs";
 
@@ -19,6 +20,9 @@ const weather = new WeatherCache();
 const devices = new Set();
 
 const ctx = { config, weather, devices };
+
+/* 新闻缓存预热：第一次“查新闻”不用等网络 */
+getHotNews(config.news ?? {}).catch(() => {});
 
 const server = http.createServer((req, res) => {
   handleHttp(req, res, ctx).catch((e) => {

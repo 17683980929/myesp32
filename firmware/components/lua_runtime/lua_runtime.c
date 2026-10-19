@@ -19,7 +19,7 @@
  *                                 -- "auto" = 交还自动状态（脚本控制结束）
  *   sensor.temp() sensor.hum() sensor.battery() sensor.voltage()
  *   sys.millis() sys.delay(ms≤1000) sys.log(...)   print(...)
- *   sys.on("key_click"/"key_double", fn)           -- 事件绑定（重复注册=替换）
+ *   sys.on("key_click"/"key_double"/"open_timetable"/"open_env"/"canvas_close"/"canvas_next", fn)  -- 事件绑定（重复注册=替换）
  *   timer.after(ms, fn) timer.every(ms, fn)        -- 最多 16 个
  */
 
@@ -290,9 +290,14 @@ static int l_timer_every(lua_State *L) { return timer_add(L, 0); }
  * 处理器存在 registry 引用里，随 lua_State 一起销毁（run_code 里复位）。
  * 事件从别的任务投递（按键任务），由 lua 任务串行执行，护栏同定时器。 */
 
-#define EVT_COUNT 2
-static const char *const s_evt_names[EVT_COUNT] = { "key_click", "key_double" };
-static int s_evt_ref[EVT_COUNT] = { LUA_NOREF, LUA_NOREF };
+#define EVT_COUNT 6
+static const char *const s_evt_names[EVT_COUNT] = {
+    "key_click", "key_double",                       /* 按键（脚本自己用） */
+    "open_timetable", "open_env", "canvas_close", "canvas_next",   /* 服务器/助手技能 */
+};
+static int s_evt_ref[EVT_COUNT] = {
+    LUA_NOREF, LUA_NOREF, LUA_NOREF, LUA_NOREF, LUA_NOREF, LUA_NOREF,
+};
 static uint32_t s_evt_min_stamp[EVT_COUNT];    /* 早于此时刻入队的同类事件作废（见 drop_pending） */
 
 static int l_sys_on(lua_State *L)
@@ -306,7 +311,12 @@ static int l_sys_on(lua_State *L)
         s_evt_ref[i] = luaL_ref(L, LUA_REGISTRYINDEX);   /* 重复注册 = 替换 */
         return 0;
     }
-    return luaL_error(L, "不支持的事件：%s（可用：key_click / key_double）", name);
+    char list[128] = "";
+    for (int i = 0; i < EVT_COUNT; i++) {
+        if (i) strncat(list, " / ", sizeof(list) - strlen(list) - 1);
+        strncat(list, s_evt_names[i], sizeof(list) - strlen(list) - 1);
+    }
+    return luaL_error(L, "不支持的事件：%s（可用：%s）", name, list);
 }
 
 /* ── 注册与沙箱 ────────────────────────────────────────────────────── */

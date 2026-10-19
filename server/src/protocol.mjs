@@ -34,6 +34,7 @@ export const SRV = {
   TTS_STOP: "tts_stop",    // { t, fu }              fu=1：回答以问句收尾，设备播完自动聆听
   SUB: "sub",              // { t, text }            当前句子（字幕）
   LUA: "lua",              // { t, id, code }        下发脚本
+  EVT: "evt",              // { t, n }               脚本事件 → sys.on 处理器（如 open_timetable）
   ERROR: "err",            // { t, msg }
   PING: "ping",            // { t, ts }
 };
@@ -50,6 +51,7 @@ export const build = {
   ttsStop: (fu = false) => ({ t: SRV.TTS_STOP, fu: fu ? 1 : 0 }),
   sub: (text, frames = 0) => ({ t: SRV.SUB, text, frames }),
   lua: (id, code) => ({ t: SRV.LUA, id, code }),
+  evt: (n) => ({ t: SRV.EVT, n }),
   err: (msg) => ({ t: SRV.ERROR, msg }),
   ping: () => ({ t: SRV.PING, ts: Date.now() }),
 };

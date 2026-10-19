@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { DEV, SRV, build, buildTimeInfo } from "./protocol.mjs";
 import { createASR } from "./services/asr.mjs";
 import { chatSentences } from "./services/llm.mjs";
+import { TOOLS, executeTool } from "./services/tools.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -49,6 +50,14 @@ function durationTargetChars(text) {
   }
   if (!minutes || minutes < 1 || minutes > 60) return 0;
   return Math.round(minutes * 240);
+}
+
+/* ── 助手技能（工具调用）─────────────────────────────────────────────
+ * 模型要工具 → 执行 → 带结果再生成（见 streamAnswer）。
+ * 工具往来只存在于本轮临时消息里，不进长期历史（省 token 也不污染上下文）。 */
+function parseToolArgs(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch { return {}; }
 }
 
 /* ── 音频下发节拍控制 ─────────────────────────────────────────────────
@@ -383,16 +392,64 @@ export class DeviceSession {
       return true;
     };
 
+    /* 工具循环：模型要工具（本轮通常没有正文，也可能先来一句“让我查查”的引子）
+     * → 执行并把结果喂回去再生成，最多 3 轮。工具消息不进长期历史。 */
+    let toolsOn = cfg.llm.tools !== false;
+    let msgs = [
+      { role: "system", content: cfg.llm.systemPrompt },
+      ...this.history.slice(-8),
+    ];
+
     try {
-      for await (const sentence of chatSentences({
-        ...genOpts,
-        messages: [
-          { role: "system", content: cfg.llm.systemPrompt },
-          ...this.history.slice(-8),
-        ],
-      })) {
+      let toolRounds = 0;
+      for (;;) {
         if (this.stale(myTurn)) break;
-        if (!(await pushSentence(sentence))) break;
+        const toolSink = { calls: [] };
+        let stop = false;
+        try {
+          for await (const sentence of chatSentences({
+            ...genOpts,
+            messages: msgs,
+            tools: toolsOn ? TOOLS : undefined,
+            toolSink: toolsOn ? toolSink : undefined,
+          })) {
+            if (this.stale(myTurn)) break;
+            if (!(await pushSentence(sentence))) { stop = true; break; }
+          }
+        } catch (e) {
+          /* 个别网关不认 tools 参数：这一轮还什么都没生成 → 关掉工具重试一次 */
+          if (toolsOn && toolRounds === 0 && sent === 0 && !full.trim() &&
+              /tool|function|param|400|invalid/i.test(e.message)) {
+            log(`[${this.sid}] 工具调用不可用（${e.message}）→ 降级纯对话`);
+            toolsOn = false;
+            continue;
+          }
+          throw e;
+        }
+        if (stop || this.stale(myTurn)) break;
+
+        const calls = toolSink.calls.filter((c) => c.name);
+        if (!calls.length) break;
+        if (++toolRounds > 3) break;
+
+        log(`[${this.sid}] 工具调用: ${calls.map((c) => `${c.name}(${(c.args || "").slice(0, 60)})`).join(" ")}`);
+        const asstCalls = calls.map((c, i) => ({
+          id: c.id || `call_${toolRounds}_${i}`,
+          type: "function",
+          function: { name: c.name, arguments: c.args || "{}" },
+        }));
+        msgs = [...msgs, { role: "assistant", content: null, tool_calls: asstCalls }];
+        for (const c of asstCalls) {
+          let result;
+          try {
+            result = await executeTool(c.function.name, parseToolArgs(c.function.arguments), this.ctx, this);
+          } catch (e) {
+            result = `工具执行失败：${e.message}`;
+          }
+          log(`[${this.sid}] 工具结果 ${c.function.name} → ${String(result).replace(/\s+/g, " ").slice(0, 100)}`);
+          msgs.push({ role: "tool", tool_call_id: c.id, content: String(result) });
+          if (this.stale(myTurn)) break;
+        }
       }
 
       /* 用户点名了时长（"5 分钟的故事"）而第一轮没写够 → 续讲补到目标长度。

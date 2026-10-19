@@ -7,6 +7,10 @@
  *  2. 思考模式默认关闭 —— 语音场景下思考会明显拉长首字延迟。
  *
  * 流式返回 + 按句切分：第一句生成完就能送去 TTS 开播，不用等整段写完。
+ *
+ * 工具调用（function calling）：传 tools 声明后，模型可能先要工具——
+ * 这时流里的 tool_calls 增量按 index 拼好，收进调用方给的 toolSink.calls，
+ * 文本照常 yield（通常是空的，或只有一句"让我查查"的引子）。
  */
 
 const SENT_END = /[。！？；!?;\n]/;
@@ -19,6 +23,8 @@ const SENT_END = /[。！？；!?;\n]/;
  * @param {string} [o.model]
  * @param {Array<{role:string,content:string}>} o.messages
  * @param {boolean} [o.thinking] 默认 false
+ * @param {Array} [o.tools] 工具声明（OpenAI 兼容）
+ * @param {{calls:Array}} [o.toolSink] 收集流里的 tool_calls（{id,name,args}）
  */
 export async function* chatStream(o) {
   const {
@@ -27,6 +33,8 @@ export async function* chatStream(o) {
     model = "deepseek-flash",
     messages,
     thinking = false,
+    tools,
+    toolSink,
     maxTokens = 300,
     temperature = 0.7,
     /* 流是"边收边用"的：长故事可能要连续生成 1~3 分钟，只要流还在动就不该掐 */
@@ -44,6 +52,7 @@ export async function* chatStream(o) {
     /* DeepSeek 思考模式默认开启，语音场景必须显式关掉 */
     thinking: thinking ? { type: "enabled" } : { type: "disabled" },
   };
+  if (tools?.length) body.tools = tools;
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -84,8 +93,19 @@ export async function* chatStream(o) {
         const data = line.slice(5).trim();
         if (data === "[DONE]") return;
         try {
-          const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-          if (delta) yield delta;
+          const delta = JSON.parse(data).choices?.[0]?.delta;
+          if (!delta) continue;
+          if (delta.content) yield delta.content;
+          /* 工具调用增量按 index 拼接：id/name 通常只在首包，arguments 逐包累加 */
+          if (toolSink && Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const i = tc.index ?? 0;
+              const slot = (toolSink.calls[i] ??= { id: "", name: "", args: "" });
+              if (tc.id) slot.id = tc.id;
+              if (tc.function?.name && !slot.name) slot.name = tc.function.name;
+              if (tc.function?.arguments) slot.args += tc.function.arguments;
+            }
+          }
         } catch { /* 半包 JSON，忽略 */ }
       }
     }

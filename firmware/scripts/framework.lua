@@ -1,5 +1,7 @@
 -- 多功能框架 v2：单击 = 进入第一个功能 / 切换下一个；走完最后一个再单击 = 关回主页。
 -- 单击即时无延迟（不注册 key_double）；30 秒不碰画布自动回主页（固件保鲜到期）。
+-- 语音指令（助手技能 control_screen）：open_timetable / open_env / canvas_close / canvas_next。
+-- 固件会等播报结束、画布可见了再派发，不会被语音让位清掉。
 -- 加功能：在下面 add("名字", draw) 加一块；draw 只画内容，框架统一 flush。
 -- 部署：POST /api/lua 下发 {code}。
 local F = {}                       -- 功能表
@@ -24,7 +26,7 @@ local function show(i)
   up = true
 end
 
-sys.on("key_click", function()
+local function click()               -- 单击 = 进第一个 / 切下一个 / 走完关闭
   local now = sys.millis()
   if not (up and now - last_draw < 30000) then
     return show(1)                 -- 画布不在屏上（主页）→ 进第一个功能
@@ -34,6 +36,17 @@ sys.on("key_click", function()
     return display.close()
   end
   show(cur + 1)                    -- 否则切到下一个
+end
+
+sys.on("key_click", click)
+
+-- ── 语音/服务器指令（固件播报结束后派发）──────────────────────────
+sys.on("canvas_next", click)
+sys.on("open_timetable", function() show(1) end)
+sys.on("open_env", function() show(2) end)
+sys.on("canvas_close", function()
+  up = false
+  display.close()
 end)
 
 -- ── 功能 1：政治课表（改课表只动 T 表）─────────────────────────────

@@ -90,6 +90,9 @@ static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS)
 
 static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进入自动聆听） */
 static int s_followup = 0;        /* 本轮回答以问句收尾：播完自动开麦（连续对话） */
+/** 播报期间收到的脚本事件（如"打开课表"）：语音优先让画布让位，
+ *  先暂存，等回到空闲画布可见了再执行（见 voice_to） */
+static char s_pending_evt[16] = "";
 
 static void voice_to(voice_state_t v)
 {
@@ -108,6 +111,13 @@ static void voice_to(voice_state_t v)
         break;
     }
     s_dirty = 1;
+
+    /* 播报期间暂存的脚本事件（如"打开课表"）：回空闲、画布可见了才执行 */
+    if (v == VOICE_IDLE && s_pending_evt[0]) {
+        ESP_LOGI(TAG, "执行暂存的脚本事件 %s", s_pending_evt);
+        lua_runtime_event(s_pending_evt);
+        s_pending_evt[0] = 0;
+    }
 }
 
 static void voice_start_rec(void)
@@ -275,6 +285,18 @@ static void on_ws_event(const ws_event_t *ev)
         s_dirty = 1;
         break;
     }
+    case WS_EVT_EVT:
+        /* 服务器下发的脚本事件（助手技能，如 open_timetable）：
+         * 空闲 → 直接交给脚本；语音中 → 暂存，播完回空闲再执行
+         * （语音优先级更高，画布此刻会被让位清掉） */
+        if (!ev->name[0]) break;
+        if (s_voice_state == VOICE_IDLE) {
+            lua_runtime_event(ev->name);
+        } else {
+            snprintf(s_pending_evt, sizeof(s_pending_evt), "%s", ev->name);
+            ESP_LOGI(TAG, "脚本事件 %s 暂存（播报结束后执行）", ev->name);
+        }
+        break;
     case WS_EVT_CONNECTED:
         s_dirty = 1;
         break;

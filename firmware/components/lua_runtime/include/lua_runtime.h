@@ -24,7 +24,8 @@ void lua_runtime_set_result_cb(lua_result_cb_t cb);
 void lua_runtime_deploy(int id, const char *code);
 
 /** 投递事件给脚本（sys.on 注册的处理器；没有处理器时静默忽略）。
- *  可在任意任务调用（非 ISR）。 */
+ *  可用事件：key_click / key_double / open_timetable / open_env /
+ *  canvas_close / canvas_next。可在任意任务调用（非 ISR）。 */
 void lua_runtime_event(const char *name);
 
 /** 作废队列里还没执行的某类事件（早于此刻入队的）。
