@@ -20,8 +20,11 @@ static ws_handler_t s_handler = NULL;
 static ws_bin_handler_t s_bin_handler = NULL;
 static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1 };
 
-/* lua 脚本暂存（≤7KB 的一帧可整包到达；仅在回调期间有效） */
-static char s_lua_code[7168];
+/* 文本帧组装缓冲：esp_websocket_client 1.4+ 按每次 read 分片派发
+ * （payload_offset/payload_len），大帧会拆成多次回调——攒齐整包再解析。
+ * 缓冲里的字符串仅在本次回调期间引用（上层自己会拷贝）。 */
+static char s_rx_text[7168];
+static int  s_rx_len;
 
 dev_info_t *ws_client_info(void) { return &s_info; }
 
@@ -91,9 +94,8 @@ static void on_data(char *data, int len)
         cJSON *v = cJSON_GetObjectItem(root, "id");
         ev.lua_id = v ? v->valueint : 0;
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(root, "code"));
-        if (code && strlen(code) < sizeof(s_lua_code)) {
-            memcpy(s_lua_code, code, strlen(code) + 1);
-            ev.lua_code = s_lua_code;
+        if (code && strlen(code) < sizeof(s_rx_text)) {
+            ev.lua_code = code;              /* 指向组装缓冲，仅本次回调期间有效 */
         } else {
             ev.lua_code = NULL;          /* 缺失或过长：main 回错误给服务器 */
             ESP_LOGW(TAG, "lua 脚本%s", code ? "过长" : "缺失");
@@ -139,11 +141,23 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
     }
     case WEBSOCKET_EVENT_DATA:
         if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
-            /* 单帧文本整包到达才解析（超过缓冲的会被分片，协议里暂不用） */
-            if (e->payload_offset == 0 && e->data_len == e->payload_len)
-                on_data((char *)e->data_ptr, e->data_len);
-            else
-                ESP_LOGW(TAG, "文本帧被分片（共 %d 字节），忽略", (int)e->payload_len);
+            /* 大帧会被拆成多次回调（一次 read 一段）：先攒齐再解析 */
+            if (e->payload_offset == 0) s_rx_len = 0;
+            if (s_rx_len >= 0 && s_rx_len + e->data_len < (int)sizeof(s_rx_text)) {
+                memcpy(s_rx_text + s_rx_len, e->data_ptr, e->data_len);
+                s_rx_len += e->data_len;
+            } else {
+                s_rx_len = -1;               /* 超过缓冲：整帧丢弃 */
+            }
+            if (e->payload_offset + e->data_len >= e->payload_len) {
+                if (s_rx_len >= 0) {
+                    s_rx_text[s_rx_len] = 0;
+                    on_data(s_rx_text, s_rx_len);
+                } else {
+                    ESP_LOGW(TAG, "文本帧过长（%d 字节），忽略", (int)e->payload_len);
+                }
+                s_rx_len = 0;
+            }
         } else if (e->op_code == 0x2 && e->data_len > 0 && e->data_ptr &&
                    e->payload_offset == 0 && e->data_len == e->payload_len) {
             /* 二进制音频帧（Opus，单帧远小于缓冲，不会被分片） */
