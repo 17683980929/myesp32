@@ -27,9 +27,25 @@ static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .ba
 static char s_rx_text[7168];
 static int  s_rx_len;
 
-/* 最近一次收到任何服务器数据的毫秒时刻（esp_timer 基准）。
+/* 最近一次收到应用层数据的毫秒时刻（esp_timer 基准；服务器 ping 不算）。
  * 网络看门狗据此判断链路是否"假死"（关联在、实际收发已断）。 */
 static volatile int64_t s_last_rx_ms;
+
+/* 上行健康跟踪：最近一次成功发送时刻 + 连续失败计数。
+ * 库内部锁被长占时，300ms 超时全灭、连续失败累积 →
+ * 供网络看门狗判定"上行锁死"（典型：连接名义在线但什么都发不出去）。 */
+static volatile int64_t s_last_tx_ok_ms;
+static volatile int     s_tx_fail_streak;
+
+static void tx_result(int ok)
+{
+    if (ok) {
+        s_last_tx_ok_ms = esp_timer_get_time() / 1000;
+        s_tx_fail_streak = 0;
+    } else if (s_tx_fail_streak < 100000) {
+        s_tx_fail_streak++;
+    }
+}
 
 dev_info_t *ws_client_info(void) { return &s_info; }
 
@@ -45,11 +61,27 @@ static void on_data(char *data, int len)
 
     cJSON *root = cJSON_ParseWithLength(data, len);
     if (!root) {
+        s_last_rx_ms = esp_timer_get_time() / 1000;   /* 非 JSON 文本也算应用流量 */
         ESP_LOGW(TAG, "收到非 JSON 文本帧");
         return;
     }
 
     const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(root, "t"));
+
+    if (t && !strcmp(t, "ping")) {
+        /* 服务器保活 ping：回 pong（服务器端判活用），但 ping 本身不算
+         * "应用数据活跃"、不刷新 s_last_rx_ms——否则半死链路里只有 ping
+         * 能通行时，网络看门狗永远不会触发（这次卡死排查的教训）。 */
+        cJSON *ts = cJSON_GetObjectItem(root, "ts");
+        char pong[64];
+        snprintf(pong, sizeof(pong), "{\"t\":\"pong\",\"ts\":%lld}",
+                 ts && cJSON_IsNumber(ts) ? (long long)ts->valuedouble : 0LL);
+        ws_send_json(pong);
+        cJSON_Delete(root);
+        return;
+    }
+
+    s_last_rx_ms = esp_timer_get_time() / 1000;
 
     if (t && !strcmp(t, "info")) {
         ev.kind = WS_EVT_INFO;
@@ -143,7 +175,9 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
                  "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
                  "\"caps\":[\"audio\",\"lua\"]}",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        esp_websocket_client_send_text(s_cli, msg, strlen(msg), portMAX_DELAY);
+        /* 有限超时：连接刚建立也不无限持锁（链路半死会连 ws 任务一起卡住） */
+        tx_result(esp_websocket_client_send_text(s_cli, msg, strlen(msg),
+                                                 pdMS_TO_TICKS(1000)) >= 0);
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED: {
@@ -153,7 +187,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         break;
     }
     case WEBSOCKET_EVENT_DATA:
-        s_last_rx_ms = esp_timer_get_time() / 1000;   /* 有数据来 = 链路还活着 */
+        /* 应用数据活跃度由 on_data 按类型统计（ping 不算）；这里只管分片组装 */
         if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
             /* 大帧会被拆成多次回调（一次 read 一段）：先攒齐再解析 */
             if (e->payload_offset == 0) s_rx_len = 0;
@@ -175,6 +209,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         } else if (e->op_code == 0x2 && e->data_len > 0 && e->data_ptr &&
                    e->payload_offset == 0 && e->data_len == e->payload_len) {
             /* 二进制音频帧（Opus，单帧远小于缓冲，不会被分片） */
+            s_last_rx_ms = esp_timer_get_time() / 1000;
             if (s_bin_handler) s_bin_handler((const uint8_t *)e->data_ptr, (size_t)e->data_len);
         }
         break;
@@ -202,24 +237,31 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
     s_cli = esp_websocket_client_init(&cfg);
     if (!s_cli) return ESP_FAIL;
     s_last_rx_ms = esp_timer_get_time() / 1000;
+    s_last_tx_ok_ms = s_last_rx_ms;
+    s_tx_fail_streak = 0;
 
     esp_websocket_register_events(s_cli, WEBSOCKET_EVENT_ANY, on_event, NULL);
     return esp_websocket_client_start(s_cli);
 }
 
-void ws_send_json(const char *json)
+int ws_send_json(const char *json)
 {
-    /* 控制消息给个有限超时：socket 断线/阻塞时宁可丢这条日志，
-     * 也不能把按键/主任务永久卡死（之前用 portMAX_DELAY 是隐患） */
-    if (s_cli) esp_websocket_client_send_text(s_cli, json, strlen(json), pdMS_TO_TICKS(300));
+    /* 控制消息给个有限超时：socket 断线/阻塞时宁可丢这条消息，
+     * 也不能把按键/主任务永久卡死（之前用 portMAX_DELAY 是隐患）；
+     * 返回值让调用方决定是否继续（录音开始/结束要据此取消） */
+    if (!s_cli) { tx_result(0); return 0; }
+    int r = esp_websocket_client_send_text(s_cli, json, strlen(json), pdMS_TO_TICKS(300));
+    tx_result(r >= 0);
+    return r >= 0;
 }
 
 void ws_send_audio(const uint8_t *frame, size_t len)
 {
     /* 有限超时：链路拥塞/假死时宁可丢这一帧音频，也不能让音频任务
      * 永久持住 ws 客户端内部锁（会把整条连接卡到连重连都做不了）。 */
-    if (s_cli && esp_websocket_client_is_connected(s_cli))
-        esp_websocket_client_send_bin(s_cli, (const char *)frame, len, pdMS_TO_TICKS(300));
+    if (!s_cli || !esp_websocket_client_is_connected(s_cli)) { tx_result(0); return; }
+    tx_result(esp_websocket_client_send_bin(s_cli, (const char *)frame, len,
+                                            pdMS_TO_TICKS(300)) >= 0);
 }
 
 int ws_connected(void)
@@ -230,4 +272,12 @@ int ws_connected(void)
 int64_t ws_idle_ms(void)
 {
     return esp_timer_get_time() / 1000 - s_last_rx_ms;
+}
+
+int64_t ws_tx_stall_ms(void)
+{
+    /* 连续失败 ≥5 次才算"上行锁死"（偶发单次丢弃不算）：
+     * 返回距最近一次成功发送的毫秒数；链路正常时恒为 0。 */
+    if (s_tx_fail_streak < 5) return 0;
+    return esp_timer_get_time() / 1000 - s_last_tx_ok_ms;
 }

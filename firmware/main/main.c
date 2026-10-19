@@ -44,6 +44,8 @@ static int s_key_down_at = -1;          /* KEY 按下时刻（ms）；-1 = 未�
 static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
+static int s_rec_started_at = 0;        /* 进入录音的时刻（ms）；录音硬上限兜底 */
+static int s_rec_auto_mode = 0;         /* 本次录音是自动聆听（VAD 收尾）还是手动长按 */
 
 /* ── 字幕按播放进度显示 ──────────────────────────────────────────────
  * 服务器为了让设备端有缓冲，发帧比实时快（字幕消息也随之提前 ~2 秒到）。
@@ -100,9 +102,11 @@ static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
     ui_lua_release();                 /* 语音优先：脚本画布让位（脚本本身继续跑） */
-    /* 空闲、播报中都听唤醒词（播报中命中 → 用户优先：打断当前回答改听新的）；
-     * 录音/思考中不听（录音里是用户自己的声音会自触发，思考中没意义） */
-    wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK);
+    /* 空闲、播报中、思考中都听唤醒词（播报/思考中命中 → 用户优先：
+     * 打断当前回答或放弃等待服务器，直接重开一轮）；
+     * 录音中不听（录音里是用户自己的声音，会自触发） */
+    wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK || v == VOICE_THINK);
+    if (v != VOICE_REC) s_rec_started_at = 0;
     switch (v) {
     case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
     case VOICE_THINK: ui_set_voice(UI_VOICE_THINKING);  break;
@@ -131,8 +135,18 @@ static void voice_start_rec(void)
     s_sub_clear_at = 0;
     ui_set_sub("");
     audio_rec_start();
-    ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
+    /* 开始消息发不出去（链路假死）→ 服务器根本收不到这段录音：
+     * 直接不进录音态，别让用户对着"录音中"白等 */
+    if (!ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}")) {
+        audio_rec_stop();
+        ESP_LOGW(TAG, "录音开始消息发送失败，取消录音");
+        ui_set_sub("网络忙，请稍后再试");
+        s_dirty = 1;
+        return;
+    }
     voice_to(VOICE_REC);
+    s_rec_auto_mode = 0;
+    s_rec_started_at = now_ms();
     ESP_LOGI(TAG, "开始录音（松开 KEY 结束）");
 }
 
@@ -145,8 +159,17 @@ static void voice_start_rec_auto(int bargein)
     s_sub_clear_at = 0;
     ui_set_sub("");
     audio_rec_start_auto(bargein);
-    ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}");
+    if (!ws_send_json("{\"t\":\"rec\",\"s\":\"start\"}")) {
+        audio_rec_stop();
+        ESP_LOGW(TAG, "自动聆听开始消息发送失败，取消");
+        voice_to(VOICE_IDLE);
+        ui_set_sub("网络忙，请稍后再试");
+        s_dirty = 1;
+        return;
+    }
     voice_to(VOICE_REC);
+    s_rec_auto_mode = 1;
+    s_rec_started_at = now_ms();
     if (bargein) {
         ESP_LOGI(TAG, "打断后直接聆听（说完自动结束）");
     } else {
@@ -157,8 +180,15 @@ static void voice_start_rec_auto(int bargein)
 static void voice_stop_rec(void)
 {
     audio_rec_stop();
-    ws_send_json("{\"t\":\"rec\",\"s\":\"stop\"}");
-    s_voice_deadline = now_ms() + 30000;
+    /* 结束消息都发不出去 = 服务器收不到这段录音，等下去也等不到回答 */
+    if (!ws_send_json("{\"t\":\"rec\",\"s\":\"stop\"}")) {
+        ESP_LOGW(TAG, "录音结束消息发送失败，直接回空闲");
+        voice_to(VOICE_IDLE);
+        ui_set_sub("网络忙，这段没发出去");
+        s_dirty = 1;
+        return;
+    }
+    s_voice_deadline = now_ms() + 20000;
     voice_to(VOICE_THINK);
     ESP_LOGI(TAG, "结束录音，等服务器");
 }
@@ -470,12 +500,14 @@ static void main_loop(void)
                 ui_set_sub("");
                 voice_to(VOICE_SPEAK);
                 ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
-            } else if (s_voice_state == VOICE_SPEAK) {
-                ESP_LOGI(TAG, "播报中听到唤醒词 → 打断（说新事=作废旧回答，没说=续播）");
+            } else if (s_voice_state == VOICE_SPEAK || s_voice_state == VOICE_THINK) {
+                ESP_LOGI(TAG, "%s听到唤醒词 → 打断重听",
+                         s_voice_state == VOICE_SPEAK ?
+                         "播报中" : "思考中（放弃等待服务器）");
                 voice_interrupt();
                 voice_start_rec_auto(1);
             }
-            /* 录音/思考中唤醒未使能，理论上到不了这里 */
+            /* 录音中唤醒未使能（自己的声音会自触发），到不了这里 */
         }
 
         /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录；
@@ -508,6 +540,18 @@ static void main_loop(void)
                 ESP_LOGI(TAG, "自动聆听结束（没说话）→ 静默收尾");
                 voice_rec_void();
             }
+        }
+
+        /* 录音硬上限兜底：手动靠松键、自动靠 VAD 收尾——任一环节失效
+         * （KEY 事件丢失 / 麦克风没帧 / VAD 不打点）都会永远停在"录音中"。
+         * 自动 20 秒（VAD 自身 15 秒），手动 30 秒。 */
+        if (s_voice_state == VOICE_REC && s_rec_started_at &&
+            now - (uint32_t)s_rec_started_at >
+                (uint32_t)(s_rec_auto_mode ? 20000 : 30000)) {
+            ESP_LOGW(TAG, "录音超时（%s，%d 秒上限），强制收尾",
+                     s_rec_auto_mode ? "自动" : "手动", s_rec_auto_mode ? 20 : 30);
+            if (audio_rec_heard_speech()) voice_stop_rec();
+            else voice_rec_void();
         }
 
         /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音）；
@@ -567,16 +611,23 @@ static void main_loop(void)
             s_stat_at = now + 30000;
         }
 
-        /* 网络看门狗：90 秒收不到服务器任何数据（正常每 25 秒有 ping）→
-         * 强制重新关联 WiFi。治"僵尸关联"：AP 悄悄踢掉设备但设备没收到 deauth，
-         * 之后发出的数据被 AP 全丢（回执/电量/音频石沉大海），WS 层重连也没用
-         * （SYN 出得去没回应），只有重新关联才能恢复。重新关联有 60 秒节流。 */
+        /* 网络看门狗 v2（治"僵尸关联/假死链路"）——
+         * 假死 = 名义上连着、实际收发全断，两种表现：
+         *   1) 90 秒收不到应用数据（服务器 ping 不算；正常 60 秒一推 info）；
+         *   2) 上行连续失败 ≥15 秒（300ms 超时刷屏，ws 客户端内部锁被长占）。
+         * 任一命中 → 强制重新关联 WiFi（断开→自动重连，破僵尸 TCP）。
+         * 完全断线（没连接）交给 ws 自动重连，只给 5 分钟大限兜底。 */
         {
             static TickType_t s_wifi_kick_at = 0;
-            if (ws_idle_ms() > 90000 &&
-                (TickType_t)(xTaskGetTickCount() - s_wifi_kick_at) > pdMS_TO_TICKS(60000)) {
+            int64_t idle = ws_idle_ms();
+            int64_t stall = ws_tx_stall_ms();
+            int bad = (ws_connected() && (idle > 90000 || stall > 15000)) ||
+                      (idle > 300000);
+            TickType_t th = ws_connected() ? pdMS_TO_TICKS(60000) : pdMS_TO_TICKS(300000);
+            if (bad && (TickType_t)(xTaskGetTickCount() - s_wifi_kick_at) > th) {
                 s_wifi_kick_at = xTaskGetTickCount();
-                ESP_LOGW(TAG, "90 秒无服务器数据，强制重新关联 WiFi");
+                ESP_LOGW(TAG, "网络假死（无数据 %d 秒 / 上行锁死 %d 秒），强制重新关联 WiFi",
+                         (int)(idle / 1000), (int)(stall / 1000));
                 wifi_sta_kick();
             }
         }

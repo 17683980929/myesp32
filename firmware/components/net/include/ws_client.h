@@ -69,8 +69,8 @@ dev_info_t *ws_client_info(void);
  */
 esp_err_t ws_client_start(const char *host_port, const char *token);
 
-/** 发 JSON 控制消息 */
-void ws_send_json(const char *json);
+/** 发 JSON 控制消息（返回是否成功：链路假死/上行锁死时失败） */
+int ws_send_json(const char *json);
 
 /** 发一帧 Opus 音频 */
 void ws_send_audio(const uint8_t *frame, size_t len);
@@ -79,3 +79,7 @@ int ws_connected(void);
 
 /** 距最近一次收到服务器数据的毫秒数（网络看门狗用；开局起算） */
 int64_t ws_idle_ms(void);
+
+/** 上行锁死时长（毫秒）：连续发送失败 ≥5 次时返回距最近一次成功发送的
+ *  毫秒数；链路正常时恒为 0（网络看门狗用） */
+int64_t ws_tx_stall_ms(void);
