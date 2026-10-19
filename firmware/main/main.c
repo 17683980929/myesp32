@@ -567,6 +567,20 @@ static void main_loop(void)
             s_stat_at = now + 30000;
         }
 
+        /* 网络看门狗：90 秒收不到服务器任何数据（正常每 25 秒有 ping）→
+         * 强制重新关联 WiFi。治"僵尸关联"：AP 悄悄踢掉设备但设备没收到 deauth，
+         * 之后发出的数据被 AP 全丢（回执/电量/音频石沉大海），WS 层重连也没用
+         * （SYN 出得去没回应），只有重新关联才能恢复。重新关联有 60 秒节流。 */
+        {
+            static TickType_t s_wifi_kick_at = 0;
+            if (ws_idle_ms() > 90000 &&
+                (TickType_t)(xTaskGetTickCount() - s_wifi_kick_at) > pdMS_TO_TICKS(60000)) {
+                s_wifi_kick_at = xTaskGetTickCount();
+                ESP_LOGW(TAG, "90 秒无服务器数据，强制重新关联 WiFi");
+                wifi_sta_kick();
+            }
+        }
+
         /* 字幕延迟清除 */
         if (s_sub_clear_at && now >= (uint32_t)s_sub_clear_at) {
             s_sub_clear_at = 0;

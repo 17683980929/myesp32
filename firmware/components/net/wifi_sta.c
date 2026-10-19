@@ -89,3 +89,11 @@ int wifi_sta_connected(void)
 {
     return wifi_events && (xEventGroupGetBits(wifi_events) & WIFI_EVT_GOT_IP);
 }
+
+void wifi_sta_kick(void)
+{
+    /* 强制断开：on_event 的 STA_DISCONNECTED 分支随后会自动 esp_wifi_connect()。
+     * 用于"僵尸关联"（AP 已把设备踢下线，但 deauth 帧丢了、设备不知道）——
+     * 此状态下设备发出的所有数据都被 AP 丢弃，只有重新关联才能真正恢复。 */
+    esp_wifi_disconnect();
+}

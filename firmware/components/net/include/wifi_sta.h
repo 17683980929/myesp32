@@ -18,5 +18,8 @@ void wifi_sta_ip(char *buf, int len);
 /** 当前是否已连上（拿到 IP） */
 int wifi_sta_connected(void);
 
+/** 强制断开重连（事件处理器会自动重连；治"僵尸关联"） */
+void wifi_sta_kick(void);
+
 extern EventGroupHandle_t wifi_events;
 #define WIFI_EVT_GOT_IP  BIT0

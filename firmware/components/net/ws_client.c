@@ -13,6 +13,7 @@
 #include "esp_websocket_client.h"
 #include "cJSON.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 
 static const char *TAG = "ws";
 static esp_websocket_client_handle_t s_cli = NULL;
@@ -25,6 +26,10 @@ static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .ba
  * 缓冲里的字符串仅在本次回调期间引用（上层自己会拷贝）。 */
 static char s_rx_text[7168];
 static int  s_rx_len;
+
+/* 最近一次收到任何服务器数据的毫秒时刻（esp_timer 基准）。
+ * 网络看门狗据此判断链路是否"假死"（关联在、实际收发已断）。 */
+static volatile int64_t s_last_rx_ms;
 
 dev_info_t *ws_client_info(void) { return &s_info; }
 
@@ -148,6 +153,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         break;
     }
     case WEBSOCKET_EVENT_DATA:
+        s_last_rx_ms = esp_timer_get_time() / 1000;   /* 有数据来 = 链路还活着 */
         if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
             /* 大帧会被拆成多次回调（一次 read 一段）：先攒齐再解析 */
             if (e->payload_offset == 0) s_rx_len = 0;
@@ -195,6 +201,7 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
     };
     s_cli = esp_websocket_client_init(&cfg);
     if (!s_cli) return ESP_FAIL;
+    s_last_rx_ms = esp_timer_get_time() / 1000;
 
     esp_websocket_register_events(s_cli, WEBSOCKET_EVENT_ANY, on_event, NULL);
     return esp_websocket_client_start(s_cli);
@@ -209,11 +216,18 @@ void ws_send_json(const char *json)
 
 void ws_send_audio(const uint8_t *frame, size_t len)
 {
+    /* 有限超时：链路拥塞/假死时宁可丢这一帧音频，也不能让音频任务
+     * 永久持住 ws 客户端内部锁（会把整条连接卡到连重连都做不了）。 */
     if (s_cli && esp_websocket_client_is_connected(s_cli))
-        esp_websocket_client_send_bin(s_cli, (const char *)frame, len, portMAX_DELAY);
+        esp_websocket_client_send_bin(s_cli, (const char *)frame, len, pdMS_TO_TICKS(300));
 }
 
 int ws_connected(void)
 {
     return s_cli && esp_websocket_client_is_connected(s_cli);
+}
+
+int64_t ws_idle_ms(void)
+{
+    return esp_timer_get_time() / 1000 - s_last_rx_ms;
 }

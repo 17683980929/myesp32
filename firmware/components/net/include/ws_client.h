@@ -76,3 +76,6 @@ void ws_send_json(const char *json);
 void ws_send_audio(const uint8_t *frame, size_t len);
 
 int ws_connected(void);
+
+/** 距最近一次收到服务器数据的毫秒数（网络看门狗用；开局起算） */
+int64_t ws_idle_ms(void);
