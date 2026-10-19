@@ -35,6 +35,7 @@ static esp_lcd_panel_io_handle_t s_io = NULL;
 static uint8_t *s_fb = NULL;          /* 1 = 白，0 = 黑（与硬件一致） */
 static uint8_t *s_out = NULL;         /* 取反后的发送缓冲 */
 #define FB_LEN (LCD_W * LCD_H / 8)
+#define TX_LEN ((FB_LEN + 63) & ~63)      /* 传输长度 64 字节对齐（15000 → 15040） */
 
 static void lcd_cmd(uint8_t cmd)
 {
@@ -55,7 +56,7 @@ void lcd_init(void)
         .miso_io_num = -1,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = FB_LEN,
+        .max_transfer_sz = TX_LEN,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO));
 
@@ -83,7 +84,12 @@ void lcd_init(void)
 
     /* 帧缓冲（PSRAM） */
     s_fb = heap_caps_malloc(FB_LEN, MALLOC_CAP_SPIRAM);
-    s_out = heap_caps_malloc(FB_LEN, MALLOC_CAP_SPIRAM);
+    /* 发送缓冲：内部 DMA RAM，64 字节对齐、长度对齐。
+       若放 PSRAM 且不开 psram_dma_direct，SPI 驱动无法直接 DMA，
+       每次刷屏都要从内部 RAM 临时分配 15KB 中转缓冲；内部 RAM 一碎片化
+       就分配失败、整帧发不出去 → 屏幕假死（设备本体仍活着）。
+       这里一次分配、长期复用，刷屏路径零分配。 */
+    s_out = heap_caps_aligned_alloc(64, TX_LEN, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(s_fb && s_out);
     memset(s_fb, 0x00, FB_LEN);       /* 白底 */
 
@@ -195,8 +201,12 @@ void lcd_flush(void)
 {
     /* fb 里 1=黑、0=白；硬件 bit=1 白 → 取反后发送 */
     for (int i = 0; i < FB_LEN; i++) s_out[i] = ~s_fb[i];
+    /* 尾部补到 TX_LEN：多出字节复制帧头。屏控制器写满一帧后地址回卷，
+       等于把帧头重写一遍，画面无变化；换来传输长度/地址 64 对齐，
+       SPI 驱动不再需要任何临时 DMA 分配。 */
+    for (int i = FB_LEN; i < TX_LEN; i++) s_out[i] = s_out[i - FB_LEN];
 
     lcd_cmd(0x2A); lcd_cmd_data(0x2A, (uint8_t[]){0x12, 0x2A}, 2);
     lcd_cmd(0x2B); lcd_cmd_data(0x2B, (uint8_t[]){0x00, 0xC7}, 2);
-    esp_lcd_panel_io_tx_color(s_io, 0x2C, s_out, FB_LEN);
+    esp_lcd_panel_io_tx_color(s_io, 0x2C, s_out, TX_LEN);
 }
