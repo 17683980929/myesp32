@@ -8,6 +8,7 @@
 
 import { build, buildTimeInfo } from "../protocol.mjs";
 import { getHotNews } from "./news.mjs";
+import { webSearch } from "./search.mjs";
 
 const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
 
@@ -50,6 +51,21 @@ export const TOOLS = [
           count: { type: "integer", description: "要几条标题，默认 6（1~10）" },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "联网搜索。用户说“帮我查一下…”“搜一下…”、问最新动态/陌生人名地名公司名/你不确定的事实时调用。query 用简短关键词（像搜索框里输入的那样，5~20 字）；天气、热点新闻、时间、板子状态用各自的专用工具，不要用这个。回答时用自己的话概括，不要念网址。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词" },
+          count: { type: "integer", description: "要几条结果，默认 5（1~8）" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -119,6 +135,20 @@ export async function executeTool(name, args = {}, ctx, session) {
         return `当前热点（来源：${source}）：\n${items}`;
       } catch (e) {
         return `查新闻失败：${e.message}`;
+      }
+    }
+
+    case "web_search": {
+      if (ctx.config.search?.enabled === false) return "联网搜索没开启。";
+      const q = String(args.query ?? "").trim();
+      if (!q) return "没给搜索关键词。";
+      const count = Math.min(8, Math.max(1, Math.round(Number(args.count)) || ctx.config.search?.count || 5));
+      try {
+        const { source, items } = await webSearch(q, ctx.config.search ?? {}, count);
+        const lines = items.map((it, i) => `${i + 1}. ${it.title}${it.snippet ? " — " + it.snippet : ""}`).join("\n");
+        return `关于“${q}”的搜索结果（来源：${source}）：\n${lines}`;
+      } catch (e) {
+        return `搜索失败：${e.message}`;
       }
     }
 

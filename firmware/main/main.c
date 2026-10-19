@@ -94,6 +94,8 @@ static int s_followup = 0;        /* 本轮回答以问句收尾：播完自动�
  *  先暂存，等回到空闲画布可见了再执行（见 voice_to） */
 static char s_pending_evt[16] = "";
 
+static uint32_t s_stat_at = 0;    /* 下次上报板载状态（电量/温湿度）的时刻（ms） */
+
 static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
@@ -248,6 +250,30 @@ static void on_lua_result(int id, bool ok, const char *out)
     free(buf);
 }
 
+/* ── 板载状态上报（电量/温湿度）────────────────────────────────────── */
+
+/** 上报一次板载状态：{"t":"stat","bat":87,"room":{"t":25.3,"h":55.1}}
+ *  （语音助手答"电量/室温"要用；温湿度读失败就只发电量） */
+static void stat_send(void)
+{
+    int bat = sensors_battery_pct();
+    char msg[128];
+    float t = 0, h = 0;
+    if (sensors_read_th(&t, &h) == ESP_OK) {
+        int t10 = (int)(t * 10 + (t >= 0 ? 0.5f : -0.5f));
+        int h10 = (int)(h * 10 + 0.5f);
+        int tf = t10 % 10, hf = h10 % 10;
+        if (tf < 0) tf = -tf;
+        if (hf < 0) hf = -hf;
+        snprintf(msg, sizeof(msg),
+                 "{\"t\":\"stat\",\"bat\":%d,\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, t10 / 10, tf, h10 / 10, hf);
+    } else {
+        snprintf(msg, sizeof(msg), "{\"t\":\"stat\",\"bat\":%d}", bat);
+    }
+    ws_send_json(msg);
+}
+
 /* ── 服务器事件 → UI ───────────────────────────────────────────────── */
 
 static void on_ws_event(const ws_event_t *ev)
@@ -298,6 +324,7 @@ static void on_ws_event(const ws_event_t *ev)
         }
         break;
     case WS_EVT_CONNECTED:
+        s_stat_at = 0;                   /* 连上先补报一次板载状态 */
         s_dirty = 1;
         break;
     case WS_EVT_TTS_START:
@@ -532,6 +559,12 @@ static void main_loop(void)
             now > (uint32_t)s_voice_deadline) {
             ESP_LOGW(TAG, "等服务器超时，回空闲");
             voice_to(VOICE_IDLE);
+        }
+
+        /* 板载状态上报：连上后立即一次，之后每 30 秒（语音答"电量/室温"用它） */
+        if (ws_connected() && (int32_t)(now - s_stat_at) >= 0) {
+            stat_send();
+            s_stat_at = now + 30000;
         }
 
         /* 字幕延迟清除 */
