@@ -89,6 +89,7 @@ static void subq_push(const char *text, int at_frame, int n_frames)
 static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
 static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进入自动聆听） */
+static int s_followup = 0;        /* 本轮回答以问句收尾：播完自动开麦（连续对话） */
 
 static void voice_to(voice_state_t v)
 {
@@ -137,7 +138,7 @@ static void voice_start_rec_auto(int bargein)
     if (bargein) {
         ESP_LOGI(TAG, "打断后直接聆听（说完自动结束）");
     } else {
-        ESP_LOGI(TAG, "唤醒应答后自动聆听（说完自动结束）");
+        ESP_LOGI(TAG, "自动聆听开始（说完自动结束）");
     }
 }
 
@@ -165,6 +166,7 @@ static void voice_rec_void(void)
 static void voice_interrupt(void)
 {
     s_wake_greet = 0;
+    s_followup = 0;
     audio_play_stop();
     audio_rec_stop();
     subq_clear();
@@ -277,6 +279,7 @@ static void on_ws_event(const ws_event_t *ev)
         s_dirty = 1;
         break;
     case WS_EVT_TTS_START:
+        s_followup = 0;                  /* 新一轮回答开始：上一次的连续对话标记作废 */
         audio_play_reset();
         subq_clear();
         sub_cur_clear();
@@ -286,6 +289,7 @@ static void on_ws_event(const ws_event_t *ev)
         s_dirty = 1;
         break;
     case WS_EVT_TTS_STOP:
+        s_followup = ev->followup;       /* 问句收尾 → 播完自动聆听（连续对话） */
         audio_play_finish();
         break;
     case WS_EVT_ERROR:
@@ -425,10 +429,15 @@ static void main_loop(void)
             /* 录音/思考中唤醒未使能，理论上到不了这里 */
         }
 
-        /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录 */
+        /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录；
+         * 回答以问句收尾（fu=1）也直接开麦：用户不用按 KEY/唤醒词，直接答话即可 */
         if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
             if (s_wake_greet) {
                 s_wake_greet = 0;
+                voice_start_rec_auto(0);
+            } else if (s_followup) {
+                s_followup = 0;
+                ESP_LOGI(TAG, "回答以问句收尾 → 自动聆听（直接说话即可）");
                 voice_start_rec_auto(0);
             } else {
                 s_sub_clear_at = now_ms() + 4000;

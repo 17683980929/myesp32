@@ -81,7 +81,10 @@ static void on_data(char *data, int len)
     } else if (t && !strcmp(t, "tts_start")) {
         ev.kind = WS_EVT_TTS_START; dispatch(&ev);
     } else if (t && !strcmp(t, "tts_stop")) {
-        ev.kind = WS_EVT_TTS_STOP; dispatch(&ev);
+        ev.kind = WS_EVT_TTS_STOP;
+        cJSON *fu = cJSON_GetObjectItem(root, "fu");
+        ev.followup = (fu && cJSON_IsNumber(fu)) ? (fu->valueint != 0) : 0;
+        dispatch(&ev);
     } else if (t && !strcmp(t, "sub")) {
         ev.kind = WS_EVT_SUB;
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));

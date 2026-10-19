@@ -31,7 +31,7 @@ export const SRV = {
   REC_ACK: "rec_ack",      // { t, s }
   STT: "stt",              // { t, text }            识别结果（可做字幕）
   TTS_START: "tts_start",  // { t }
-  TTS_STOP: "tts_stop",    // { t }
+  TTS_STOP: "tts_stop",    // { t, fu }              fu=1：回答以问句收尾，设备播完自动聆听
   SUB: "sub",              // { t, text }            当前句子（字幕）
   LUA: "lua",              // { t, id, code }        下发脚本
   ERROR: "err",            // { t, msg }
@@ -47,7 +47,7 @@ export const build = {
   page: (name) => ({ t: SRV.PAGE, name }),
   stt: (text) => ({ t: SRV.STT, text }),
   ttsStart: () => ({ t: SRV.TTS_START }),
-  ttsStop: () => ({ t: SRV.TTS_STOP }),
+  ttsStop: (fu = false) => ({ t: SRV.TTS_STOP, fu: fu ? 1 : 0 }),
   sub: (text, frames = 0) => ({ t: SRV.SUB, text, frames }),
   lua: (id, code) => ({ t: SRV.LUA, id, code }),
   err: (msg) => ({ t: SRV.ERROR, msg }),

@@ -302,6 +302,9 @@ export class DeviceSession {
     const queue = [];
     let producing = true;
     let firstAt = 0;
+    /* 连续对话：回答以问句收尾（模型在等用户回话）→ tts_stop 带 fu=1，
+     * 设备播完自动开麦。在 finally 里按完整文本判定（发送方读它时已定稿） */
+    let ask = false;
     const t0 = Date.now();
 
     this.streaming = myTurn;   /* 本回合可被"打断挂起"（hold），之后从断点续播 */
@@ -346,7 +349,7 @@ export class DeviceSession {
         const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
         await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
-      this.send(build.ttsStop());
+      this.send(build.ttsStop(ask));
     })();
 
     let full = "";
@@ -423,6 +426,7 @@ export class DeviceSession {
       log(`[${this.sid}] LLM 失败: ${e.message}`);
       this.send(build.err(e.message));
     } finally {
+      ask = /[？?]\s*$/.test(full.trim());
       producing = false;
       await sender;
       if (this.streaming === myTurn) this.streaming = 0;
@@ -452,7 +456,7 @@ export class DeviceSession {
         const lead = audioMs - (Date.now() - t0);
         await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
-      this.send(build.ttsStop());
+      this.send(build.ttsStop(/[？?]\s*$/.test(text.trim())));
     } catch (e) {
       log(`[${this.sid}] 播报失败: ${e.message}`);
     }
