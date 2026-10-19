@@ -187,12 +187,16 @@ export class DeviceSession {
   }
 
   onBtn(m) {
-    if (m.k === "key" && m.e === "click") {
-      /* 翻页由设备本地立即完成（不等网络），这里只做记录和同步 */
-      this.page = this.page === "home" ? "func" : "home";
-      log(`[${this.sid}] KEY → ${this.page}`);
-      this.send(build.page(this.page));
-    }
+    if (m.k !== "key") return;
+    /* 页面状态以设备为准：设备做完本地动作（翻页 / 单击关画布并回主页 /
+     * 功能页 5 秒自动回主页）后，把落定页放在 m.p 里上报。
+     * 服务器只记录（/api/status、日志），不再自己翻页再推回设备——
+     * 设备的单击并不总是翻页（关画布场景），双权威互相打架时，
+     * 服务器盲翻+回推会把设备强推到错误页面（“单击课表跑去敬请期待”）。 */
+    const p = m.p === "home" || m.p === "func" ? m.p : null;
+    if (p) this.page = p;
+    if (m.e === "click") log(`[${this.sid}] KEY → ${this.page}${p ? "" : "（旧固件：无页字段）"}`);
+    else if (m.e === "page") log(`[${this.sid}] 页面同步 → ${this.page}`);
   }
 
   /* ── 录音 ─────────────────────────────────────────────────────────── */

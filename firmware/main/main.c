@@ -322,9 +322,9 @@ static void on_ws_event(const ws_event_t *ev)
 
 /* ── 按键 → 页面 ───────────────────────────────────────────────────── */
 
-/* KEY 短按：画布在屏上时 = 关画布（不翻页）；否则让位画布 → 翻页 → 上报 →
- * 派发 key_click 事件。脚本注册了 key_double 且画布不在屏上时，本动作会等
- * ~300ms 双击窗口裁决后才执行 */
+/* KEY 短按：画布在屏上时 = 关画布并回主页（不翻页）；否则让位画布 → 翻页 →
+ * 上报 → 派发 key_click 事件。脚本注册了 key_double 且画布不在屏上时，
+ * 本动作会等 ~300ms 双击窗口裁决后才执行 */
 static void key_click_action(void)
 {
     int canvas = ui_lua_hold_active();               /* 脚本画布正占着屏幕？ */
@@ -333,6 +333,10 @@ static void key_click_action(void)
         /* 关画布手势：作废排队中还没执行的 key_double，
          * 否则画布刚关掉又被队列里的重画盖回来 */
         lua_runtime_event_drop_pending("key_double");
+        /* 关画布固定回主页（画布锚定在主页层，见 ui.c lua_keepalive）：
+         * 不做"画布打开时那个页"的翻页，避免露出"敬请期待"等页面 */
+        ui_set_page(UI_PAGE_HOME);
+        s_func_since = 0;
     } else {
         ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
         ui_set_page(p);
@@ -341,8 +345,9 @@ static void key_click_action(void)
     }
     s_dirty = 1;
 
-    char msg[48];
-    snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\"}");
+    char msg[64];
+    snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\",\"p\":\"%s\"}",
+             ui_get_page() == UI_PAGE_HOME ? "home" : "func");
     ws_send_json(msg);
     lua_runtime_event("key_click");                 /* 在内置动作之后派发，
                                                      * 脚本设的桌宠状态不会被 release 吃掉 */
@@ -420,6 +425,8 @@ static void main_loop(void)
             now - (uint32_t)s_func_since > 5000) {
             ui_set_page(UI_PAGE_HOME);
             s_dirty = 1;
+            /* 页面以设备为准：也同步一次给服务器（它不再自己翻页回推） */
+            ws_send_json("{\"t\":\"btn\",\"k\":\"key\",\"e\":\"page\",\"p\":\"home\"}");
             ESP_LOGI(TAG, "功能页超时 → home");
         }
 
