@@ -407,11 +407,11 @@ static void main_loop(void)
 
         /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
          * 没有脚本关心时立刻关掉，单击行为回到即时。
-         * 画布（脚本接管屏幕）正显示时例外：此时单击 = 关画布，不做双击裁决，
-         * 否则连按容易被凑成"双击"→只重画不关闭，用户体感就是"卡死"。 */
+         * 画布（脚本接管屏幕）显示时也保持识别：双击 = 脚本切到下一个功能页
+         * （处理器重画即保鲜）；单击仍是关画布，只是要等双击窗口裁决。 */
         {
             static int s_dbl_evt_on = 0;
-            int want_dbl = lua_runtime_has_event("key_double") && !ui_lua_hold_active();
+            int want_dbl = lua_runtime_has_event("key_double");
             if (want_dbl != s_dbl_evt_on) {
                 s_dbl_evt_on = want_dbl;
                 buttons_set_double(want_dbl);
