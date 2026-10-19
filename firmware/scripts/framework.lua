@@ -1,11 +1,11 @@
--- 多功能框架 v1：主页双击 = 进入/切到下一个功能；单击 = 关回主页（固件负责）。
+-- 多功能框架 v2：单击 = 进入第一个功能 / 切换下一个；走完最后一个再单击 = 关回主页。
+-- 单击即时无延迟（不注册 key_double）；30 秒不碰画布自动回主页（固件保鲜到期）。
 -- 加功能：在下面 add("名字", draw) 加一块；draw 只画内容，框架统一 flush。
 -- 部署：POST /api/lua 下发 {code}。
 local F = {}                       -- 功能表
 local cur = 0                      -- 当前功能序号（0 = 还没开过）
 local up = false                   -- 画布（大概）还在屏上
 local last_draw = 0
-local close_ms = -99999            -- 最近一次"关画布"的时刻
 
 local function add(name, draw) F[#F + 1] = { name = name, draw = draw } end
 
@@ -24,17 +24,16 @@ local function show(i)
   up = true
 end
 
-sys.on("key_double", function() show(cur + 1) end)
-
 sys.on("key_click", function()
   local now = sys.millis()
-  local was_up = up and now - last_draw < 30000
-  up = false
-  if was_up then
-    close_ms = now                 -- 这声单击 = 固件关掉了画布
-  elseif now - close_ms < 900 then
-    show(cur + 1)                  -- 关掉后紧跟一下 = 用户想双击切换，补画下一功能
+  if not (up and now - last_draw < 30000) then
+    return show(1)                 -- 画布不在屏上（主页）→ 进第一个功能
   end
+  if cur >= #F then                -- 最后一个功能上再单击 → 关画布回主页
+    up = false
+    return display.close()
+  end
+  show(cur + 1)                    -- 否则切到下一个
 end)
 
 -- ── 功能 1：政治课表（改课表只动 T 表）─────────────────────────────
@@ -130,7 +129,7 @@ add("环境与电池", function()
   display.text(200, 192, b < 0 and "--" or (b .. " %"), 24)
   display.text(28, 258, "电压", 16)
   display.text(200, 252, mv <= 0 and "--" or string.format("%.2f V", mv / 1000), 24)
-  display.text(116, 278, "双击切换 · 单击关闭", 16)
+  display.text(104, 278, "单击切换 · 走完回主页", 16)
 end)
 
-print("多功能框架就绪：" .. #F .. " 个功能（双击进入/切换，单击关闭）")
+print("多功能框架就绪：" .. #F .. " 个功能（单击进入/切换，走完回主页）")

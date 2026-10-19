@@ -1,11 +1,11 @@
 /**
- * ui.h — 界面层：主页（桌宠+信息栏）/ 功能页
+ * ui.h — 界面层：主页（桌宠+信息栏）/ 配网页 / Lua 画布
  */
 #pragma once
 #include <stdint.h>
 #include "ws_client.h"
 
-typedef enum { UI_PAGE_HOME = 0, UI_PAGE_FUNC = 1, UI_PAGE_PORTAL = 2 } ui_page_t;
+typedef enum { UI_PAGE_HOME = 0, UI_PAGE_PORTAL = 1 } ui_page_t;
 
 /** 语音状态（影响桌宠表情 + 左区顶部状态字） */
 typedef enum {
@@ -47,18 +47,18 @@ void ui_set_sub_page(const char *text, int page);
 /* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
 
 /** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环
- *  停止周期重绘，脚本画面得以保留；语音对话/按 KEY 时自动让位）。
+ *  停止周期重绘，脚本画面得以保留；语音对话开始时自动让位）。
  *  size 只是档位提示：<24 → 小字（ASCII 2x / 中文 1x），≥24 → 大字（3x / 2x） */
 void ui_lua_clear(void);
 void ui_lua_text(int x, int y, const char *s, int size);
 void ui_lua_rect(int x, int y, int w, int h, int filled);
 void ui_lua_flush(void);
 
-/** 清掉画布保鲜 + 桌宠表情覆盖（按键/语音开始时调用） */
+/** 清掉画布保鲜 + 桌宠表情覆盖（语音开始 / 脚本 display.close() 时调用） */
 void ui_lua_release(void);
 
 /** 释放序号：Lua 任务在跑脚本前后对比——执行期间发生过 release
- *  （用户单击关画布 / 语音接管）就补一次 release，保持让位 */
+ *  （脚本 display.close() / 语音接管）就补一次 release，保持让位 */
 uint32_t ui_lua_release_seq(void);
 
 /** 主循环用：现在是否该跳过周期重绘（画布保鲜中且没语音、在主页） */

@@ -540,15 +540,6 @@ static void render_frame(void)
         return;
     }
 
-    if (s_page == UI_PAGE_FUNC) {
-        lcd_clear(0);
-        draw_cjk((LCD_W - 4 * 32) / 2, 110, "敬请期待", 2, 1);
-        draw_text((LCD_W - text_w("COMING SOON", 2)) / 2, 170,
-                  "COMING SOON", 2, 1);
-        lcd_flush();
-        return;                          /* 5 秒后回主页由 main 的 tick 判断 */
-    }
-
     /* ── 主页 ── */
     lcd_clear(0);
     draw_pet();
@@ -583,8 +574,7 @@ static uint32_t now_ms_(void)
 /** 保鲜：每次脚本绘制都把"停止周期重绘"的窗口往后推 30 秒。
  *  脚本只画一次 → 30 秒后主页自然回来（不会把界面卡死）。
  *  同时把当前页锚回主页：画布只存在于主页层（hold_active 的页守卫、
- *  关画布后回主页都依赖这一点）。否则在"敬请期待"页双击打开画布时，
- *  页守卫让画布没有保鲜保护——下一秒整页重绘就把画布顶掉（闪一下又回来）。
+ *  display.close() 后回主页都依赖这一点）。
  *  注意先写页再写计时：让 hold_active 的页条件先成立。 */
 static void lua_keepalive(void)
 {

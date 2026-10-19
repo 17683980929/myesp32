@@ -14,7 +14,7 @@
  *
  * 脚本可用的 API（详见 register_apis / open_sandbox）：
  *   display.clear()  display.text(x, y, s[, size])  display.rect(x, y, w, h[, filled])
- *   display.flush()
+ *   display.flush()  display.close()               -- close：主动关画布回主页
  *   pet.state("happy")            -- idle/blink/listening/.../charging，返回是否认识
  *                                 -- "auto" = 交还自动状态（脚本控制结束）
  *   sensor.temp() sensor.hum() sensor.battery() sensor.voltage()
@@ -200,6 +200,16 @@ static int l_display_rect(lua_State *L)
 
 static int l_display_flush(lua_State *L) { (void)L; ui_lua_flush(); return 0; }
 
+/** display.close()：脚本主动关掉画布（固件不再内置"单击关画布"）。
+ *  清保鲜 + 立即重绘一帧主页——关闭无感知延迟，不用等主循环下一跳。 */
+static int l_display_close(lua_State *L)
+{
+    (void)L;
+    ui_lua_release();
+    ui_render();
+    return 0;
+}
+
 /* pet.* */
 static int l_pet_state(lua_State *L)
 {
@@ -306,6 +316,7 @@ static void register_apis(lua_State *L)
     static const luaL_Reg f_display[] = {
         { "clear", l_display_clear }, { "text", l_display_text },
         { "rect",  l_display_rect },  { "flush", l_display_flush },
+        { "close", l_display_close },
         { NULL, NULL }
     };
     static const luaL_Reg f_pet[] = {

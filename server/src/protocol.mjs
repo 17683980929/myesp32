@@ -27,7 +27,7 @@ export const DEV = {
 export const SRV = {
   HELLO_ACK: "hello_ack",  // { t, sid, pv, page, info }
   INFO: "info",            // { t, time, date, week, weather:{text,temp,city} }
-  PAGE: "page",            // { t, name: "home" | "func" }
+  PAGE: "page",            // { t, name }（服务器已不再下发，仅保留解析兼容）
   REC_ACK: "rec_ack",      // { t, s }
   STT: "stt",              // { t, text }            识别结果（可做字幕）
   TTS_START: "tts_start",  // { t }

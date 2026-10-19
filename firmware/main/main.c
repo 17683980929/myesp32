@@ -33,7 +33,6 @@
 
 static const char *TAG = "main";
 
-static int s_func_since = 0;
 static volatile int s_dirty = 1;        /* 需要重绘 */
 
 /* ── 语音状态机（M4）───────────────────────────────────────────────── */
@@ -115,10 +114,7 @@ static void voice_start_rec(void)
     if (!audio_ready()) { ESP_LOGW(TAG, "录音不可用：音频未就绪"); return; }
     if (!ws_connected()) { ESP_LOGW(TAG, "录音不可用：未连接服务器"); return; }
 
-    if (ui_get_page() != UI_PAGE_HOME) {
-        ui_set_page(UI_PAGE_HOME);
-        s_func_since = 0;
-    }
+    ui_set_page(UI_PAGE_HOME);
     s_sub_clear_at = 0;
     ui_set_sub("");
     audio_rec_start();
@@ -132,10 +128,7 @@ static void voice_start_rec(void)
 static void voice_start_rec_auto(int bargein)
 {
     if (!audio_ready() || !ws_connected()) { voice_to(VOICE_IDLE); return; }
-    if (ui_get_page() != UI_PAGE_HOME) {
-        ui_set_page(UI_PAGE_HOME);
-        s_func_since = 0;
-    }
+    ui_set_page(UI_PAGE_HOME);
     s_sub_clear_at = 0;
     ui_set_sub("");
     audio_rec_start_auto(bargein);
@@ -275,11 +268,8 @@ static void on_ws_event(const ws_event_t *ev)
         }
         break;
     case WS_EVT_PAGE: {
-        /* UI 的页面状态是唯一真相，切页必须走 ui_set_page() */
-        ui_page_t p = strcmp(ev->name, "func") == 0 ? UI_PAGE_FUNC : UI_PAGE_HOME;
-        ui_set_page(p);
-        if (p == UI_PAGE_FUNC)
-            s_func_since = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        /* 设备是页面唯一权威（服务器不再下发翻页）；仅认 "home" 兜底 */
+        if (strcmp(ev->name, "home") == 0) ui_set_page(UI_PAGE_HOME);
         s_dirty = 1;
         break;
     }
@@ -320,39 +310,19 @@ static void on_ws_event(const ws_event_t *ev)
     }
 }
 
-/* ── 按键 → 页面 ───────────────────────────────────────────────────── */
+/* ── 按键 → 脚本 ───────────────────────────────────────────────────── */
 
-/* KEY 短按：画布在屏上时 = 关画布并回主页（不翻页）；否则让位画布 → 翻页 →
- * 上报 → 派发 key_click 事件。脚本注册了 key_double 且画布不在屏上时，
- * 本动作会等 ~300ms 双击窗口裁决后才执行 */
+/* KEY 短按：固件不做任何内置动作（不翻页、不关画布）——"进入 / 切换 / 关闭"
+ * 全部由脚本决定：脚本用 display.* 画、display.close() 关。
+ * 脚本注册了 key_double 时，本动作要等 ~300ms 双击窗口裁决后才执行。 */
 static void key_click_action(void)
 {
-    int canvas = ui_lua_hold_active();               /* 脚本画布正占着屏幕？ */
-    ui_lua_release();                                /* 用户要看正经界面了 */
-    if (canvas) {
-        /* 关画布手势：作废排队中还没执行的 key_double，
-         * 否则画布刚关掉又被队列里的重画盖回来 */
-        lua_runtime_event_drop_pending("key_double");
-        /* 关画布固定回主页（画布锚定在主页层，见 ui.c lua_keepalive）：
-         * 不做"画布打开时那个页"的翻页，避免露出"敬请期待"等页面 */
-        ui_set_page(UI_PAGE_HOME);
-        s_func_since = 0;
-    } else {
-        ui_page_t p = (ui_get_page() == UI_PAGE_HOME) ? UI_PAGE_FUNC : UI_PAGE_HOME;
-        ui_set_page(p);
-        if (p == UI_PAGE_FUNC)
-            s_func_since = now_ms();
-    }
-    s_dirty = 1;
-
     char msg[64];
     snprintf(msg, sizeof(msg), "{\"t\":\"btn\",\"k\":\"key\",\"e\":\"click\",\"p\":\"%s\"}",
-             ui_get_page() == UI_PAGE_HOME ? "home" : "func");
+             ui_get_page() == UI_PAGE_HOME ? "home" : "portal");
     ws_send_json(msg);
-    lua_runtime_event("key_click");                 /* 在内置动作之后派发，
-                                                     * 脚本设的桌宠状态不会被 release 吃掉 */
-    ESP_LOGI(TAG, "KEY → %s", canvas ? "关画布"
-             : (ui_get_page() == UI_PAGE_HOME ? "home" : "func"));
+    lua_runtime_event("key_click");
+    ESP_LOGI(TAG, "KEY → 脚本");
 }
 
 static void on_button(btn_id_t id, btn_event_t ev)
@@ -378,8 +348,8 @@ static void on_button(btn_id_t id, btn_event_t ev)
                 }
             }
             s_key_down_at = -1;
-        } else if (ev == BTN_CLICK) {                   /* 短按翻页 */
-            if (s_voice_state != VOICE_IDLE) return;    /* 语音中不翻页 */
+        } else if (ev == BTN_CLICK) {                   /* 短按 → 脚本（进入/切换） */
+            if (s_voice_state != VOICE_IDLE) return;    /* 语音中不进功能 */
             key_click_action();
         } else {                                        /* BTN_DOUBLE：脚本事件 */
             if (s_voice_state != VOICE_IDLE) return;
@@ -407,8 +377,7 @@ static void main_loop(void)
 
         /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
          * 没有脚本关心时立刻关掉，单击行为回到即时。
-         * 画布（脚本接管屏幕）显示时也保持识别：双击 = 脚本切到下一个功能页
-         * （处理器重画即保鲜）；单击仍是关画布，只是要等双击窗口裁决。 */
+         * 框架脚本只绑 key_click（单击 = 进入/切换/关闭），所以单击即时无延迟。 */
         {
             static int s_dbl_evt_on = 0;
             int want_dbl = lua_runtime_has_event("key_double");
@@ -420,17 +389,7 @@ static void main_loop(void)
             }
         }
 
-        /* 功能页 5 秒后自动回主页 */
-        if (ui_get_page() == UI_PAGE_FUNC && s_func_since &&
-            now - (uint32_t)s_func_since > 5000) {
-            ui_set_page(UI_PAGE_HOME);
-            s_dirty = 1;
-            /* 页面以设备为准：也同步一次给服务器（它不再自己翻页回推） */
-            ws_send_json("{\"t\":\"btn\",\"k\":\"key\",\"e\":\"page\",\"p\":\"home\"}");
-            ESP_LOGI(TAG, "功能页超时 → home");
-        }
-
-        /* KEY 长按 350ms → 开始录音（短按翻页不受影响）；
+        /* KEY 长按 350ms → 开始录音（短按单击进功能不受影响）；
          * 说话/思考中长按 = 用户优先：打断当前回答，直接开始新提问 */
         if (s_key_down_at >= 0 && !s_key_voice && s_voice_state != VOICE_REC &&
             now - (uint32_t)s_key_down_at >= 350) {
