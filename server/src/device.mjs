@@ -120,7 +120,12 @@ export class DeviceSession {
       };
       this.luaWaiters.set(id, finish);
       this.send({ t: "lua", id, code });
-      setTimeout(() => finish({ ok: false, out: `超时（${timeoutMs}ms 无回执）` }), timeoutMs);
+      /* 回执丢失时不能断言设备没执行：脚本在发送前已保存，设备可能已执行完 */
+      setTimeout(() => finish({
+        ok: false,
+        timeout: true,
+        out: `回执超时（${timeoutMs}ms，脚本已保存，设备可能已执行）`,
+      }), timeoutMs);
     });
   }
 

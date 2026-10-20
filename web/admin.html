@@ -43,7 +43,7 @@
   button.primary:hover{background:#1d4ed8}
   .actions{display:flex;gap:10px;align-items:center;margin-top:16px}
   .msg{font-size:12px}
-  .msg.ok{color:var(--ok)} .msg.err{color:var(--err)}
+  .msg.ok{color:var(--ok)} .msg.err{color:var(--err)} .msg.warn{color:var(--warn)}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
   th{color:var(--muted);font-weight:500;font-size:12px}
@@ -236,7 +236,7 @@ let cfg = null;
 function setMsg(el, text, kind) {
   el.textContent = text;
   el.className = "msg " + (kind || "");
-  if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 4000);
+  if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, kind === "warn" ? 8000 : 4000);
 }
 
 async function loadVoices() {
@@ -436,7 +436,11 @@ async function deployLua() {
     if (!j.sent) { setMsg($("luaMsg"), "已保存（当前无在线设备）", "err"); return; }
     const bad = (j.results || []).find((x) => !x.ok);
     if (bad) {
-      setMsg($("luaMsg"), `设备执行失败：${(bad.out || "未知错误").slice(0, 80)}`, "err");
+      if (bad.timeout) {
+        setMsg($("luaMsg"), `回执超时：脚本已保存，设备可能已执行（${(bad.out || "").slice(0, 40)}）`, "warn");
+      } else {
+        setMsg($("luaMsg"), `设备执行失败：${(bad.out || "未知错误").slice(0, 80)}`, "err");
+      }
     } else {
       const out = ((j.results[0] && j.results[0].out) || "").trim().slice(0, 60);
       setMsg($("luaMsg"), `设备执行成功${out ? "：" + out : ""}`, "ok");

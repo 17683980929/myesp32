@@ -285,7 +285,15 @@ static void on_lua_result(int id, bool ok, const char *out)
     buf[j++] = '"';
     buf[j++] = '}';
     buf[j] = 0;
-    ws_send_json(buf);
+
+    /* 热点/弱网下回执可能发送失败；重试 3 次，避免服务器把已执行的脚本判成失败 */
+    int sent = 0;
+    for (int i = 0; i < 3; i++) {
+        if (ws_send_json(buf)) { sent = 1; break; }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!sent) ESP_LOGW(TAG, "Lua#%d 回执发送失败（已重试 3 次）", id);
+
     free(buf);
 }
 

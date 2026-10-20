@@ -183,15 +183,15 @@ export async function handleHttp(req, res, ctx) {
         const cfg = getConfig();
         saveConfig({ lua: { prevScript: cfg.lua.activeScript, activeScript: code } });
 
-        /* 推给所有在线设备，等执行回执（每台最多 4 秒） */
+        /* 推给所有在线设备，等执行回执（每台最多 8 秒；热点/弱网回执可能慢） */
         const id = Date.now() % 100000;
         const list = [...ctx.devices];
         if (!list.length) {
           log("下发 Lua 脚本 → 0 台设备（已保存）");
           return json(res, 200, { ok: true, sent: 0, id, results: [] });
         }
-        const results = await Promise.all(list.map((d) => d.sendLua(id, code, 4000)));
-        log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : "失败")).join(" ")}`);
+        const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
+        log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
         return json(res, 200, { ok: true, sent: list.length, id, results });
       }
 
