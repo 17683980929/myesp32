@@ -322,8 +322,12 @@ void wifi_sta_pause(void)
 {
     s_paused = true;
     s_have_target = false;
-    if (wifi_events) xEventGroupClearBits(wifi_events, WIFI_EVT_GOT_IP);
-    esp_wifi_disconnect();
+    /* 开机直接进重置门户时 WiFi 还没初始化（wifi_events == NULL），
+     * 此时不能调用 esp_wifi_disconnect()。 */
+    if (wifi_events) {
+        xEventGroupClearBits(wifi_events, WIFI_EVT_GOT_IP);
+        esp_wifi_disconnect();
+    }
 }
 
 void wifi_sta_set_health_fn(wifi_sta_health_fn fn)

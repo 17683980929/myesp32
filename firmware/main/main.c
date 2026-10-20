@@ -15,6 +15,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 
 #include "hw_config.h"
@@ -34,6 +36,11 @@
 static const char *TAG = "main";
 
 static volatile int s_dirty = 1;        /* 需要重绘 */
+
+/* 长按 BOOT 触发的"重启进重置门户"标记：RTC 内存跨软件重启保留，
+ * 不占用已经耗尽的内部堆（NVS 写失败也不影响）。 */
+#define BOOT_PORTAL_MAGIC 0x504F5254u   /* "PORT" */
+RTC_NOINIT_ATTR static uint32_t s_boot_portal_flag;
 
 /* ── 语音状态机（M4）───────────────────────────────────────────────── */
 
@@ -451,12 +458,13 @@ static void on_button(btn_id_t id, btn_event_t ev)
     }
 }
 
-/** BOOT 长按 8 秒 → WiFi 重置模式：停掉语音/WiFi STA，板子开热点，
- *  手机连 MyEsp32-XXXX 后打开 http://192.168.4.1 进控制台。
- *  之后由 wifi_portal 的任务接管；主循环停在这里（保存/超时会自动重启）。 */
+/** BOOT 长按 8 秒 → 等松开后重启进入 WiFi 重置模式。
+ *  不能在当前进程里原地开 SoftAP：服务器长时间不可达时 WS 重连会把内部堆
+ *  耗到 1~2KB，WiFi 驱动分配 beacon 缓冲失败直接 LoadProhibited panic。
+ *  重启后在干净堆上只初始化屏幕 + 配网门户，AP 才能稳定起来。 */
 static void enter_portal_mode(void)
 {
-    ESP_LOGW(TAG, "BOOT 长按 8 秒 → 进入 WiFi 重置模式");
+    ESP_LOGW(TAG, "BOOT 长按 8 秒 → 松开后重启进入 WiFi 重置模式");
     s_boot_down_at = -1;
 
     voice_to(VOICE_IDLE);
@@ -465,17 +473,22 @@ static void enter_portal_mode(void)
     audio_rec_stop();
     subq_clear();
     sub_cur_clear();
-    ui_set_sub("");
-
-    char ap[24];
-    wifi_portal_ap_name(ap, sizeof(ap));
-    ui_show_portal_mode(ap, 1);
+    ui_lua_release();
+    ui_set_sub("松开 BOOT 进入重置模式");
     ui_render();
 
-    wifi_portal_run_reset();
-    ESP_LOGW(TAG, "重置模式已就绪：连接热点 %s → 浏览器打开 192.168.4.1", ap);
+    /* 等 BOOT 真正松开：重启瞬间 GPIO0 仍为低会让 ROM 进下载模式。
+     * 连续 200ms 高电平才算松开（消抖）。 */
+    int released = 0;
+    while (released < 4) {
+        if (gpio_get_level(BOOT_BTN_PIN)) released++;
+        else released = 0;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
-    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));       /* 不再回主循环 */
+    s_boot_portal_flag = BOOT_PORTAL_MAGIC;
+    ESP_LOGW(TAG, "BOOT 已松开，重启进入重置模式");
+    esp_restart();
 }
 
 /* ── 主循环 ────────────────────────────────────────────────────────── */
@@ -491,9 +504,10 @@ static void main_loop(void)
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        /* BOOT 长按 8 秒 → WiFi 重置模式（热点 + 控制台）。
-         * 放在最前：录音/播报/思考中也能随时进。 */
-        if (s_boot_down_at >= 0 && now - (uint32_t)s_boot_down_at >= 8000)
+        /* BOOT 长按 8 秒 → 重启进 WiFi 重置模式。
+         * 有符号差值：按键任务可能在本轮 now 之后才记录按下时刻。 */
+        if (s_boot_down_at >= 0 &&
+            (int32_t)(now - (uint32_t)s_boot_down_at) >= 8000)
             enter_portal_mode();
 
         /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
@@ -725,6 +739,21 @@ void app_main(void)
     if (ne == ESP_ERR_NVS_NO_FREE_PAGES || ne == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    /* 长按 BOOT 8 秒触发的重启：干净堆上直接进重置门户，
+     * 不初始化音频/Lua/WS（它们占用内部 RAM，SoftAP 会分配失败）。 */
+    bool boot_reset_portal = (s_boot_portal_flag == BOOT_PORTAL_MAGIC);
+    s_boot_portal_flag = 0;
+    if (boot_reset_portal) {
+        ui_init();
+        char ap[24];
+        wifi_portal_ap_name(ap, sizeof(ap));
+        ui_show_portal_mode(ap, 1);
+        ui_render();
+        ESP_LOGW(TAG, "重启进入 WiFi 重置模式：热点 %s → 192.168.4.1", ap);
+        wifi_portal_run_reset();
+        for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     /* 开机长按 KEY 3 秒 → 强制进配网（放最前面，一上电就能按） */
