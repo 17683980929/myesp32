@@ -301,6 +301,13 @@ int wifi_sta_connected(void)
     return wifi_events && (xEventGroupGetBits(wifi_events) & WIFI_EVT_GOT_IP);
 }
 
+int wifi_sta_rssi(void)
+{
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return ap.rssi;
+    return -127;
+}
+
 void wifi_sta_kick(void)
 {
     /* 强制断开：on_event 的 STA_DISCONNECTED 分支随后会自动 esp_wifi_connect()。

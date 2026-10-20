@@ -467,6 +467,16 @@ void audio_set_volume(int vol)
  * 实测，若复位则降档或改善供电。 */
 static const int VOL_STEPS[] = { 25, 50, 75, 90, 100 };
 static int s_vol_cur = 65;              /* 与 audio_init 里设置的默认一致 */
+static int s_vol_before_mute = 65;
+
+static void vol_apply(int v)
+{
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    audio_set_volume(v);
+    s_vol_cur = v;
+    s_beep_req = 1;                     /* 反馈音（播放任务空闲时响） */
+}
 
 void audio_volume_cycle(void)
 {
@@ -477,10 +487,43 @@ void audio_volume_cycle(void)
             if (VOL_STEPS[i] > s_vol_cur) { next = VOL_STEPS[i]; break; }
         }
     }
-    audio_set_volume(next);
-    s_vol_cur = next;
-    s_beep_req = 1;                     /* 反馈音（播放任务空闲时响） */
+    vol_apply(next);
     ESP_LOGI(TAG, "音量 → %d%s", next, next ? "" : "（静音）");
+}
+
+void audio_volume_set(int vol)
+{
+    if (vol > 0) s_vol_before_mute = vol;
+    vol_apply(vol);
+}
+
+void audio_volume_up(void)
+{
+    int next = VOL_STEPS[sizeof(VOL_STEPS) / sizeof(VOL_STEPS[0]) - 1];
+    for (int i = 0; i < (int)(sizeof(VOL_STEPS) / sizeof(VOL_STEPS[0])); i++) {
+        if (VOL_STEPS[i] > s_vol_cur) { next = VOL_STEPS[i]; break; }
+    }
+    vol_apply(next);
+}
+
+void audio_volume_down(void)
+{
+    int prev = 0;
+    for (int i = 0; i < (int)(sizeof(VOL_STEPS) / sizeof(VOL_STEPS[0])); i++) {
+        if (VOL_STEPS[i] < s_vol_cur) prev = VOL_STEPS[i];
+    }
+    vol_apply(prev);
+}
+
+void audio_volume_mute(void)
+{
+    if (s_vol_cur > 0) s_vol_before_mute = s_vol_cur;
+    vol_apply(0);
+}
+
+void audio_volume_unmute(void)
+{
+    vol_apply(s_vol_before_mute > 0 ? s_vol_before_mute : 65);
 }
 
 int audio_volume_get(void) { return s_vol_cur; }

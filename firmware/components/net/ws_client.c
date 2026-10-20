@@ -114,6 +114,8 @@ static void on_data(char *data, int len)
         ev.kind = WS_EVT_EVT;
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "n"));
         strncpy(ev.name, n ?: "", sizeof(ev.name) - 1);
+        cJSON *v = cJSON_GetObjectItem(root, "v");
+        ev.value = (v && cJSON_IsNumber(v)) ? v->valueint : 0;
         dispatch(&ev);
     } else if (t && !strcmp(t, "stt")) {
         ev.kind = WS_EVT_STT;
@@ -173,7 +175,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"hello\",\"fw\":\"" MYESP32_FW "\","
                  "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
-                 "\"caps\":[\"audio\",\"lua\"]}",
+                 "\"caps\":[\"audio\",\"lua\",\"ctl\"]}",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         /* 有限超时：连接刚建立也不无限持锁（链路半死会连 ws 任务一起卡住） */
         tx_result(esp_websocket_client_send_text(s_cli, msg, strlen(msg),

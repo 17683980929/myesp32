@@ -82,6 +82,7 @@ export class DeviceSession {
     this.sid = randomUUID().slice(0, 8);
     this.mac = "";
     this.fw = "";
+    this.caps = [];
     this.page = "home";
 
     this.recording = false;
@@ -174,7 +175,12 @@ export class DeviceSession {
         if (m.s === "resume") return this.onRecResume();
         return this.onRecStop();
       case DEV.BTN:   return this.onBtn(m);
-      case DEV.STAT:  this.lastStat = { bat: m.bat, room: m.room, at: Date.now() }; return;
+      case DEV.STAT:
+        this.lastStat = {
+          bat: m.bat, room: m.room, vol: m.vol, rssi: m.rssi,
+          up: m.up, ip: m.ip, at: Date.now(),
+        };
+        return;
       case DEV.LUA_RESULT: {
         log(`[${this.sid}] Lua#${m.id} ${m.ok ? "成功" : "失败"} ${m.out ?? ""}`);
         this.lastLua = { id: m.id, ok: !!m.ok, out: m.out ?? "", at: Date.now() };
@@ -194,7 +200,8 @@ export class DeviceSession {
   async onHello(m) {
     this.mac = m.mac ?? "";
     this.fw = m.fw ?? "";
-    log(`[${this.sid}] hello mac=${this.mac} fw=${this.fw} caps=${(m.caps ?? []).join(",")}`);
+    this.caps = Array.isArray(m.caps) ? m.caps : [];
+    log(`[${this.sid}] hello mac=${this.mac} fw=${this.fw} caps=${this.caps.join(",")}`);
 
     await this.pushInfo(true);
     this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data)));

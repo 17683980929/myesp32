@@ -38,3 +38,8 @@ int  audio_rec_heard_speech(void);       /* 本段录音是否检测到有效说
 void audio_set_volume(int vol); /* 0..100 */
 void audio_volume_cycle(void);  /* BOOT 短按：逐档增大 → 顶档后静音 → 回到最小档循环（带反馈音） */
 int  audio_volume_get(void);    /* 当前音量 0..100（0 = 静音） */
+void audio_volume_set(int vol); /* 语音指定音量 0..100 */
+void audio_volume_up(void);     /* 语音调大一档（到顶保持） */
+void audio_volume_down(void);   /* 语音调小一档（到底为 0） */
+void audio_volume_mute(void);
+void audio_volume_unmute(void);

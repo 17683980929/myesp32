@@ -51,7 +51,7 @@ export const build = {
   ttsStop: (fu = false) => ({ t: SRV.TTS_STOP, fu: fu ? 1 : 0 }),
   sub: (text, frames = 0) => ({ t: SRV.SUB, text, frames }),
   lua: (id, code) => ({ t: SRV.LUA, id, code }),
-  evt: (n) => ({ t: SRV.EVT, n }),
+  evt: (n, v) => ({ t: SRV.EVT, n, ...(v === undefined ? {} : { v }) }),
   err: (msg) => ({ t: SRV.ERROR, msg }),
   ping: () => ({ t: SRV.PING, ts: Date.now() }),
 };

@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 
 #include "hw_config.h"
@@ -304,7 +305,13 @@ static void on_lua_result(int id, bool ok, const char *out)
 static void stat_send(void)
 {
     int bat = sensors_battery_pct();
-    char msg[128];
+    char msg[224];
+    char ip[20];
+    wifi_sta_ip(ip, sizeof(ip));
+    int rssi = wifi_sta_rssi();
+    int vol = audio_volume_get();
+    int up = (int)(esp_timer_get_time() / 1000000);
+
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
         int t10 = (int)(t * 10 + (t >= 0 ? 0.5f : -0.5f));
@@ -313,12 +320,23 @@ static void stat_send(void)
         if (tf < 0) tf = -tf;
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
-                 "{\"t\":\"stat\",\"bat\":%d,\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, t10 / 10, tf, h10 / 10, hf);
+                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"rssi\":%d,\"up\":%d,"
+                 "\"ip\":\"%s\",\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, vol, rssi, up, ip, t10 / 10, tf, h10 / 10, hf);
     } else {
-        snprintf(msg, sizeof(msg), "{\"t\":\"stat\",\"bat\":%d}", bat);
+        snprintf(msg, sizeof(msg),
+                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"rssi\":%d,\"up\":%d,\"ip\":\"%s\"}",
+                 bat, vol, rssi, up, ip);
     }
     ws_send_json(msg);
+}
+
+/** 音量变化后的屏幕反馈（BOOT 和语音指令共用） */
+static void volume_feedback(void)
+{
+    ui_volume_overlay(audio_volume_get());
+    s_vol_clear_at = now_ms() + 1500;
+    s_dirty = 1;
 }
 
 /* ── 服务器事件 → UI ───────────────────────────────────────────────── */
@@ -363,6 +381,14 @@ static void on_ws_event(const ws_event_t *ev)
          * 空闲 → 直接交给脚本；语音中 → 暂存，播完回空闲再执行
          * （语音优先级更高，画布此刻会被让位清掉） */
         if (!ev->name[0]) break;
+
+        /* 音量指令立即生效（不影响当前播报），并复用 BOOT 的浮层反馈 */
+        if (!strcmp(ev->name, "volume_up"))     { audio_volume_up();     volume_feedback(); break; }
+        if (!strcmp(ev->name, "volume_down"))   { audio_volume_down();   volume_feedback(); break; }
+        if (!strcmp(ev->name, "volume_mute"))   { audio_volume_mute();   volume_feedback(); break; }
+        if (!strcmp(ev->name, "volume_unmute")) { audio_volume_unmute(); volume_feedback(); break; }
+        if (!strcmp(ev->name, "volume_set"))    { audio_volume_set(ev->value); volume_feedback(); break; }
+
         if (s_voice_state == VOICE_IDLE) {
             lua_runtime_event(ev->name);
         } else {
@@ -463,9 +489,7 @@ static void on_button(btn_id_t id, btn_event_t ev)
             s_boot_down_at = -1;
         } else if (ev == BTN_CLICK) {
             audio_volume_cycle();
-            ui_volume_overlay(audio_volume_get());
-            s_vol_clear_at = now_ms() + 1500;
-            s_dirty = 1;
+            volume_feedback();
         }
     }
 }
@@ -582,7 +606,8 @@ static void main_loop(void)
             if (s_wake_greet) {
                 s_wake_greet = 0;
                 voice_start_rec_auto(0);
-            } else if (s_followup) {
+            } else if (s_followup && !s_pending_evt[0]) {
+                /* 有待执行的屏幕事件时不自动开麦：否则画布刚打开就被语音让位清掉 */
                 s_followup = 0;
                 ESP_LOGI(TAG, "回答以问句收尾 → 自动聆听（直接说话即可）");
                 voice_start_rec_auto(0);

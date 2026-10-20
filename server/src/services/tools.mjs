@@ -16,7 +16,8 @@ const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
  * 固件会把语音期间收到的事件暂存，播报结束回空闲后再执行。 */
 const SCREEN_ACTIONS = {
   timetable: { evt: "open_timetable", zh: "打开课表" },
-  env:       { evt: "open_env",       zh: "打开环境与电池页" },
+  env:       { evt: "open_env",       zh: "打开数据面板（环境与电池）" },
+  dashboard: { evt: "open_env",       zh: "打开数据面板（环境与电池）" },
   close:     { evt: "canvas_close",   zh: "关闭画布" },
   next:      { evt: "canvas_next",    zh: "切到下一个功能页" },
 };
@@ -73,7 +74,7 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "get_device_status",
-      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、固件版本、屏幕当前页面。用户问板子/设备的电量、温度、状态时调用。",
+      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面。用户问板子/设备的电量、温度、音量、网络、状态时调用。",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -81,17 +82,32 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "control_screen",
-      description: "控制桌面宠物的屏幕。用户说“打开课表/让我看看课表”→timetable；“打开环境页/看看温度和电量”→env；“关掉/收起”→close；“下一个/换一页”→next。执行后简短确认即可，不要反问。",
+      description: "控制桌面宠物的屏幕。用户说“打开课表/让我看看课表”→timetable；“打开数据面板/环境页/看看温度和电量”→dashboard；“关掉/收起”→close；“下一个/换一页”→next。env 与 dashboard 等价。执行后简短确认即可，不要反问。",
       parameters: {
         type: "object",
         properties: {
           feature: {
             type: "string",
-            enum: ["timetable", "env", "close", "next"],
+            enum: ["timetable", "env", "dashboard", "close", "next"],
             description: "要执行的动作",
           },
         },
         required: ["feature"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_volume",
+      description: "调节桌面宠物的音量。action=up 调大、down 调小、mute 静音、unmute 恢复、set 指定 level(0~100)。用户说声音大一点/小一点、静音、音量调到百分之几时调用。执行后简短确认。",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["up", "down", "mute", "unmute", "set"] },
+          level: { type: "integer", minimum: 0, maximum: 100, description: "action=set 时的目标音量 0~100" },
+        },
+        required: ["action"],
       },
     },
   },
@@ -161,14 +177,42 @@ export async function executeTool(name, args = {}, ctx, session) {
       const room = st?.room ?? {};
       if (Number.isFinite(room.t) && room.t > -50) parts.push(`室内温度 ${room.t.toFixed(1)}℃`);
       if (Number.isFinite(room.h) && room.h > -0.5) parts.push(`室内湿度 ${room.h}%`);
+      if (st && Number.isFinite(st.vol)) parts.push(`音量 ${st.vol}%`);
+      if (st && Number.isFinite(st.rssi) && st.rssi > -127) parts.push(`WiFi 信号 ${st.rssi}dBm`);
+      if (st?.ip) parts.push(`IP ${st.ip}`);
+      if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
       return `板子状态：${parts.join("；")}。`;
     }
 
     case "control_screen": {
       const act = SCREEN_ACTIONS[String(args.feature ?? "").trim()];
-      if (!act) return "未识别的屏幕动作（可用：timetable / env / close / next）。";
+      if (!act) return "未识别的屏幕动作（可用：timetable / dashboard / close / next）。";
       session.send(build.evt(act.evt));
       return `已发指令：${act.zh}（屏幕马上会更新）。`;
+    }
+
+    case "set_volume": {
+      if (!(session.caps || []).includes("ctl")) {
+        return "当前设备固件还不支持语音音量控制，需要先升级到 0.1.7。";
+      }
+      const action = String(args.action ?? "").trim();
+      if (action === "set") {
+        const level = Math.round(Number(args.level));
+        if (!Number.isFinite(level) || level < 0 || level > 100) return "音量值需要是 0~100 的数字。";
+        session.send(build.evt("volume_set", level));
+        if (session.lastStat) session.lastStat.vol = level;
+        return `已把音量调到 ${level}%。`;
+      }
+      const map = {
+        up: ["volume_up", "调大音量"],
+        down: ["volume_down", "调小音量"],
+        mute: ["volume_mute", "静音"],
+        unmute: ["volume_unmute", "恢复音量"],
+      };
+      const hit = map[action];
+      if (!hit) return "未识别的音量动作（可用：up / down / mute / unmute / set）。";
+      session.send(build.evt(hit[0]));
+      return `已${hit[1]}。`;
     }
 
     default:
