@@ -5,7 +5,7 @@
  * 板子能关联上去、却拿不到 DHCP / 到不了服务器；而 ESP-IDF 默认只看信号强度，
  * 会一直往那个"假接入"的节点上撞。这里的策略：
  *   - 在同一个节点上 2 分钟仍连不上服务器（ws_connected()==0）→ 守护任务
- *     调用 wifi_sta_blacklist_current()；
+ *     直接按开机的扫描缓存拉黑并切换（不创建任务、不再分配内存）；
  *   - 扫同 SSID 的其他 BSSID，把当前节点拉黑 10 分钟，锁定信号最好的另一个节点重连；
  *   - 没有其他节点就不拉黑（避免把自己锁死），60 秒后再试。
  *
@@ -27,6 +27,7 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "wifi";
 EventGroupHandle_t wifi_events;
@@ -40,7 +41,6 @@ static uint8_t  s_bssid[6];          /* 当前关联的 BSSID */
 static volatile bool s_assoc;        /* L2 已关联（不一定有 IP） */
 static uint32_t s_assoc_at;          /* 本次关联时刻（ms，32 位原子读写） */
 static volatile bool s_paused;       /* 暂停自动重连（进配网/重置模式） */
-static volatile bool s_switching;    /* 黑名单切换任务正在跑 */
 
 /* 指定节点重连（只用于一次切换） */
 static bool     s_have_target;
@@ -59,6 +59,13 @@ typedef struct {
 } bl_entry_t;
 
 static bl_entry_t s_bl[BL_MAX];
+
+/* 同 SSID 可见节点缓存：开机（堆最富裕时）扫一次，换节点时只读缓存。
+ * 实机教训：坏节点上反复重连两分钟后内部堆已被耗尽，此时再
+ * xTaskCreate/calloc 都会失败，换节点逻辑永远执行不了。 */
+static wifi_ap_record_t s_scan[SCAN_MAX];
+static int     s_scan_n;
+static int64_t s_scan_at;
 
 /* 链路健康回调（由 main 接到 ws_connected）*/
 static wifi_sta_health_fn s_health;
@@ -170,90 +177,63 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-/* ── 黑名单切换任务 ────────────────────────────────────────────────── */
+/* ── 扫描缓存 / 选节点 ─────────────────────────────────────────────── */
 
-static void switch_task(void *arg)
+static void refresh_scan_cache(void)
 {
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(300));      /* 等当前连接状态稳定（DHCP/握手） */
+    if (s_paused) return;
 
-    if (s_paused) {                      /* 期间进了配网/重置模式 */
-        s_switching = false;
-        vTaskDelete(NULL);
+    esp_err_t e = esp_wifi_scan_start(NULL, true);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "扫描节点失败（%s），沿用旧缓存", esp_err_to_name(e));
         return;
     }
 
-    uint8_t cur[6];
-    memcpy(cur, s_bssid, 6);
-
-    wifi_ap_record_t *recs = NULL;
     uint16_t num = 0;
+    esp_wifi_scan_get_ap_num(&num);
+    if (num == 0) {
+        esp_wifi_clear_ap_list();
+        s_scan_n = 0;
+        s_scan_at = now_ms64();
+        ESP_LOGW(TAG, "扫描完成：0 个节点");
+        return;
+    }
+    if (num > SCAN_MAX) num = SCAN_MAX;
 
-    esp_err_t e = esp_wifi_scan_start(NULL, true);   /* 阻塞扫描，本任务自己的栈 */
-    if (e == ESP_OK) {
-        esp_wifi_scan_get_ap_num(&num);
-        if (num > SCAN_MAX) num = SCAN_MAX;
-        recs = calloc(num ? num : 1, sizeof(*recs));
-        if (recs) {
-            uint16_t got = num;
-            if (esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK)
-                num = got;
-            else {
-                free(recs);
-                recs = NULL;
-                num = 0;
-            }
-        } else {
-            num = 0;
-        }
+    uint16_t got = num;
+    esp_err_t r = esp_wifi_scan_get_ap_records(&got, s_scan);
+    if (r == ESP_OK) {
+        s_scan_n = got;
+        s_scan_at = now_ms64();
+        ESP_LOGI(TAG, "扫描完成：%d 个节点（缓存 %d 个）", num, got);
     } else {
-        ESP_LOGW(TAG, "换节点扫描失败（%s），稍后重试", esp_err_to_name(e));
+        esp_wifi_clear_ap_list();
+        s_scan_n = 0;
+        ESP_LOGW(TAG, "读取扫描结果失败（%s）", esp_err_to_name(r));
     }
+}
 
-    /* 同 SSID、非黑名单、非当前节点 → 选信号最好的 */
-    int best = -1, best_rssi = -127;
-    for (int i = 0; i < num; i++) {
-        if (strncmp((const char *)recs[i].ssid, s_ssid, 32) != 0) continue;
-        if (bl_has(recs[i].bssid)) continue;
-        if (memcmp(recs[i].bssid, cur, 6) == 0) continue;
-        if (recs[i].rssi > best_rssi) {
+/* 同 SSID、非黑名单、非当前节点里挑信号最好的。
+ * cur_rssi 回填当前节点在缓存中的信号（-127 = 没扫到）。 */
+static int pick_alternative(const uint8_t *cur, int *cur_rssi, int *best_rssi)
+{
+    int best = -1;
+    *cur_rssi = -127;
+    *best_rssi = -127;
+
+    for (int i = 0; i < s_scan_n; i++) {
+        if (strncmp((const char *)s_scan[i].ssid, s_ssid, 32) != 0) continue;
+        if (memcmp(s_scan[i].bssid, cur, 6) == 0) {
+            *cur_rssi = s_scan[i].rssi;
+            continue;
+        }
+        if (bl_has(s_scan[i].bssid)) continue;
+        if (s_scan[i].rssi > *best_rssi) {
             best = i;
-            best_rssi = recs[i].rssi;
+            *best_rssi = s_scan[i].rssi;
         }
     }
-
-    if (best < 0) {
-        ESP_LOGW(TAG, "同 SSID 没有其他可用节点（黑名单/不可见），继续用当前节点");
-        free(recs);
-        s_switching = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    uint8_t target[6];
-    memcpy(target, recs[best].bssid, 6);
-    free(recs);
-
-    /* 扫描期间可能已经自己换了节点（或掉线）——别把新节点误拉黑 */
-    if (!s_assoc || memcmp(cur, s_bssid, 6) != 0) {
-        ESP_LOGI(TAG, "扫描期间节点已变化，取消本次切换");
-        s_switching = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    ESP_LOGW(TAG, "节点 " MACSTR " 连不上服务器 → 拉黑 10 分钟，改连 " MACSTR "（%d dBm）",
-             MAC2STR(cur), MAC2STR(target), best_rssi);
-
-    bl_add(cur);
-    memcpy(s_target, target, 6);
-    s_have_target = true;
-
-    /* 断开 → on_event 看到 s_have_target 后按目标 BSSID 重连 */
-    esp_wifi_disconnect();
-
-    s_switching = false;
-    vTaskDelete(NULL);
+    return best;
 }
 
 /* ── 对外接口 ──────────────────────────────────────────────────────── */
@@ -336,18 +316,7 @@ int64_t wifi_sta_assoc_ms(void)
     return (int64_t)(now - s_assoc_at);
 }
 
-int wifi_sta_blacklist_current(void)
-{
-    if (!s_assoc || s_paused || s_switching) return 0;
-
-    s_switching = true;
-    if (xTaskCreate(switch_task, "wfisw", 5120, NULL, 4, NULL) != pdPASS) {
-        s_switching = false;
-        ESP_LOGW(TAG, "换节点任务创建失败");
-        return 0;
-    }
-    return 1;
-}
+/* 守护任务在下面直接完成选节点/拉黑/切换（不再创建任务）。 */
 
 void wifi_sta_pause(void)
 {
@@ -365,42 +334,109 @@ void wifi_sta_set_health_fn(wifi_sta_health_fn fn)
 /* ── 黑名单守护：在同一个节点上 2 分钟到不了服务器 → 拉黑换节点 ──────
  * 独立小任务（不依赖主循环/配网流程），开机进配网门户时也照常工作。
  * 计时跨"同节点重复关联"累计（链路抖动导致的重连不重置计时器；
- * 只有链路真正健康过、或换了节点，才重新从 0 开始计 2 分钟）。 */
+ * 只有链路真正健康过、或换了节点，才重新从 0 开始计 2 分钟）。
+ *
+ * 关键：换节点只用 8 秒时扫描好的缓存，不再 calloc/xTaskCreate——
+ * 实测坏节点上重连两分钟后内部堆已耗尽，任何分配都会失败。 */
 
 static void guard_task(void *arg)
 {
     (void)arg;
     uint32_t last_try = 0;
     uint32_t bad_since = 0;
+    uint32_t noip_since = 0;
+    uint32_t last_ip_kick = 0;
     uint8_t  track_bssid[6];
     int      tracking = 0;
+    int64_t  last_mem_log = 0;
+
+    /* 开机先扫：此时内部堆最富裕，缓存同 SSID 的候选节点。 */
+    vTaskDelay(pdMS_TO_TICKS(8000));
+    refresh_scan_cache();
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(5000));
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        int64_t  now64 = now_ms64();
 
-        if (s_paused) { tracking = 0; continue; }
+        if (now64 - last_mem_log >= 60000) {
+            last_mem_log = now64;
+            ESP_LOGI(TAG, "内部内存：空闲 %u B / 最大块 %u B",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        }
+
+        if (s_paused) { tracking = 0; noip_since = 0; continue; }
         if (!s_health) continue;                   /* 没接健康回调：不启用黑名单 */
 
-        /* 链路健康（连上服务器了）→ 清零；之后再出问题重新计 2 分钟 */
-        if (s_health()) { tracking = 0; continue; }
+        /* 链路健康（连上服务器了）→ 清零；之后定期刷新节点缓存 */
+        if (s_health()) {
+            tracking = 0;
+            noip_since = 0;
+            if (s_scan_n == 0 || now64 - s_scan_at > 600000)
+                refresh_scan_cache();
+            continue;
+        }
 
-        if (!s_assoc) continue;                    /* 没关联：没有可拉黑的对象 */
+        if (!s_assoc) { noip_since = 0; continue; } /* 没关联：没有可拉黑的对象 */
 
         /* 换了节点 → 从这个节点重新计时 */
         if (!tracking || memcmp(track_bssid, s_bssid, 6) != 0) {
             memcpy(track_bssid, s_bssid, 6);
             bad_since = now;
+            noip_since = 0;
             tracking = 1;
             continue;
+        }
+
+        bool has_ip = wifi_sta_connected();
+
+        if (!has_ip) {
+            /* 关联了但没 IP：先重连要 DHCP，别急着给节点判死刑。
+             * 60 秒重试一次；5 分钟还拿不到 IP 才换节点。 */
+            if (!noip_since) noip_since = now;
+            if (now - noip_since >= 60000 && now - last_ip_kick >= 60000) {
+                last_ip_kick = now;
+                ESP_LOGW(TAG, "关联 %u 秒仍无 IP → 重连重试 DHCP",
+                         (unsigned)((now - noip_since) / 1000));
+                esp_wifi_disconnect();
+            }
+            if (now - noip_since < 300000) continue;
+        } else {
+            noip_since = 0;
         }
 
         if (now - bad_since < 120000) continue;    /* 不满 2 分钟 */
         if (now - last_try < 60000) continue;      /* 换节点请求限流 */
         last_try = now;
 
-        if (wifi_sta_blacklist_current())
-            ESP_LOGW(TAG, "节点 " MACSTR " 已 %d 秒连不上服务器 → 拉黑 10 分钟并换节点",
-                     MAC2STR(s_bssid), (int)((now - bad_since) / 1000));
+        int cur_rssi = -127, best_rssi = -127;
+        int best = pick_alternative(s_bssid, &cur_rssi, &best_rssi);
+
+        if (best < 0) {
+            ESP_LOGW(TAG, "节点 " MACSTR " 连不上服务器，但同 SSID 没有其他可用节点",
+                     MAC2STR(s_bssid));
+            if (now64 - s_scan_at > 60000) refresh_scan_cache();  /* 缓存可能过期 */
+            continue;
+        }
+
+        /* 别换到明显更弱的节点（否则会被坏节点反向吸走）；5 分钟后放宽。 */
+        if (cur_rssi > -127 && best_rssi < cur_rssi - 5 && now - bad_since < 300000) {
+            ESP_LOGW(TAG, "候选 " MACSTR "（%d dBm）比当前 " MACSTR "（%d dBm）差，暂不切换",
+                     MAC2STR(s_scan[best].bssid), best_rssi, MAC2STR(s_bssid), cur_rssi);
+            continue;
+        }
+
+        ESP_LOGW(TAG, "节点 " MACSTR " 已 %u 秒连不上服务器 → 拉黑 10 分钟，改连 " MACSTR "（%d dBm）",
+                 MAC2STR(s_bssid), (unsigned)((now - bad_since) / 1000),
+                 MAC2STR(s_scan[best].bssid), best_rssi);
+
+        bl_add(s_bssid);
+        memcpy(s_target, s_scan[best].bssid, 6);
+        s_have_target = true;
+        esp_wifi_disconnect();                    /* 断开事件里按目标 BSSID 重连 */
+
+        tracking = 0;                             /* 新节点重新计时 */
+        noip_since = 0;
     }
 }

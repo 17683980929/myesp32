@@ -582,10 +582,13 @@ static void main_loop(void)
 
         /* 录音硬上限兜底：手动靠松键、自动靠 VAD 收尾——任一环节失效
          * （KEY 事件丢失 / 麦克风没帧 / VAD 不打点）都会永远停在"录音中"。
-         * 自动 20 秒（VAD 自身 15 秒），手动 30 秒。 */
+         * 自动 20 秒（VAD 自身 15 秒），手动 30 秒。
+         * 差值必须有符号：自动聆听在本轮循环里才把 s_rec_started_at 设为
+         * now_ms()，比循环开头取的 now 晚 1~2ms，无符号相减会下溢成 ~2^32，
+         * 导致刚开录就命中 20 秒超时（唤醒应答后"立即结束"的根因）。 */
         if (s_voice_state == VOICE_REC && s_rec_started_at &&
-            now - (uint32_t)s_rec_started_at >
-                (uint32_t)(s_rec_auto_mode ? 20000 : 30000)) {
+            (int32_t)(now - (uint32_t)s_rec_started_at) >
+                (int32_t)(s_rec_auto_mode ? 20000 : 30000)) {
             ESP_LOGW(TAG, "录音超时（%s，%d 秒上限），强制收尾",
                      s_rec_auto_mode ? "自动" : "手动", s_rec_auto_mode ? 20 : 30);
             if (audio_rec_heard_speech()) voice_stop_rec();
