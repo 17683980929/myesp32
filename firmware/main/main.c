@@ -41,6 +41,7 @@ typedef enum { VOICE_IDLE = 0, VOICE_REC, VOICE_THINK, VOICE_SPEAK } voice_state
 
 static voice_state_t s_voice_state = VOICE_IDLE;
 static int s_key_down_at = -1;          /* KEY 按下时刻（ms）；-1 = 未按 */
+static int s_boot_down_at = -1;         /* BOOT 按下时刻（ms）；长按 8 秒进重置模式 */
 static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
@@ -439,10 +440,42 @@ static void on_button(btn_id_t id, btn_event_t ev)
             ESP_LOGI(TAG, "KEY 双击 → lua 事件");
             lua_runtime_event("key_double");
         }
-    } else {                                            /* BOOT：短按=音量循环（增大→顶档静音→循环） */
-        if (ev == BTN_CLICK)
+    } else {                                            /* BOOT：短按=音量循环；长按 8 秒=WiFi 重置 */
+        if (ev == BTN_DOWN) {
+            s_boot_down_at = now_ms();
+        } else if (ev == BTN_UP) {
+            s_boot_down_at = -1;
+        } else if (ev == BTN_CLICK) {
             audio_volume_cycle();
+        }
     }
+}
+
+/** BOOT 长按 8 秒 → WiFi 重置模式：停掉语音/WiFi STA，板子开热点，
+ *  手机连 MyEsp32-XXXX 后打开 http://192.168.4.1 进控制台。
+ *  之后由 wifi_portal 的任务接管；主循环停在这里（保存/超时会自动重启）。 */
+static void enter_portal_mode(void)
+{
+    ESP_LOGW(TAG, "BOOT 长按 8 秒 → 进入 WiFi 重置模式");
+    s_boot_down_at = -1;
+
+    voice_to(VOICE_IDLE);
+    wake_set_enabled(0);
+    audio_play_stop();
+    audio_rec_stop();
+    subq_clear();
+    sub_cur_clear();
+    ui_set_sub("");
+
+    char ap[24];
+    wifi_portal_ap_name(ap, sizeof(ap));
+    ui_show_portal_mode(ap, 1);
+    ui_render();
+
+    wifi_portal_run_reset();
+    ESP_LOGW(TAG, "重置模式已就绪：连接热点 %s → 浏览器打开 192.168.4.1", ap);
+
+    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));       /* 不再回主循环 */
 }
 
 /* ── 主循环 ────────────────────────────────────────────────────────── */
@@ -457,6 +490,11 @@ static void main_loop(void)
     TickType_t last = xTaskGetTickCount();
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        /* BOOT 长按 8 秒 → WiFi 重置模式（热点 + 控制台）。
+         * 放在最前：录音/播报/思考中也能随时进。 */
+        if (s_boot_down_at >= 0 && now - (uint32_t)s_boot_down_at >= 8000)
+            enter_portal_mode();
 
         /* 脚本注册了 key_double → 打开按键双击识别（单击上报延迟 ~300ms 裁决）；
          * 没有脚本关心时立刻关掉，单击行为回到即时。
@@ -706,6 +744,10 @@ void app_main(void)
     /* 配置：NVS（配网页保存）优先，其次编译期默认（CI Secrets / menuconfig） */
     static wifi_cfg_t cfg;
     wifi_cfg_load(&cfg);
+
+    /* 网络健康回调：wifi_sta 的黑名单守护任务用它判断"关联了但到不了服务器"
+     * （关联 2 分钟仍连不上 → 拉黑当前 BSSID 10 分钟换同 SSID 的另一节点） */
+    wifi_sta_set_health_fn(ws_connected);
 
     bool sta_running = false;
     if (!force_portal && cfg.ssid[0]) {

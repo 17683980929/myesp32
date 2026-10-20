@@ -2,6 +2,7 @@
  * wifi_sta.h — WiFi 客户端（站点模式）
  */
 #pragma once
+#include <stdint.h>
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -20,6 +21,25 @@ int wifi_sta_connected(void);
 
 /** 强制断开重连（事件处理器会自动重连；治"僵尸关联"） */
 void wifi_sta_kick(void);
+
+/** 距本次「关联成功」的毫秒数；当前没关联返回 -1。
+ *  注意：关联 ≠ 拿到 IP——Mesh 副节点 DHCP 不通时，这个值会一直涨。 */
+int64_t wifi_sta_assoc_ms(void);
+
+/**
+ * 当前节点连不上服务器时调用：异步扫描同 SSID 的其他 BSSID，
+ * 把当前节点拉黑 10 分钟并切换过去（治 Mesh 副节点假接入）。
+ * 返回 1 = 已启动切换任务；0 = 当前不在关联态/已有任务在跑。
+ */
+int wifi_sta_blacklist_current(void);
+
+/** 暂停 STA 自动重连（进配网 / WiFi 重置模式前调用） */
+void wifi_sta_pause(void);
+
+/** 链路健康回调（返回 1 = 已连上服务器，如 ws_connected）。
+ *  黑名单守护任务用它判断"关联了但到不了服务器"；不设置就不启用黑名单。 */
+typedef int (*wifi_sta_health_fn)(void);
+void wifi_sta_set_health_fn(wifi_sta_health_fn fn);
 
 extern EventGroupHandle_t wifi_events;
 #define WIFI_EVT_GOT_IP  BIT0

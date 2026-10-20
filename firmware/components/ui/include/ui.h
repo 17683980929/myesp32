@@ -22,6 +22,9 @@ ui_page_t ui_get_page(void);
 /** 切到配网页（显示热点名 + 提示），下一帧 ui_render() 画出来 */
 void ui_show_portal(const char *ap_ssid);
 
+/** 同上，reset=1 时标题显示「重置模式」（长按 BOOT 8 秒进入的 WiFi 重置） */
+void ui_show_portal_mode(const char *ap_ssid, int reset);
+
 /** 渲染当前页并刷屏（调用一次画一帧） */
 void ui_render(void);
 

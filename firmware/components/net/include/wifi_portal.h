@@ -21,3 +21,10 @@ void wifi_portal_ap_name(char *buf, size_t n);
  * @param keep_sta STA 是否已在后台重连（启动超时进来时传 true）
  */
 void wifi_portal_run(bool keep_sta);
+
+/**
+ * 运行中长按 BOOT 8 秒 → WiFi 重置模式（纯热点 + 控制台）。
+ * 会暂停 STA 自动重连；保存配置或点“重启”后自动重启，10 分钟无人操作也会
+ * 自动重启回正常模式。调用后本任务可进入空闲循环。
+ */
+void wifi_portal_run_reset(void);

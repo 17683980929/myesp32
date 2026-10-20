@@ -11,6 +11,8 @@
 
 #include "wifi_portal.h"
 #include "wifi_cfg.h"
+#include "wifi_sta.h"
+#include "ws_client.h"      /* MYESP32_FW */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,12 +68,15 @@ bool wifi_portal_key_held(void)
 static const char PAGE_A[] =
     "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>MyEsp32 配网</title><style>"
+    "<title>MyEsp32 控制台</title><style>"
     "body{font-family:system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
     "margin:0;background:#eef1f5;color:#222;-webkit-text-size-adjust:100%}"
     ".card{max-width:430px;margin:18px auto;background:#fff;border-radius:14px;"
     "padding:22px;box-shadow:0 4px 16px rgba(0,0,0,.08)}"
     "h1{font-size:19px;margin:0} .sub{font-size:13px;color:#888;margin:4px 0 10px}"
+    ".stat{background:#f4f6fa;border-radius:10px;padding:12px 14px;margin-top:12px;"
+    "font-size:13px;color:#556;line-height:1.9}"
+    ".stat b{color:#222;font-weight:600}"
     "label{display:block;margin:14px 0 6px;font-size:13px;color:#555}"
     "input{width:100%;box-sizing:border-box;padding:11px;font-size:16px;"
     "border:1px solid #d5d9e0;border-radius:9px;outline:none}"
@@ -80,19 +85,21 @@ static const char PAGE_A[] =
     "button{font-size:15px;border:0;border-radius:9px;background:#2b6cff;color:#fff;"
     "padding:11px 16px;cursor:pointer}"
     "button.ghost{background:#e8edf7;color:#2b6cff;white-space:nowrap}"
+    "button.wide{display:block;width:100%;margin-top:10px;padding:13px;white-space:normal}"
     "#aps .ap{padding:10px 12px;margin-top:6px;background:#f4f6fa;border-radius:9px;"
     "font-size:15px;cursor:pointer}"
     "#save{width:100%;margin-top:22px;padding:14px;font-size:16px}"
     ".hint{font-size:12px;color:#99a0ab;line-height:1.8;margin-top:14px}"
     "</style></head><body><div class=\"card\">"
-    "<h1>MyEsp32 配网</h1>"
-    "<div class=\"sub\">桌面宠物 · 在这里设置 WiFi 和服务器</div>";
+    "<h1>MyEsp32 控制台</h1>"
+    "<div class=\"sub\">桌面宠物 · WiFi 与服务器设置</div>";
 
 static const char PAGE_B[] =
     "<button id=\"save\" onclick=\"save()\">保存并重启</button>"
+    "<button class=\"ghost wide\" onclick=\"reboot()\">仅重启设备</button>"
     "<div class=\"hint\">保存后设备自动重启并连接，热点会关闭。<br>"
     "没自动弹出本页面时，用浏览器打开 <b>192.168.4.1</b>。<br>"
-    "以后重新配网：开机时长按 KEY 三秒。</div></div>"
+    "重新配网：运行中长按 <b>BOOT 8 秒</b>，或开机时长按 KEY 3 秒。</div></div>"
     "<script>"
     "async function scan(){var b=document.getElementById('aps');"
     "b.textContent='扫描中…';"
@@ -115,6 +122,11 @@ static const char PAGE_B[] =
     "document.body.innerHTML='<div class=card><h1>已保存 ✓</h1>"
     "<p>设备正在重启并连接 WiFi，几秒后看屏幕提示。</p></div>';}"
     "catch(e){alert('保存失败，请重试');}}"
+    "async function reboot(){if(!confirm('确定重启设备？'))return;"
+    "try{await fetch('/reboot',{method:'POST'});"
+    "document.body.innerHTML='<div class=card><h1>正在重启…</h1>"
+    "<p>几秒后设备重新启动，热点会短暂关闭。</p></div>';}"
+    "catch(e){alert('请求失败');}}"
     "</script></body></html>";
 
 static char s_page[6144];
@@ -150,7 +162,7 @@ static int jcat(char *buf, int cap, int len, const char *fmt, ...)
     return len + n;
 }
 
-static void build_page(void)
+static void build_page(int reset_mode)
 {
     wifi_cfg_t cfg;
     wifi_cfg_load(&cfg);
@@ -162,6 +174,11 @@ static void build_page(void)
 
     int len = 0;
     len = jcat(s_page, sizeof(s_page), len, "%s", PAGE_A);
+    len = jcat(s_page, sizeof(s_page), len,
+        "<div class=\"stat\">固件 <b>%s</b> · 热点 <b>%s</b><br>%s</div>",
+        MYESP32_FW, s_ap_ssid,
+        reset_mode ? "当前：<b>WiFi 重置模式</b>（长按 BOOT 8 秒进入）"
+                   : "当前：<b>配网模式</b>（开机未连上 / 长按 KEY 3 秒）");
     len = jcat(s_page, sizeof(s_page), len,
         "<label>WiFi 名称（只支持 2.4GHz）</label>"
         "<div class=\"row\"><input id=\"ssid\" value=\"%s\" placeholder=\"输入或点右侧扫描\">"
@@ -334,6 +351,20 @@ static esp_err_t h_save(httpd_req_t *r)
     return ESP_OK;
 }
 
+static esp_err_t h_reboot(httpd_req_t *r)
+{
+    httpd_resp_set_type(r, "text/html; charset=utf-8");
+    httpd_resp_sendstr(r,
+        "<!doctype html><meta charset=utf-8><title>重启</title>"
+        "<body style='font-family:sans-serif;text-align:center;padding-top:3em'>"
+        "<h2>正在重启…</h2>");
+    if (!s_restarting) {
+        s_restarting = 1;
+        xTaskCreate(restart_task, "rst", 2048, NULL, 5, NULL);
+    }
+    return ESP_OK;
+}
+
 /* 未知路径 → 302 回配网页（触发手机"登录网络"弹窗） */
 static esp_err_t on_404(httpd_req_t *r, httpd_err_code_t err)
 {
@@ -408,6 +439,8 @@ static void dns_task(void *arg)
 
 /* ── 启动门户 ──────────────────────────────────────────────────────── */
 
+#define RESET_TIMEOUT_MS (10 * 60 * 1000)     /* 重置模式 10 分钟没人配置 → 自动重启 */
+
 static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base; (void)id; (void)data;
@@ -417,10 +450,22 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     xTaskCreate(restart_task, "rst", 2048, NULL, 5, NULL);
 }
 
-void wifi_portal_run(bool keep_sta)
+static void reset_timeout_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(RESET_TIMEOUT_MS));
+    if (s_restarting) { vTaskDelete(NULL); return; }
+    ESP_LOGW(TAG, "重置模式 10 分钟无人配置 → 自动重启回正常模式");
+    esp_restart();
+}
+
+/** 公共启动流程：开热点 + DNS 劫持 + 控制台网页。
+ *  @param keep_sta   保留 STA 后台重连（开机超时进配网时用）
+ *  @param reset_mode 运行中长按 BOOT 进入的重置模式（纯 AP，10 分钟超时） */
+static void portal_start(bool keep_sta, bool reset_mode)
 {
     wifi_portal_ap_name(s_ap_ssid, sizeof(s_ap_ssid));
-    build_page();
+    build_page(reset_mode);
 
     /* 1. 基础设施（STA 已跑过则已就绪；重复调用安全） */
     (void)esp_netif_init();
@@ -439,7 +484,7 @@ void wifi_portal_run(bool keep_sta)
         if (!ap_netif) ESP_LOGE(TAG, "创建 AP netif 失败");
     }
 
-    /* 3. 切 APSTA（STA 短暂停一下会自己继续重连） */
+    /* 3. 切 APSTA（扫描 WiFi 需要 STA 接口；重置模式下 s_paused 已阻止自动重连） */
     if (started) esp_wifi_stop();
 
     wifi_config_t ap = { 0 };
@@ -455,10 +500,16 @@ void wifi_portal_run(bool keep_sta)
     if (keep_sta)
         esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
 
-    ESP_LOGI(TAG, "配网热点已开启：%s（开放网络）", s_ap_ssid);
-    ESP_LOGI(TAG, "手机连上后浏览器打开 http://192.168.4.1");
+    if (reset_mode) {
+        ESP_LOGW(TAG, "WiFi 重置模式：热点 %s（开放），控制台 http://192.168.4.1", s_ap_ssid);
+        ESP_LOGW(TAG, "10 分钟内无人保存将自动重启；保存后自动重启连新网络");
+        xTaskCreate(reset_timeout_task, "ptmo", 2048, NULL, 3, NULL);
+    } else {
+        ESP_LOGI(TAG, "配网热点已开启：%s（开放网络）", s_ap_ssid);
+        ESP_LOGI(TAG, "手机连上后浏览器打开 http://192.168.4.1");
+    }
 
-    /* 4. DNS 劫持 + 配网网页 */
+    /* 4. DNS 劫持 + 控制台网页 */
     xTaskCreate(dns_task, "dns", 3072, NULL, 4, NULL);
 
     httpd_handle_t srv = NULL;
@@ -466,13 +517,27 @@ void wifi_portal_run(bool keep_sta)
     hc.lru_purge_enable = true;
     ESP_ERROR_CHECK(httpd_start(&srv, &hc));
 
-    httpd_uri_t u_root = { .uri = "/",     .method = HTTP_GET,  .handler = h_root };
-    httpd_uri_t u_scan = { .uri = "/scan", .method = HTTP_GET,  .handler = h_scan };
-    httpd_uri_t u_save = { .uri = "/save", .method = HTTP_POST, .handler = h_save };
+    httpd_uri_t u_root = { .uri = "/",      .method = HTTP_GET,  .handler = h_root };
+    httpd_uri_t u_scan = { .uri = "/scan",  .method = HTTP_GET,  .handler = h_scan };
+    httpd_uri_t u_save = { .uri = "/save",  .method = HTTP_POST, .handler = h_save };
+    httpd_uri_t u_rst  = { .uri = "/reboot", .method = HTTP_POST, .handler = h_reboot };
     ESP_ERROR_CHECK(httpd_register_uri_handler(srv, &u_root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(srv, &u_scan));
     ESP_ERROR_CHECK(httpd_register_uri_handler(srv, &u_save));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(srv, &u_rst));
     httpd_register_err_handler(srv, HTTPD_404_NOT_FOUND, on_404);
 
     /* 到这里都由各任务接管；调用方（app_main）可以就此返回 */
+}
+
+void wifi_portal_run(bool keep_sta)
+{
+    portal_start(keep_sta, false);
+}
+
+void wifi_portal_run_reset(void)
+{
+    /* 掐掉 STA：否则后台连上老网络会触发 on_got_ip 自动重启，重置模式秒退 */
+    wifi_sta_pause();
+    portal_start(false, true);
 }

@@ -327,6 +327,7 @@ static ui_page_t s_page = UI_PAGE_HOME;
 static int s_busy = 0;
 static char s_sub[512] = "";             /* 一句话最长 ~170 字（UTF-8 最多 3B/字） */
 static char s_portal_ap[32] = "";
+static int  s_portal_reset = 0;
 
 void ui_init(void)
 {
@@ -337,10 +338,15 @@ void ui_set_page(ui_page_t p) { s_page = p; }
 ui_page_t ui_get_page(void) { return s_page; }
 void ui_set_busy(int busy) { s_busy = busy; }
 void ui_set_voice(ui_voice_t v) { s_voice = v; }
-void ui_show_portal(const char *ap_ssid)
+void ui_show_portal_mode(const char *ap_ssid, int reset)
 {
     strlcpy(s_portal_ap, ap_ssid ? ap_ssid : "", sizeof(s_portal_ap));
+    s_portal_reset = reset ? 1 : 0;
     s_page = UI_PAGE_PORTAL;
+}
+void ui_show_portal(const char *ap_ssid)
+{
+    ui_show_portal_mode(ap_ssid, 0);
 }
 void ui_set_sub(const char *text)
 {
@@ -528,7 +534,7 @@ static void render_frame(void)
 {
     if (s_page == UI_PAGE_PORTAL) {
         lcd_clear(0);
-        const char *t1 = "配网模式";
+        const char *t1 = s_portal_reset ? "重置模式" : "配网模式";
         draw_cjk((LCD_W - cjk_text_w(t1, 2)) / 2, 30, t1, 2, 1);
         const char *t2 = "手机连接热点";
         draw_cjk((LCD_W - cjk_text_w(t2, 2)) / 2, 84, t2, 2, 1);
@@ -578,7 +584,8 @@ static uint32_t now_ms_(void)
  *  注意先写页再写计时：让 hold_active 的页条件先成立。 */
 static void lua_keepalive(void)
 {
-    s_page = UI_PAGE_HOME;
+    /* 配网/重置页优先级最高：脚本的定时器不能把页面拽回主页 */
+    if (s_page != UI_PAGE_PORTAL) s_page = UI_PAGE_HOME;
     s_lua_hold_until = now_ms_() + LUA_HOLD_MS;
 }
 
@@ -602,6 +609,7 @@ uint32_t ui_lua_release_seq(void)
 
 void ui_lua_clear(void)
 {
+    if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     lcd_clear(0);
@@ -610,6 +618,7 @@ void ui_lua_clear(void)
 
 void ui_lua_text(int x, int y, const char *s, int size)
 {
+    if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     lua_keepalive();
     if (!s || !*s) return;
 
@@ -632,6 +641,7 @@ void ui_lua_text(int x, int y, const char *s, int size)
 
 void ui_lua_rect(int x, int y, int w, int h, int filled)
 {
+    if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     lua_keepalive();
     if (w <= 0 || h <= 0) return;
     if (x >= LCD_W || y >= LCD_H) return;
@@ -649,6 +659,7 @@ void ui_lua_rect(int x, int y, int w, int h, int filled)
 
 void ui_lua_flush(void)
 {
+    if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     lcd_flush();
