@@ -21,6 +21,7 @@
 #include "sensors.h"
 #include "pcf85063.h"
 #include "wifi_sta.h"
+#include "ble.h"
 
 #ifndef PET_W
 #define PET_W            200
@@ -546,7 +547,7 @@ static void render_panel(void)
     lcd_hline(PANEL_X, 212, PANEL_SEP_W, 1);
     status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
     status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
-    status_row(262, "蓝牙", "未启用");
+    status_row(262, "蓝牙", ble_state_str());
     if (s_sub[0]) {
         /* 字幕：整行全宽放在桌宠下方（16px/字），最多 24 字（超出截断），居中显示。
          * 原来只画右栏 11 字——长句"看起来缺字"就有它一份。 */

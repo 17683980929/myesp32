@@ -11,6 +11,7 @@ import { getHotNews } from "./news.mjs";
 import { webSearch } from "./search.mjs";
 
 const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
+const BT_ZH = { 0: "关闭", 1: "广播中", 2: "已连接" };
 
 /* 屏幕动作 → 固件脚本事件（framework.lua 用 sys.on 接）。
  * 固件会把语音期间收到的事件暂存，播报结束回空闲后再执行。 */
@@ -74,7 +75,7 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "get_device_status",
-      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面。用户问板子/设备的电量、温度、音量、网络、状态时调用。",
+      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、蓝牙状态、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面。用户问板子/设备的电量、温度、音量、蓝牙、网络、状态时调用。",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -106,6 +107,20 @@ export const TOOLS = [
         properties: {
           action: { type: "string", enum: ["up", "down", "mute", "unmute", "set"] },
           level: { type: "integer", minimum: 0, maximum: 100, description: "action=set 时的目标音量 0~100" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "control_bluetooth",
+      description: "控制桌面宠物的 BLE 蓝牙。action=on 打开并开始广播、off 关闭、status 查询当前状态。用户说打开蓝牙/关闭蓝牙/蓝牙状态时调用；ESP32-S3 只有 BLE，没有经典蓝牙音频。执行后简短确认。",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["on", "off", "status"] },
         },
         required: ["action"],
       },
@@ -178,6 +193,7 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (Number.isFinite(room.t) && room.t > -50) parts.push(`室内温度 ${room.t.toFixed(1)}℃`);
       if (Number.isFinite(room.h) && room.h > -0.5) parts.push(`室内湿度 ${room.h}%`);
       if (st && Number.isFinite(st.vol)) parts.push(`音量 ${st.vol}%`);
+      if (st && Number.isFinite(st.bt)) parts.push(`蓝牙${BT_ZH[st.bt] ?? st.bt}`);
       if (st && Number.isFinite(st.rssi) && st.rssi > -127) parts.push(`WiFi 信号 ${st.rssi}dBm`);
       if (st?.ip) parts.push(`IP ${st.ip}`);
       if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
@@ -213,6 +229,28 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (!hit) return "未识别的音量动作（可用：up / down / mute / unmute / set）。";
       session.send(build.evt(hit[0]));
       return `已${hit[1]}。`;
+    }
+
+    case "control_bluetooth": {
+      if (!(session.caps || []).includes("bt")) {
+        return "当前设备固件还不支持 BLE 蓝牙控制，需要先升级到 0.1.8。";
+      }
+      const action = String(args.action ?? "").trim();
+      if (action === "on") {
+        session.send(build.evt("bt_on"));
+        if (session.lastStat) session.lastStat.bt = 1;
+        return "正在打开蓝牙并开始广播。";
+      }
+      if (action === "off") {
+        session.send(build.evt("bt_off"));
+        if (session.lastStat) session.lastStat.bt = 0;
+        return "已关闭蓝牙。";
+      }
+      if (action === "status") {
+        const bt = session.lastStat?.bt;
+        return Number.isFinite(bt) ? `蓝牙当前${BT_ZH[bt] ?? bt}。` : "设备还没上报蓝牙状态，稍后再问一次。";
+      }
+      return "未识别的蓝牙动作（可用：on / off / status）。";
     }
 
     default:

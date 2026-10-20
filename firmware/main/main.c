@@ -32,6 +32,7 @@
 #include "ui.h"
 #include "audio.h"
 #include "wake.h"
+#include "ble.h"
 #include "lua_runtime.h"
 
 static const char *TAG = "main";
@@ -310,6 +311,7 @@ static void stat_send(void)
     wifi_sta_ip(ip, sizeof(ip));
     int rssi = wifi_sta_rssi();
     int vol = audio_volume_get();
+    int bt = (int)ble_state();
     int up = (int)(esp_timer_get_time() / 1000000);
 
     float t = 0, h = 0;
@@ -320,13 +322,13 @@ static void stat_send(void)
         if (tf < 0) tf = -tf;
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
-                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"rssi\":%d,\"up\":%d,"
+                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
                  "\"ip\":\"%s\",\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, rssi, up, ip, t10 / 10, tf, h10 / 10, hf);
+                 bat, vol, bt, rssi, up, ip, t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
-                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"rssi\":%d,\"up\":%d,\"ip\":\"%s\"}",
-                 bat, vol, rssi, up, ip);
+                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,\"ip\":\"%s\"}",
+                 bat, vol, bt, rssi, up, ip);
     }
     ws_send_json(msg);
 }
@@ -388,6 +390,10 @@ static void on_ws_event(const ws_event_t *ev)
         if (!strcmp(ev->name, "volume_mute"))   { audio_volume_mute();   volume_feedback(); break; }
         if (!strcmp(ev->name, "volume_unmute")) { audio_volume_unmute(); volume_feedback(); break; }
         if (!strcmp(ev->name, "volume_set"))    { audio_volume_set(ev->value); volume_feedback(); break; }
+
+        /* BLE 开关：立即生效，状态变化会触发一次 stat */
+        if (!strcmp(ev->name, "bt_on"))  { ble_set_enabled(1); s_stat_at = 0; s_dirty = 1; break; }
+        if (!strcmp(ev->name, "bt_off")) { ble_set_enabled(0); s_stat_at = 0; s_dirty = 1; break; }
 
         if (s_voice_state == VOICE_IDLE) {
             lua_runtime_event(ev->name);
@@ -699,7 +705,18 @@ static void main_loop(void)
             voice_to(VOICE_IDLE);
         }
 
-        /* 板载状态上报：连上后立即一次，之后每 30 秒（语音答"电量/室温"用它） */
+        /* BLE 状态变化（广播/连接/断开）→ 立即上报并刷新底部状态 */
+        {
+            static int s_last_bt = -1;
+            int bt_now = (int)ble_state();
+            if (bt_now != s_last_bt) {
+                s_last_bt = bt_now;
+                s_stat_at = 0;
+                s_dirty = 1;
+            }
+        }
+
+        /* 板载状态上报：连上后立即一次，之后每 30 秒（语音答"电量/室温/蓝牙"用它） */
         if (ws_connected() && (int32_t)(now - s_stat_at) >= 0) {
             stat_send();
             s_stat_at = now + 30000;

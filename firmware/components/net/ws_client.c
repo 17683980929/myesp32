@@ -175,7 +175,7 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"hello\",\"fw\":\"" MYESP32_FW "\","
                  "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
-                 "\"caps\":[\"audio\",\"lua\",\"ctl\"]}",
+                 "\"caps\":[\"audio\",\"lua\",\"ctl\",\"bt\"]}",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         /* 有限超时：连接刚建立也不无限持锁（链路半死会连 ws 任务一起卡住） */
         tx_result(esp_websocket_client_send_text(s_cli, msg, strlen(msg),

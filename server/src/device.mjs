@@ -177,7 +177,7 @@ export class DeviceSession {
       case DEV.BTN:   return this.onBtn(m);
       case DEV.STAT:
         this.lastStat = {
-          bat: m.bat, room: m.room, vol: m.vol, rssi: m.rssi,
+          bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
           up: m.up, ip: m.ip, at: Date.now(),
         };
         return;
