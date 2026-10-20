@@ -192,7 +192,7 @@
       <div>
         <label>引擎</label>
         <select id="t_provider">
-          <option value="tencent">腾讯云（大模型音色）</option>
+          <option value="tencent">腾讯云（超自然 / 大模型）</option>
           <option value="baidu">百度（免费备用）</option>
         </select>
       </div>
@@ -205,11 +205,12 @@
       <div><label>腾讯 SecretId</label><input id="t_sid" type="password"></div>
       <div><label>腾讯 SecretKey</label><input id="t_skey" type="password"></div>
     </div>
-    <div class="row">
-      <div><label>腾讯音色 VoiceType</label><input id="t_voice" type="number" placeholder="101001"></div>
+    <label>音色（超自然 / 大模型 / 普通）</label>
+    <select id="t_voice"></select>
+    <div class="row" style="margin-top:10px">
       <div><label>腾讯语速（-2~6，0=常速）</label><input id="t_tspeed" type="number" step="0.1" min="-2" max="6"></div>
     </div>
-    <p class="hint">音色示例：101001 智瑜（女·大模型）/ 101004 智云（男·大模型）/ 1001 智瑜（精品）/ 0 基础女声1。密钥与语音识别可用同一腾讯账号；未配密钥或腾讯调用失败时自动回退百度。</p>
+    <p class="hint">音色按类别分组，✓ 表示已用当前账号实测可用；超自然/大模型音色分别消耗对应资源包，腾讯调用失败时自动回退百度。密钥与语音识别可共用同一腾讯账号。</p>
   </div>
 
   <!-- Lua -->
@@ -238,7 +239,32 @@ function setMsg(el, text, kind) {
   if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 4000);
 }
 
+async function loadVoices() {
+  const sel = $("t_voice");
+  try {
+    const r = await fetch("/api/voices");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    sel.innerHTML = "";
+    for (const g of data.groups || []) {
+      const og = document.createElement("optgroup");
+      og.label = g.label + (g.note ? `（${g.note}）` : "");
+      for (const v of g.voices || []) {
+        const o = document.createElement("option");
+        o.value = String(v.id);
+        o.textContent = `${v.id} · ${v.name}${v.desc ? `（${v.desc}）` : ""}${v.verified ? " ✓" : ""}`;
+        og.appendChild(o);
+      }
+      sel.appendChild(og);
+    }
+  } catch (e) {
+    console.warn("加载音色目录失败:", e);
+    sel.innerHTML = '<option value="402000">402000 · 云晓芙（聊天女声）✓</option>';
+  }
+}
+
 async function loadConfig() {
+  await loadVoices();
   const r = await fetch("/api/config");
   cfg = await r.json();
 
@@ -268,10 +294,19 @@ async function loadConfig() {
   $("a_skey").value = cfg.asr.secretKey;
 
   $("t_speed").value = cfg.tts.speed;
-  $("t_provider").value = cfg.tts.provider || "baidu";
+  $("t_provider").value = cfg.tts.provider || "tencent";
   $("t_sid").value = cfg.tts.tencent?.secretId || "";
   $("t_skey").value = cfg.tts.tencent?.secretKey || "";
-  $("t_voice").value = cfg.tts.tencent?.voiceType ?? 101001;
+
+  const vt = cfg.tts.tencent?.voiceType ?? 402000;
+  const voiceSel = $("t_voice");
+  if (![...voiceSel.options].some((o) => +o.value === vt)) {
+    const o = document.createElement("option");
+    o.value = String(vt);
+    o.textContent = `${vt} · 当前配置（目录中暂无）`;
+    voiceSel.appendChild(o);
+  }
+  voiceSel.value = String(vt);
   $("t_tspeed").value = cfg.tts.tencent?.speed ?? 0;
 
   $("lua_code").value = cfg.lua.activeScript || "";

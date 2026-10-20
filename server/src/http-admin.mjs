@@ -18,6 +18,7 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
+import { VOICE_GROUPS } from "./voices.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -109,6 +110,10 @@ export async function handleHttp(req, res, ctx) {
     /* ── API ──────────────────────────────────────────────────────── */
     if (p.startsWith("/api/")) {
       if (!checkAuth(req, res)) return;
+
+      if (p === "/api/voices" && req.method === "GET") {
+        return json(res, 200, { groups: VOICE_GROUPS });
+      }
 
       if (p === "/api/config" && req.method === "GET") {
         return json(res, 200, maskedConfig());

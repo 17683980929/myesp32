@@ -94,15 +94,15 @@ export const DEFAULT_CONFIG = {
   },
   tts: {
     /** "tencent" = 腾讯云语音合成；"baidu" = 百度翻译免费接口（备用，无密钥可用） */
-    provider: "baidu",
+    provider: "tencent",
     /** 百度语速（0~15，5≈常速），provider=baidu 时生效 */
     speed: 5,
     /** 腾讯云（provider=tencent 时生效）；密钥可与「语音识别」共用同一账号 */
     tencent: {
       secretId: "",
       secretKey: "",
-      /** 音色：101001 智瑜(女)/101004 智云(男)（大模型）；1001 智瑜(精品)；0 基础女声1 */
-      voiceType: 101001,
+      /** 默认 402000 云晓芙（超自然·聊天女声）；完整分组目录见 src/voices.mjs */
+      voiceType: 402000,
       /** 语速：-2~6，0 = 常速 */
       speed: 0,
       /** 音量：-10~10，0 = 正常 */
