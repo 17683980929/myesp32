@@ -462,8 +462,10 @@ void audio_set_volume(int vol)
 }
 
 /* 音量档位：BOOT 短按逐档增大；顶档再按 → 静音；静音再按 → 回到最小档循环。
- * 顶档取 85 而不是 100：85 及以上功放电流尖峰会触发 BOD 欠压复位（实测教训）。 */
-static const int VOL_STEPS[] = { 25, 50, 75, 85 };
+ * 默认音量曲线 0..100 → -50..0dB，85→100 约 +7.5dB。
+ * 注意：85 以上曾触发功放电流尖峰的 BOD 欠压复位（实测教训）；100 档需要
+ * 实测，若复位则降档或改善供电。 */
+static const int VOL_STEPS[] = { 25, 50, 75, 90, 100 };
 static int s_vol_cur = 65;              /* 与 audio_init 里设置的默认一致 */
 
 void audio_volume_cycle(void)

@@ -754,6 +754,9 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    if (esp_reset_reason() == ESP_RST_BROWNOUT)
+        ESP_LOGW(TAG, "上次复位原因：BOD 欠压（可能音量过大）");
+
     /* 长按 BOOT 8 秒触发的重启：干净堆上直接进重置门户，
      * 不初始化音频/Lua/WS（它们占用内部 RAM，SoftAP 会分配失败）。 */
     bool boot_reset_portal = (s_boot_portal_flag == BOOT_PORTAL_MAGIC);
