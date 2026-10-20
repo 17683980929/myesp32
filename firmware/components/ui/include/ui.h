@@ -50,6 +50,9 @@ void ui_set_sub_page(const char *text, int page);
 /** BOOT 短按后的音量浮层（0..100）；-1 关闭。只改状态，下一次 ui_render 绘制。 */
 void ui_volume_overlay(int vol);
 
+/** 蓝牙状态浮层：0=关闭 1=广播中 2=已连接；-1 关闭。 */
+void ui_bt_overlay(int state);
+
 /* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
 
 /** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环

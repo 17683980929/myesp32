@@ -55,6 +55,7 @@ static int s_key_voice = 0;             /* 本次按键已触发录音（防重�
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
 static uint32_t s_vol_clear_at = 0;     /* 音量浮层清除时刻 */
+static uint32_t s_bt_clear_at = 0;      /* 蓝牙状态浮层清除时刻 */
 static int s_rec_started_at = 0;        /* 进入录音的时刻（ms）；录音硬上限兜底 */
 static int s_rec_auto_mode = 0;         /* 本次录音是自动聆听（VAD 收尾）还是手动长按 */
 
@@ -517,6 +518,8 @@ static void enter_portal_mode(void)
     sub_cur_clear();
     ui_volume_overlay(-1);
     s_vol_clear_at = 0;
+    ui_bt_overlay(-1);
+    s_bt_clear_at = 0;
     ui_lua_release();
     ui_set_sub("松开 BOOT 进入重置模式");
     ui_render();
@@ -705,14 +708,19 @@ static void main_loop(void)
             voice_to(VOICE_IDLE);
         }
 
-        /* BLE 状态变化（广播/连接/断开）→ 立即上报并刷新底部状态 */
+        /* BLE 状态变化（广播/连接/断开）→ 立即上报、刷新底部状态和中央浮层 */
         {
             static int s_last_bt = -1;
             int bt_now = (int)ble_state();
-            if (bt_now != s_last_bt) {
+            if (s_last_bt < 0) {
+                s_last_bt = bt_now;
+                s_stat_at = 0;
+            } else if (bt_now != s_last_bt) {
                 s_last_bt = bt_now;
                 s_stat_at = 0;
                 s_dirty = 1;
+                ui_bt_overlay(bt_now);
+                s_bt_clear_at = now_ms() + 1500;
             }
         }
 
@@ -755,6 +763,13 @@ static void main_loop(void)
         if (s_vol_clear_at && now >= s_vol_clear_at) {
             s_vol_clear_at = 0;
             ui_volume_overlay(-1);
+            s_dirty = 1;
+        }
+
+        /* 蓝牙状态浮层超时清除 */
+        if (s_bt_clear_at && now >= s_bt_clear_at) {
+            s_bt_clear_at = 0;
+            ui_bt_overlay(-1);
             s_dirty = 1;
         }
 

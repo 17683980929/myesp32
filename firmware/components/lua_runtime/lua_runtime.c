@@ -109,14 +109,16 @@ static void *lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
         }
         return NULL;
     }
+    /* Lua 状态放 PSRAM：内部 RAM 要留给 BLE 控制器/音频/WS，
+     * 之前 Lua 占内部堆导致 BLE 初始化 Malloc failed。 */
     if (!ptr) {
         if (s_mem_used + (int)nsize > LUA_MEM_CAP) return NULL;
-        void *p = heap_caps_malloc(nsize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        void *p = heap_caps_malloc(nsize, MALLOC_CAP_SPIRAM);
         if (p) s_mem_used += (int)nsize;
         return p;
     }
     if (nsize > osize && s_mem_used + (int)(nsize - osize) > LUA_MEM_CAP) return NULL;
-    void *p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    void *p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM);
     if (p) s_mem_used += (int)nsize - (int)osize;
     return p;
 }

@@ -337,6 +337,7 @@ static int      s_vol_bar;               /* 当前条值 0..100（动画插值�
 static int      s_vol_from;
 static int      s_vol_target;
 static uint32_t s_vol_anim_at;
+static int      s_bt_overlay = -1;       /* 蓝牙状态浮层；-1 = 不显示 */
 
 void ui_init(void)
 {
@@ -399,6 +400,11 @@ void ui_volume_overlay(int vol)
     s_vol_target = vol;
     s_vol_overlay = vol;
     s_vol_anim_at = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+void ui_bt_overlay(int state)
+{
+    s_bt_overlay = state >= 0 ? state : -1;
 }
 
 int ui_tick(uint32_t now)
@@ -593,6 +599,23 @@ static void draw_volume_overlay(int vol)
     if (inner > 0) lcd_fill(bx + 3, by + 3, inner, bh - 6, 1);
 }
 
+/** 蓝牙状态卡片：关闭 / 广播中 / 已连接 */
+static void draw_bt_overlay(int state)
+{
+    int w = 240, h = 84;
+    int x = (LCD_W - w) / 2;
+    int y = (LCD_H - h) / 2;
+
+    lcd_fill(x, y, w, h, 0);
+    lcd_rect(x, y, w, h, 1);
+    lcd_rect(x + 3, y + 3, w - 6, h - 6, 1);
+
+    draw_cjk(x + (w - cjk_text_w("蓝牙", 1)) / 2, y + 12, "蓝牙", 1, 1);
+
+    const char *s = state == 1 ? "广播中" : state == 2 ? "已连接" : "关闭";
+    draw_cjk(x + (w - cjk_text_w(s, 2)) / 2, y + 38, s, 2, 1);
+}
+
 static void render_frame(void)
 {
     if (s_page == UI_PAGE_PORTAL) {
@@ -622,6 +645,7 @@ static void render_frame(void)
 
     render_panel();
     if (s_vol_overlay >= 0) draw_volume_overlay(s_vol_overlay);
+    if (s_bt_overlay >= 0) draw_bt_overlay(s_bt_overlay);
     lcd_flush();
 }
 
