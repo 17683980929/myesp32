@@ -654,7 +654,11 @@ void lua_runtime_start(void)
         ESP_LOGE(TAG, "队列创建失败");
         return;
     }
-    xTaskCreate(lua_task, "lua", 12288, NULL, 4, &s_task);
+    BaseType_t r = xTaskCreate(lua_task, "lua", 12288, NULL, 4, &s_task);
+    if (r != pdPASS) {
+        s_task = NULL;
+        ESP_LOGE(TAG, "Lua 任务创建失败（内部 RAM 不足）");
+    }
 }
 
 void lua_runtime_deploy(int id, const char *code)
@@ -663,7 +667,7 @@ void lua_runtime_deploy(int id, const char *code)
         reply(id, 0, "脚本为空");
         return;
     }
-    if (!s_q) {
+    if (!s_q || !s_task) {
         reply(id, 0, "Lua 运行时未就绪");
         return;
     }

@@ -652,9 +652,21 @@ esp_err_t audio_init(void)
     /* 栈必须给足：esp-opus 以 -DUSE_ALLOCA 编译，opus_encode/opus_decode 的临时
      * 缓冲全部走任务栈 —— 实测 6KB 第一帧编码就栈溢出（串口：
      * "***ERROR*** A stack overflow in task audio_mic"，随后崩溃重启）。
-     * 编码峰值约 30KB，这里给 40KB；解码路径给 16KB。 */
-    if (xTaskCreatePinnedToCore(mic_task,  "audio_mic",  40960, NULL, 5, NULL, 1) != pdPASS ||
-        xTaskCreatePinnedToCore(play_task, "audio_play", 16384, NULL, 5, NULL, 1) != pdPASS) {
+     * 编码峰值约 30KB，这里给 40KB；解码路径给 16KB。
+     * 两个大栈都放 PSRAM，把内部 RAM 留给 BLE 控制器。 */
+    static StaticTask_t s_mic_tcb, s_play_tcb;
+    static StackType_t *s_mic_stack, *s_play_stack;
+    s_mic_stack = heap_caps_malloc(40960, MALLOC_CAP_SPIRAM);
+    s_play_stack = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
+    if (!s_mic_stack || !s_play_stack) {
+        ESP_LOGE(TAG, "音频任务栈分配失败（PSRAM 不足）");
+        return ESP_ERR_NO_MEM;
+    }
+    TaskHandle_t mic_h = xTaskCreateStaticPinnedToCore(
+        mic_task, "audio_mic", 40960, NULL, 5, s_mic_stack, &s_mic_tcb, 1);
+    TaskHandle_t play_h = xTaskCreateStaticPinnedToCore(
+        play_task, "audio_play", 16384, NULL, 5, s_play_stack, &s_play_tcb, 1);
+    if (!mic_h || !play_h) {
         ESP_LOGE(TAG, "音频任务创建失败（内存不足？）");
         return ESP_FAIL;
     }
