@@ -38,13 +38,16 @@
 #include "sensors.h"
 #include "ws_client.h"
 #include "wake.h"
-#include "greeting_opus.h"
 
 static const char *TAG = "audio";
 
 #define FRAME_SAMPLES   960          /* 60ms @16kHz（与服务器约定一致） */
 #define READ_CHUNK      320          /* 每次读 20ms（单声道采样数） */
 #define MAX_OPUS_FRAME  400          /* 单帧 opus 上限（字节） */
+
+/* 任务栈字节数（换算成 FreeRTOS 的「字」再传，见 audio_init） */
+#define MIC_STACK_BYTES   40960      /* opus_encode 用 alloca，峰值约 30KB */
+#define PLAY_STACK_BYTES  16384      /* opus_decode + 提示音合成 */
 
 static esp_codec_dev_handle_t s_play = NULL;
 static esp_codec_dev_handle_t s_rec  = NULL;
@@ -75,6 +78,7 @@ static volatile int   s_stream_act_ms  = 0;   /* 最近一次帧活动时刻（�
 static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步，tts_start 清零） */
 static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
 static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放任务消费） */
+static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放任务消费） */
 
 /* 播放流沉默超时：tts_start 后 15 秒既没有帧流入、也没有声音在放
  * （服务器句子合成超时 12 秒；正常到不了）→ 判本轮结束并复位，
@@ -269,6 +273,51 @@ static void play_beep(void)
     }
 }
 
+/* 唤醒提示音："叮咚"两声（E6 → A5，纯音 + 弱二次谐波），指数衰减，约 450ms。
+ * 取代原来内置的人声应答"我在，有什么可以帮你？"——人声和后面的 TTS 播报
+ * 声音不搭，换成 Siri 那种弹出音效。
+ * 逐块合成：整段 7200 样点（28KB）放 .bss 太占内部 RAM，块缓冲走播放任务栈。 */
+static void play_chime(void)
+{
+    enum {
+        N1_LEN = AUD_SAMPLE_HZ * 11 / 100,      /* 叮 110ms */
+        GAP    = AUD_SAMPLE_HZ *  4 / 100,      /* 间隔 40ms */
+        N2_LEN = AUD_SAMPLE_HZ * 30 / 100,      /* 咚 300ms */
+        TOTAL  = N1_LEN + GAP + N2_LEN,
+        CHUNK  = 320,
+        ATK    = 80,                            /* 5ms 淡入，防爆音 */
+    };
+    static const float FREQ[2] = { 1318.51f, 880.0f };
+    static const float AMP[2]  = { 1.0f, 0.82f };
+    static const int   OFF[2]  = { 0, N1_LEN + GAP };
+    static const int   LEN[2]  = { N1_LEN, N2_LEN };
+    int16_t out[CHUNK * 2];
+
+    for (int base = 0; base < TOTAL; base += CHUNK) {
+        int n = TOTAL - base;
+        if (n > CHUNK) n = CHUNK;
+        for (int i = 0; i < n; i++) {
+            int t = base + i;
+            float v = 0;
+            for (int k = 0; k < 2; k++) {
+                int lt = t - OFF[k];
+                if (lt < 0 || lt >= LEN[k]) continue;
+                float atk = lt < ATK ? (float)lt / ATK : 1.0f;
+                float dec = expf(-(float)lt / (LEN[k] / 3.0f));
+                float ph  = 6.2831853f * FREQ[k] * (float)lt / AUD_SAMPLE_HZ;
+                v += AMP[k] * (sinf(ph) + 0.22f * sinf(2.0f * ph)) * atk * dec;
+            }
+            int32_t s = (int32_t)(v * 6800.0f);
+            if (s > 30000) s = 30000;
+            else if (s < -30000) s = -30000;
+            out[i * 2] = (int16_t)s;
+            out[i * 2 + 1] = (int16_t)s;
+        }
+        esp_codec_dev_write(s_play, out, n * 4);
+    }
+    vTaskDelay(pdMS_TO_TICKS(60));   /* 等 DMA 里的尾音出去，别被紧接着的录音当语音 */
+}
+
 static void play_task(void *arg)
 {
     static int16_t pcm[FRAME_SAMPLES];
@@ -292,6 +341,15 @@ static void play_task(void *arg)
             s_playing = 0;
             xQueueReset(s_playq);
             s_play_done = 1;
+        }
+
+        /* 唤醒提示音：直接合成播放，播完立刻通知 main 进入自动聆听 */
+        if (s_chime_req) {
+            s_chime_req = 0;
+            play_chime();
+            s_playing   = 0;
+            s_play_done = 1;
+            continue;
         }
 
         /* 音量反馈音：空闲才响（TTS 播放中音量已即时生效，不需要提示音） */
@@ -381,6 +439,7 @@ void audio_play_reset(void)
     if (!s_ready) return;
     s_play_finishing = 0;
     s_play_done = 0;
+    s_chime_req = 0;
     s_stream_open = 1;
     s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_frames_pushed = 0;
@@ -405,39 +464,26 @@ void audio_play_push(const uint8_t *opus, size_t len)
 
 void audio_play_finish(void) { if (s_ready) s_play_finishing = 1; }
 
-/* 本地内置应答（唤醒词"我在"）：没有 tts_stop，直接标记收尾，队列播完即完成 */
-void audio_play_greeting(void)
+/* 唤醒提示音（本地合成，不经过网络）：没有 tts_stop，播完直接标记结束，
+ * main 读到 audio_play_finished() 就进入自动聆听。 */
+void audio_play_wake_chime(void)
 {
     if (!s_ready || !s_playq) return;
-    play_frame_t f;
 
     s_play_finishing = 0;
     s_play_done      = 0;
-    s_stream_open    = 1;
-    s_stream_act_ms  = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_stream_open    = 0;      /* 提示音期间到达的 TTS 帧一律丢弃 */
     s_frames_pushed  = 0;
     s_frames_played  = 0;
     xQueueReset(s_playq);
-
-    int off = 0, pushed = 0;
-    for (int i = 0; i < G_GREETING_FRAMES; i++) {
-        int len = G_GREETING_LENS[i];
-        if (len <= 0 || len > MAX_OPUS_FRAME || off + len > G_GREETING_BYTES) break;
-        f.len = (uint16_t)len;
-        memcpy(f.data, G_GREETING_BLOB + off, (size_t)len);
-        if (xQueueSend(s_playq, &f, 0) != pdTRUE) break;
-        off += len;
-        pushed++;
-    }
-    s_frames_pushed  = pushed;
-    s_play_finishing = 1;
-    ESP_LOGI(TAG, "本地应答播放（%d 帧）", pushed);
+    s_chime_req      = 1;
 }
 
 void audio_play_stop(void)
 {
     if (!s_ready) return;
     xQueueReset(s_playq);
+    s_chime_req = 0;           /* 打断时提示音也别响了 */
     s_stream_open = 0;           /* 迟到帧丢弃，等下一次 tts_start 重新开闸 */
     s_play_finishing = 1;
     s_playing = 1;              /* 让播放任务尽快走「空 + finishing」分支收敛 */
@@ -653,19 +699,24 @@ esp_err_t audio_init(void)
      * 缓冲全部走任务栈 —— 实测 6KB 第一帧编码就栈溢出（串口：
      * "***ERROR*** A stack overflow in task audio_mic"，随后崩溃重启）。
      * 编码峰值约 30KB，这里给 40KB；解码路径给 16KB。
-     * 两个大栈都放 PSRAM，把内部 RAM 留给 BLE 控制器。 */
+     * 两个大栈都放 PSRAM，把内部 RAM 留给 BLE 控制器。
+     *
+     * xTaskCreateStatic 的深度单位是「字」（StackType_t = 4 字节），不是字节 ——
+     * 传字节数会让 FreeRTOS 按 4 倍大小往缓冲区里灌填充值，直接踩烂后面的 PSRAM 堆。 */
     static StaticTask_t s_mic_tcb, s_play_tcb;
     static StackType_t *s_mic_stack, *s_play_stack;
-    s_mic_stack = heap_caps_malloc(40960, MALLOC_CAP_SPIRAM);
-    s_play_stack = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
+    s_mic_stack = heap_caps_malloc(MIC_STACK_BYTES, MALLOC_CAP_SPIRAM);
+    s_play_stack = heap_caps_malloc(PLAY_STACK_BYTES, MALLOC_CAP_SPIRAM);
     if (!s_mic_stack || !s_play_stack) {
         ESP_LOGE(TAG, "音频任务栈分配失败（PSRAM 不足）");
         return ESP_ERR_NO_MEM;
     }
     TaskHandle_t mic_h = xTaskCreateStaticPinnedToCore(
-        mic_task, "audio_mic", 40960, NULL, 5, s_mic_stack, &s_mic_tcb, 1);
+        mic_task, "audio_mic", MIC_STACK_BYTES / sizeof(StackType_t),
+        NULL, 5, s_mic_stack, &s_mic_tcb, 1);
     TaskHandle_t play_h = xTaskCreateStaticPinnedToCore(
-        play_task, "audio_play", 16384, NULL, 5, s_play_stack, &s_play_tcb, 1);
+        play_task, "audio_play", PLAY_STACK_BYTES / sizeof(StackType_t),
+        NULL, 5, s_play_stack, &s_play_tcb, 1);
     if (!mic_h || !play_h) {
         ESP_LOGE(TAG, "音频任务创建失败（内存不足？）");
         return ESP_FAIL;

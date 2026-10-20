@@ -232,7 +232,7 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
     esp_websocket_client_config_t cfg = {
         .uri = url,
         .buffer_size = 8192,             /* 要装下放大的 lua 帧（脚本 ≤6KB + JSON 开销） */
-        .task_stack = 6144,              /* ws_event_t（含 512B 文本）在事件任务栈上构造 */
+        .task_stack = 4096,              /* 解析事件用的任务栈（内部 RAM 紧，别再超配） */
         .reconnect_timeout_ms = 10000,   /* 链路坏时别 5 秒一次猛重连：每次失败都会占内存，
                                           * 实测 2 分钟就能把内部堆耗到换节点任务都建不出来 */
         .network_timeout_ms = 10000,

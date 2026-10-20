@@ -128,6 +128,80 @@ export const TOOLS = [
   },
 ];
 
+/* ── 本地直连指令（不等大模型）───────────────────────────────────────
+ * 实测 DeepSeek 对"打开课表"这类指令，第一遍会调工具、第二三遍就改成
+ * 用嘴回答（"已经打开了"），导致语音开关屏幕时灵时不灵。
+ * 控制类短语在本地先精确匹配：命中 → 服务器直接执行，再把执行结果
+ * 塞给大模型，让它只负责用人设的口吻确认。
+ * 只匹配短、命令式的句子，别把"课表上有什么课"这种问题也劫走。 */
+export function matchLocalCommand(text) {
+  const t = String(text ?? "").trim().replace(/[。！？!?.,，、\s]+$/g, "");
+  if (!t || t.length > 20) return null;
+
+  /* 蓝牙：状态判断要放在开关前面，避免"蓝牙开着吗"被"开蓝牙"抢走 */
+  if (/蓝牙.{0,8}(状态|怎么样|开着吗|开了吗|开了没|什么状态)/.test(t) ||
+      /(状态|怎么样).{0,4}蓝牙/.test(t))
+    return { name: "control_bluetooth", args: { action: "status" } };
+  if (/(关闭|关掉|关了|关一下|关下)蓝牙/.test(t))
+    return { name: "control_bluetooth", args: { action: "off" } };
+  if (/(打开|开启|开一下|开下|开)蓝牙/.test(t))
+    return { name: "control_bluetooth", args: { action: "on" } };
+
+  /* 音量（支持阿拉伯数字和中文数字："音量调到50"、"调到百分之三十"） */
+  const CN = "([零一二两三四五六七八九十百\\d]+)";
+  const set = (v) => { const r = setVolume(typeof v === "number" ? v : cnNum(v)); return r || null; };
+  let m = t.match(new RegExp("(调到|设为|设置成|设成|到)百分之" + CN));
+  if (m && set(m[2])) return set(m[2]);
+  m = t.match(new RegExp("百分之" + CN + "(的)?音量"));
+  if (m && set(m[1])) return set(m[1]);
+  m = t.match(new RegExp("音量.{0,4}(调到|设为|设置成|设成|到)" + CN));
+  if (m && set(m[2])) return set(m[2]);
+  m = t.match(/音量(\d{1,3})/);
+  if (m && set(m[1])) return set(m[1]);
+  m = t.match(/音量.{0,2}(\d{1,3})%/);
+  if (m && set(m[1])) return set(m[1]);
+  if (/静音/.test(t)) return { name: "set_volume", args: { action: "mute" } };
+  if (/取消静音|恢复音量|不静音/.test(t)) return { name: "set_volume", args: { action: "unmute" } };
+  if (/调大音量|音量.{0,2}大|声音.{0,3}大|大点声|大声一点/.test(t))
+    return { name: "set_volume", args: { action: "up" } };
+  if (/调小音量|音量.{0,2}小|声音.{0,3}小|小点声|小声一点/.test(t))
+    return { name: "set_volume", args: { action: "down" } };
+
+  /* 屏幕：必须带"打开/看看/切到"这类动词，避免劫走"课表上有什么课" */
+  const OPEN = "(打开|开启|看看|看下|看一下|显示|调出|调出?来|进入|切到|切到?|翻到|我要看|给我看)";
+  if (/画布/.test(t) && /(关闭|收起|关掉|关了)/.test(t))
+    return { name: "control_screen", args: { feature: "close" } };
+  if (/下一(页|个)|换一页|切换下一个/.test(t))
+    return { name: "control_screen", args: { feature: "next" } };
+  if (new RegExp(OPEN + ".*(课程表|课表)").test(t))
+    return { name: "control_screen", args: { feature: "timetable" } };
+  if (new RegExp(OPEN + ".*((数据|环境|状态)?面板|环境页)").test(t))
+    return { name: "control_screen", args: { feature: "dashboard" } };
+
+  return null;
+}
+
+function setVolume(level) {
+  const n = parseInt(level, 10);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return { name: "set_volume", args: { action: "set", level: n } };
+}
+
+/** 中文数字 → 数值（零~一百；"三十"→30、"一百"→100） */
+function cnNum(s) {
+  if (!s) return NaN;
+  if (/^\d+$/.test(s)) return parseInt(s, 10);
+  const D = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  let n = 0, num = 0;
+  for (const ch of s) {
+    if (ch in D) num = D[ch];
+    else if (ch === "十") { n += (num || 1) * 10; num = 0; }
+    else if (ch === "百") { n += (num || 1) * 100; num = 0; }
+    else return NaN;
+  }
+  return n + num;
+}
+
 /* ── 工具执行（返回给模型看的文本；出错也返回文本，让模型自然收尾）── */
 
 /**
@@ -235,11 +309,15 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (!(session.caps || []).includes("bt")) {
         return "当前设备固件还不支持 BLE 蓝牙控制，需要先升级到 0.1.8。";
       }
+      const name = session.lastStat?.bn ? `，手机搜索「${session.lastStat.bn}」就能连` : "";
       const action = String(args.action ?? "").trim();
       if (action === "on") {
         session.send(build.evt("bt_on"));
-        if (session.lastStat) session.lastStat.bt = 1;
-        return "正在打开蓝牙并开始广播。";
+        if (session.lastStat) session.lastStat.bt = 1;   /* 乐观值，设备的真实上报马上覆盖 */
+        const bt = await session.waitBt(1500);           /* 等设备回真实状态，别替它说谎 */
+        if (bt === 1) return `蓝牙已打开并开始广播${name}。`;
+        if (bt === 2) return `蓝牙已打开，已经有手机连上了${name}。`;
+        return "打开蓝牙的指令已经发出，但板子还没开始广播（内部内存可能太紧张），请稍后再问一次蓝牙状态确认。";
       }
       if (action === "off") {
         session.send(build.evt("bt_off"));
@@ -248,7 +326,8 @@ export async function executeTool(name, args = {}, ctx, session) {
       }
       if (action === "status") {
         const bt = session.lastStat?.bt;
-        return Number.isFinite(bt) ? `蓝牙当前${BT_ZH[bt] ?? bt}。` : "设备还没上报蓝牙状态，稍后再问一次。";
+        if (!Number.isFinite(bt)) return "设备还没上报蓝牙状态，稍后再问一次。";
+        return bt ? `蓝牙当前${BT_ZH[bt]}${name}。` : `蓝牙当前关闭。要打开的话直接说"打开蓝牙"。`;
       }
       return "未识别的蓝牙动作（可用：on / off / status）。";
     }

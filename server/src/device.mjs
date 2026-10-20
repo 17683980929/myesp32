@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { DEV, SRV, build, buildTimeInfo } from "./protocol.mjs";
 import { createASR } from "./services/asr.mjs";
 import { chatSentences } from "./services/llm.mjs";
-import { TOOLS, executeTool } from "./services/tools.mjs";
+import { TOOLS, executeTool, matchLocalCommand } from "./services/tools.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -157,6 +157,18 @@ export class DeviceSession {
   /** 某回合是否已作废（被新录音打断 / 会话关闭） */
   stale(turn) { return this.aborted || turn !== this.turn; }
 
+  /** 等设备上报一次蓝牙状态（设备收到 bt_on/off 会立刻回 stat）；超时返回当前值 */
+  async waitBt(timeoutMs) {
+    const since = Date.now();
+    const deadline = since + timeoutMs;
+    while (Date.now() < deadline) {
+      const st = this.lastStat;
+      if (st && st.at > since) return st.bt;
+      await sleep(80);
+    }
+    return this.lastStat?.bt;
+  }
+
   /* ── 消息分发 ─────────────────────────────────────────────────────── */
 
   onMessage(data, isBinary) {
@@ -178,7 +190,7 @@ export class DeviceSession {
       case DEV.STAT:
         this.lastStat = {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
-          up: m.up, ip: m.ip, at: Date.now(),
+          up: m.up, ip: m.ip, bn: m.bn, at: Date.now(),
         };
         return;
       case DEV.LUA_RESULT: {
@@ -301,8 +313,25 @@ export class DeviceSession {
         this.history.pop();
       this.history.push({ role: "user", content: text });
 
+      /* 本地直连指令：先执行、再让大模型确认。
+       * 实测模型对重复的控制指令（"打开课表"第二遍）会改用嘴回答不调工具，
+       * 导致时灵时不灵 —— 命中本地匹配就一定执行。 */
+      let localNote = null;
+      const local = matchLocalCommand(text);
+      if (local) {
+        let result;
+        try {
+          result = await executeTool(local.name, local.args, this.ctx, this);
+        } catch (e) {
+          result = `执行失败：${e.message}`;
+        }
+        log(`[${this.sid}] 本地指令: ${local.name}(${JSON.stringify(local.args)}) → ${result}`);
+        localNote = `系统备注：用户这句话「${text}」已经由本地直连执行完毕，工具返回：「${result}」。` +
+                    `不要重复执行、不要再调用任何工具，保持你的人设，用一两句话自然地确认结果即可。`;
+      }
+
       /* 2) 大模型 + 语音合成，边生成边播 */
-      await this.streamAnswer(text, myTurn);
+      await this.streamAnswer(text, myTurn, localNote);
     } catch (e) {
       if (this.stale(myTurn)) return;   /* 已被打断：连道歉都别播了 */
       log(`[${this.sid}] 对话失败: ${e.message}`);
@@ -316,7 +345,7 @@ export class DeviceSession {
     }
   }
 
-  async streamAnswer(userText, myTurn) {
+  async streamAnswer(userText, myTurn, localNote = null) {
     const cfg = this.ctx.config;
 
     /* 生产者/消费者：LLM 出句 → 队列 → 发送循环按实时节奏发 */
@@ -411,6 +440,7 @@ export class DeviceSession {
       { role: "system", content: cfg.llm.systemPrompt },
       ...this.history.slice(-8),
     ];
+    if (localNote) msgs.push({ role: "system", content: localNote });
 
     try {
       let toolRounds = 0;

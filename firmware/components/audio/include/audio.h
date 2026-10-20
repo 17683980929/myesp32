@@ -26,8 +26,8 @@ void audio_play_stop(void);                             /* 立即停止（断线
 int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
 void audio_play_stats(int *pushed, int *played);        /* 帧计数（tts_start 清零）：已入队 / 已播 */
 
-/* ── 唤醒应答（本地内置"我在"，不经过网络；播完走 audio_play_finished()）── */
-void audio_play_greeting(void);
+/* ── 唤醒提示音（本地合成的"叮咚"，不经过网络；播完走 audio_play_finished()）── */
+void audio_play_wake_chime(void);
 
 /* ── 自动聆听（唤醒流程：录音 + 静音检测自动结束，无需按 KEY）────────── */
 void audio_rec_start_auto(int bargein);  /* bargein=1：播报中打断进入（开头几帧是喇叭尾音，不计有效说话） */

@@ -102,7 +102,7 @@ static void subq_push(const char *text, int at_frame, int n_frames)
 
 static int now_ms(void) { return (int)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
-static int s_wake_greet = 0;      /* 正在播放唤醒应答（播完直接进入自动聆听） */
+static int s_wake_greet = 0;      /* 正在播放唤醒提示音（播完直接进入自动聆听） */
 static int s_followup = 0;        /* 本轮回答以问句收尾：播完自动开麦（连续对话） */
 /** 播报期间收到的脚本事件（如"打开课表"）：语音优先让画布让位，
  *  先暂存，等回到空闲画布可见了再执行（见 voice_to） */
@@ -303,17 +303,21 @@ static void on_lua_result(int id, bool ok, const char *out)
 /* ── 板载状态上报（电量/温湿度）────────────────────────────────────── */
 
 /** 上报一次板载状态：{"t":"stat","bat":87,"room":{"t":25.3,"h":55.1}}
- *  （语音助手答"电量/室温"要用；温湿度读失败就只发电量） */
+ *  （语音助手答"电量/室温/蓝牙"要用；温湿度读失败就只发电量）
+ *  bn = BLE 广播名（协议栈起来之后才有）：助手能直接告诉用户手机里搜什么名字 */
 static void stat_send(void)
 {
     int bat = sensors_battery_pct();
-    char msg[224];
+    char msg[256];
     char ip[20];
     wifi_sta_ip(ip, sizeof(ip));
     int rssi = wifi_sta_rssi();
     int vol = audio_volume_get();
     int bt = (int)ble_state();
     int up = (int)(esp_timer_get_time() / 1000000);
+    const char *bn = ble_name();
+    char bn_part[32] = "";
+    if (bn[0]) snprintf(bn_part, sizeof(bn_part), "\"bn\":\"%s\",", bn);
 
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
@@ -324,12 +328,13 @@ static void stat_send(void)
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, bt, rssi, up, ip, t10 / 10, tf, h10 / 10, hf);
+                 "\"ip\":\"%s\",%s\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, vol, bt, rssi, up, ip, bn_part, t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
-                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,\"ip\":\"%s\"}",
-                 bat, vol, bt, rssi, up, ip);
+                 "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
+                 "\"ip\":\"%s\",%s\"noroom\":1}",
+                 bat, vol, bt, rssi, up, ip, bn_part);
     }
     ws_send_json(msg);
 }
@@ -585,20 +590,20 @@ static void main_loop(void)
         }
 
         /* 语音唤醒（模型"小宇同学"，喊"小鱼同学"）：
-         *   - 空闲命中 → 本地应答"我在" → 应答完自动聆听
+         *   - 空闲命中 → 本地"叮咚"提示音 → 提示音完自动聆听
          *   - 播报中命中 → 用户优先：打断当前回答，直接进入聆听（不用按 KEY） */
         if (wake_take_hit()) {
             if (s_wake_greet) {
                 /* 应答播放期间的误触发：消费掉即可（播放完照常进入聆听） */
             } else if (s_voice_state == VOICE_IDLE) {
-                audio_play_greeting();
+                audio_play_wake_chime();
                 s_wake_greet = 1;
                 s_sub_clear_at = 0;
                 subq_clear();
                 sub_cur_clear();
                 ui_set_sub("");
                 voice_to(VOICE_SPEAK);
-                ESP_LOGI(TAG, "唤醒词触发 → 应答后聆听");
+                ESP_LOGI(TAG, "唤醒词触发 → 提示音后聆听");
             } else if (s_voice_state == VOICE_SPEAK || s_voice_state == VOICE_THINK) {
                 ESP_LOGI(TAG, "%s听到唤醒词 → 打断重听",
                          s_voice_state == VOICE_SPEAK ?
@@ -609,7 +614,7 @@ static void main_loop(void)
             /* 录音中唤醒未使能（自己的声音会自触发），到不了这里 */
         }
 
-        /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒应答播完则直接开录；
+        /* 播放结束 → 回空闲（字幕保留 4 秒）；唤醒提示音播完则直接开录；
          * 回答以问句收尾（fu=1）也直接开麦：用户不用按 KEY/唤醒词，直接答话即可 */
         if (s_voice_state == VOICE_SPEAK && audio_play_finished()) {
             if (s_wake_greet) {
@@ -708,9 +713,11 @@ static void main_loop(void)
             voice_to(VOICE_IDLE);
         }
 
-        /* BLE 状态变化（广播/连接/断开）→ 立即上报、刷新底部状态和中央浮层 */
+        /* BLE 状态变化（广播/连接/断开）→ 立即上报、刷新底部状态和中央浮层。
+         * ble_poll 负责在广播启动被控制器拒绝（内部 RAM 一时不够）后重试。 */
         {
             static int s_last_bt = -1;
+            ble_poll();
             int bt_now = (int)ble_state();
             if (s_last_bt < 0) {
                 s_last_bt = bt_now;

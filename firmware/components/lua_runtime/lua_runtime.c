@@ -570,6 +570,10 @@ static void lua_task(void *arg)
         }
     }
 
+    /* 栈余量（字）：跑完挂载 + 开机脚本后的水位，用来校验 8192 字够不够 */
+    ESP_LOGI(TAG, "任务栈余量 %u 字（共 %d 字）",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL), LUA_STACK_WORDS);
+
     for (;;) {
         /* 到期最近的定时器决定等待时长（上限 1 秒） */
         uint32_t wait_ms = 1000;
@@ -646,6 +650,15 @@ void lua_runtime_set_result_cb(lua_result_cb_t cb)
     s_result_cb = cb;
 }
 
+/* Lua 任务栈：必须在内部 RAM —— 脚本部署会写 fatfs，flash 写入期间 cache 关闭、
+ * PSRAM 不可访问，栈放在 PSRAM 会直接崩。
+ * 8192 字 = 32KB，够 Lua 解释器 + fatfs + flash 写入路径（原来按 12288 字 = 48KB
+ * 申请，是内部堆最大的一块占用，把 BLE 控制器挤到 Memory Capacity Exceeded）。 */
+#define LUA_STACK_WORDS 8192
+
+static StaticTask_t s_lua_tcb;
+static StackType_t *s_lua_stack;
+
 void lua_runtime_start(void)
 {
     if (s_task) return;
@@ -654,11 +667,17 @@ void lua_runtime_start(void)
         ESP_LOGE(TAG, "队列创建失败");
         return;
     }
-    BaseType_t r = xTaskCreate(lua_task, "lua", 12288, NULL, 4, &s_task);
-    if (r != pdPASS) {
-        s_task = NULL;
-        ESP_LOGE(TAG, "Lua 任务创建失败（内部 RAM 不足）");
+    s_lua_stack = heap_caps_malloc(LUA_STACK_WORDS * sizeof(StackType_t),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_lua_stack) {
+        ESP_LOGE(TAG, "Lua 任务栈分配失败（内部 RAM 不足：空闲 %u B / 最大块 %u B）",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return;
     }
+    s_task = xTaskCreateStaticPinnedToCore(lua_task, "lua", LUA_STACK_WORDS, NULL, 4,
+                                           s_lua_stack, &s_lua_tcb, tskNO_AFFINITY);
+    if (!s_task) ESP_LOGE(TAG, "Lua 任务创建失败");
 }
 
 void lua_runtime_deploy(int id, const char *code)

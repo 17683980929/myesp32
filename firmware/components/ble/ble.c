@@ -3,14 +3,21 @@
  *
  * 首次 ble_set_enabled(1) 才 nimble_port_init，避免不用蓝牙时占内部 RAM。
  * 关闭只停广播/断连接，协议栈保留（再次打开无需重新初始化）。
+ *
+ * 内部 RAM 很紧（WiFi + WakeNet + Opus + Lua 之后只剩几十 KB），控制器
+ * 可能在 LE Set Advertising Enable 上回 HCI 0x07（Memory Capacity Exceeded）。
+ * 这种失败是暂时的——播放/脚本活动会让堆起伏，所以 ble_poll() 会隔几秒重试。
  */
 
 #include "ble.h"
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -24,6 +31,9 @@
 
 static const char *TAG = "ble";
 
+#define ADV_RETRY_MS   2000        /* 广播启动失败后的重试间隔 */
+#define ADV_RETRY_MAX  15          /* 最多重试次数（≈30 秒） */
+
 static volatile int s_enabled;
 static volatile int s_inited;
 static volatile int s_synced;
@@ -32,7 +42,15 @@ static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t  s_own_addr_type;
 static char     s_name[24];
 
-static void start_adv(void);
+static int      s_adv_fail;        /* 连续失败次数 */
+static uint32_t s_adv_next_try;    /* 下次重试时刻（ms） */
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static int start_adv(void);
 
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
@@ -46,7 +64,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "手机已连接（conn=%d）", s_conn);
         } else {
             ESP_LOGW(TAG, "连接失败（status=%d）", event->connect.status);
-            s_state = s_enabled ? BLE_ADVERTISING : BLE_OFF;
+            s_state = BLE_OFF;
             if (s_enabled) start_adv();
         }
         return 0;
@@ -54,13 +72,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "手机断开（reason=%d）", event->disconnect.reason);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
-        s_state = s_enabled ? BLE_ADVERTISING : BLE_OFF;
+        s_state = BLE_OFF;
         if (s_enabled) start_adv();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
+        s_state = BLE_OFF;
         if (s_enabled) start_adv();
-        else s_state = BLE_OFF;
         return 0;
 
     default:
@@ -68,9 +86,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
-static void start_adv(void)
+/** 真正开始广播；成功返回 0 并把状态置为「广播中」。 */
+static int start_adv(void)
 {
-    if (!s_enabled || !s_synced || s_state == BLE_CONNECTED) return;
+    if (!s_enabled || !s_synced || s_state == BLE_CONNECTED) return 0;
 
     struct ble_hs_adv_fields fields;
     memset(&fields, 0, sizeof(fields));
@@ -82,7 +101,8 @@ static void start_adv(void)
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "设置广播数据失败：%d", rc);
-        return;
+        s_state = BLE_OFF;
+        return rc;
     }
 
     struct ble_gap_adv_params advp;
@@ -95,11 +115,18 @@ static void start_adv(void)
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &advp, gap_event, NULL);
     if (rc == 0 || rc == BLE_HS_EALREADY) {
         s_state = BLE_ADVERTISING;
+        s_adv_fail = 0;
         ESP_LOGI(TAG, "广播中：%s", s_name);
-    } else {
-        ESP_LOGW(TAG, "开始广播失败：%d", rc);
-        s_state = BLE_OFF;
+        return 0;
     }
+
+    s_state = BLE_OFF;
+    if (++s_adv_fail == 1 || s_adv_fail >= ADV_RETRY_MAX)
+        ESP_LOGW(TAG, "开始广播失败：%d（第 %d 次，内部堆空闲 %u B / 最大块 %u B）",
+                 rc, s_adv_fail,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    return rc;
 }
 
 static void on_sync(void)
@@ -108,24 +135,21 @@ static void on_sync(void)
     int rc = ble_hs_util_ensure_addr(0);
     if (rc != 0) {
         ESP_LOGE(TAG, "BLE 地址准备失败：%d", rc);
-        s_state = BLE_OFF;
         return;
     }
     rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
     if (rc != 0) {
         ESP_LOGE(TAG, "BLE 地址类型推断失败：%d", rc);
-        s_state = BLE_OFF;
         return;
     }
     if (s_enabled) start_adv();
-    else s_state = BLE_OFF;
 }
 
 static void on_reset(int reason)
 {
     ESP_LOGW(TAG, "BLE host reset：%d", reason);
     s_synced = 0;
-    s_state = s_enabled ? BLE_ADVERTISING : BLE_OFF;
+    s_state = BLE_OFF;
 }
 
 static void host_task(void *param)
@@ -143,9 +167,15 @@ int ble_init(void)
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);   /* 与配网热点同名，便于识别 */
     snprintf(s_name, sizeof(s_name), "MyEsp32-%02X%02X", mac[4], mac[5]);
 
+    ESP_LOGI(TAG, "协议栈初始化前内部堆：空闲 %u B / 最大块 %u B",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init 失败：%s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "nimble_port_init 失败：%s（内部堆空闲 %u B）",
+                 esp_err_to_name(err),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         return -1;
     }
 
@@ -162,7 +192,9 @@ int ble_init(void)
 
     nimble_port_freertos_init(host_task);
     s_inited = 1;
-    ESP_LOGI(TAG, "BLE 初始化：%s", s_name);
+    ESP_LOGI(TAG, "BLE 初始化：%s（内部堆空闲 %u B / 最大块 %u B）", s_name,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return 0;
 }
 
@@ -175,21 +207,38 @@ void ble_set_enabled(int on)
             return;
         }
         s_enabled = 1;
-        s_state = BLE_ADVERTISING;      /* 等 host sync 后真正开始广播 */
+        s_adv_fail = 0;
+        s_adv_next_try = now_ms();
+        /* 状态不在这里预判：只有控制器真的接受了广播才显示"广播中"，
+         * 否则屏幕会说谎（用户看到"广播中"但手机搜不到）。 */
         if (s_synced) start_adv();
         ESP_LOGI(TAG, "BLE 开启");
     } else {
         s_enabled = 0;
+        s_adv_fail = ADV_RETRY_MAX;            /* 关掉就别再重试了 */
         if (s_state == BLE_ADVERTISING) ble_gap_adv_stop();
         if (s_conn != BLE_HS_CONN_HANDLE_NONE)
             ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+        s_conn = BLE_HS_CONN_HANDLE_NONE;
         s_state = BLE_OFF;
         ESP_LOGI(TAG, "BLE 关闭");
     }
 }
 
+void ble_poll(void)
+{
+    if (!s_enabled || !s_synced || s_state != BLE_OFF) return;
+    if (s_adv_fail >= ADV_RETRY_MAX) return;
+    uint32_t now = now_ms();
+    if ((int32_t)(now - s_adv_next_try) < 0) return;
+    s_adv_next_try = now + ADV_RETRY_MS;
+    start_adv();
+}
+
 int ble_enabled(void) { return s_enabled; }
 ble_state_t ble_state(void) { return (ble_state_t)s_state; }
+
+const char *ble_name(void) { return s_name; }
 
 const char *ble_state_str(void)
 {
