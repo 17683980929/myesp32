@@ -52,6 +52,7 @@ static int s_boot_down_at = -1;         /* BOOT 按下时刻（ms）；长按 8 
 static int s_key_voice = 0;             /* 本次按键已触发录音（防重复） */
 static int s_voice_deadline = 0;        /* 思考阶段超时保护 */
 static int s_sub_clear_at = 0;          /* 字幕延迟清除时刻 */
+static uint32_t s_vol_clear_at = 0;     /* 音量浮层清除时刻 */
 static int s_rec_started_at = 0;        /* 进入录音的时刻（ms）；录音硬上限兜底 */
 static int s_rec_auto_mode = 0;         /* 本次录音是自动聆听（VAD 收尾）还是手动长按 */
 
@@ -454,6 +455,9 @@ static void on_button(btn_id_t id, btn_event_t ev)
             s_boot_down_at = -1;
         } else if (ev == BTN_CLICK) {
             audio_volume_cycle();
+            ui_volume_overlay(audio_volume_get());
+            s_vol_clear_at = now_ms() + 1500;
+            s_dirty = 1;
         }
     }
 }
@@ -473,6 +477,8 @@ static void enter_portal_mode(void)
     audio_rec_stop();
     subq_clear();
     sub_cur_clear();
+    ui_volume_overlay(-1);
+    s_vol_clear_at = 0;
     ui_lua_release();
     ui_set_sub("松开 BOOT 进入重置模式");
     ui_render();
@@ -692,6 +698,13 @@ static void main_loop(void)
             s_sub_clear_at = 0;
             sub_cur_clear();
             ui_set_sub("");
+            s_dirty = 1;
+        }
+
+        /* 音量浮层超时清除 */
+        if (s_vol_clear_at && now >= s_vol_clear_at) {
+            s_vol_clear_at = 0;
+            ui_volume_overlay(-1);
             s_dirty = 1;
         }
 

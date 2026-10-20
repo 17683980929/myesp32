@@ -481,6 +481,8 @@ void audio_volume_cycle(void)
     ESP_LOGI(TAG, "音量 → %d%s", next, next ? "" : "（静音）");
 }
 
+int audio_volume_get(void) { return s_vol_cur; }
+
 /* ── 初始化 ─────────────────────────────────────────────────────────── */
 
 esp_err_t audio_init(void)

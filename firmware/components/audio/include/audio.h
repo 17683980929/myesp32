@@ -37,3 +37,4 @@ int  audio_rec_heard_speech(void);       /* 本段录音是否检测到有效说
 /* ── 音量 ───────────────────────────────────────────────────────────── */
 void audio_set_volume(int vol); /* 0..100 */
 void audio_volume_cycle(void);  /* BOOT 短按：逐档增大 → 顶档后静音 → 回到最小档循环（带反馈音） */
+int  audio_volume_get(void);    /* 当前音量 0..100（0 = 静音） */

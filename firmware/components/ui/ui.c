@@ -329,6 +329,14 @@ static char s_sub[512] = "";             /* 一句话最长 ~170 字（UTF-8 最
 static char s_portal_ap[32] = "";
 static int  s_portal_reset = 0;
 
+/* 音量浮层：数字立即显示目标值，进度条用 250ms 过渡（同步 BOOT 提示音） */
+#define VOL_ANIM_MS 250
+static int      s_vol_overlay = -1;      /* 目标音量；-1 = 不显示 */
+static int      s_vol_bar;               /* 当前条值 0..100（动画插值） */
+static int      s_vol_from;
+static int      s_vol_target;
+static uint32_t s_vol_anim_at;
+
 void ui_init(void)
 {
     lcd_init();
@@ -377,6 +385,21 @@ void ui_set_sub_page(const char *text, int page)
     s_sub[len] = 0;
 }
 
+void ui_volume_overlay(int vol)
+{
+    if (vol < 0) {
+        s_vol_overlay = -1;
+        s_vol_bar = 0;
+        return;
+    }
+    if (vol > 100) vol = 100;
+
+    s_vol_from = (s_vol_overlay >= 0) ? s_vol_bar : 0;
+    s_vol_target = vol;
+    s_vol_overlay = vol;
+    s_vol_anim_at = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
 int ui_tick(uint32_t now)
 {
     pet_state_t prev_state = s_pet;
@@ -388,8 +411,19 @@ int ui_tick(uint32_t now)
             (s_busy ? PET_THINKING : PET_IDLE);
     pet_tick(now);
 
+    int vol_changed = 0;
+    if (s_vol_overlay >= 0 && s_vol_bar != s_vol_target) {
+        /* 有符号差值：按键任务可能在本轮 now 之后才设置 anim_at */
+        int32_t elapsed = (int32_t)(now - s_vol_anim_at);
+        if (elapsed < 0) elapsed = 0;
+        int t = elapsed >= VOL_ANIM_MS ? 100 : (int)(elapsed * 100 / VOL_ANIM_MS);
+        s_vol_bar = s_vol_from + (s_vol_target - s_vol_from) * t / 100;
+        if (t >= 100) s_vol_bar = s_vol_target;
+        vol_changed = 1;
+    }
+
     int changed = (s_pet != prev_state) || (s_frame_idx != prev_idx) ||
-                  (s_lua_frame != s_lua_frame_prev);
+                  (s_lua_frame != s_lua_frame_prev) || vol_changed;
     s_lua_frame_prev = s_lua_frame;
     return changed;
 }
@@ -530,6 +564,34 @@ static void render_panel(void)
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */
 
+/** 居中音量卡片：标题 + 百分比/静音 + 进度条 */
+static void draw_volume_overlay(int vol)
+{
+    int w = 240, h = 92;
+    int x = (LCD_W - w) / 2;
+    int y = (LCD_H - h) / 2;
+
+    lcd_fill(x, y, w, h, 0);                 /* 白底，盖住下面的桌宠/信息 */
+    lcd_rect(x, y, w, h, 1);
+    lcd_rect(x + 3, y + 3, w - 6, h - 6, 1);
+
+    draw_cjk(x + (w - cjk_text_w("音量", 1)) / 2, y + 10, "音量", 1, 1);
+
+    char vb[16];
+    if (vol <= 0) {
+        snprintf(vb, sizeof(vb), "静音");
+        draw_cjk(x + (w - cjk_text_w(vb, 2)) / 2, y + 32, vb, 2, 1);
+    } else {
+        snprintf(vb, sizeof(vb), "%d%%", vol);
+        draw_text(x + (w - text_w(vb, 2)) / 2, y + 36, vb, 2, 1);
+    }
+
+    int bx = x + 24, by = y + h - 26, bw = w - 48, bh = 12;
+    lcd_rect(bx, by, bw, bh, 1);
+    int inner = (bw - 6) * s_vol_bar / 100;
+    if (inner > 0) lcd_fill(bx + 3, by + 3, inner, bh - 6, 1);
+}
+
 static void render_frame(void)
 {
     if (s_page == UI_PAGE_PORTAL) {
@@ -558,6 +620,7 @@ static void render_frame(void)
     }
 
     render_panel();
+    if (s_vol_overlay >= 0) draw_volume_overlay(s_vol_overlay);
     lcd_flush();
 }
 

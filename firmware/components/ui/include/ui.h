@@ -47,6 +47,9 @@ int  ui_sub_pages(const char *text);
 /** 显示整句的第 page 页（0 起）；page 越界时显示末页 */
 void ui_set_sub_page(const char *text, int page);
 
+/** BOOT 短按后的音量浮层（0..100）；-1 关闭。只改状态，下一次 ui_render 绘制。 */
+void ui_volume_overlay(int vol);
+
 /* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
 
 /** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环
