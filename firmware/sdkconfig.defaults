@@ -80,6 +80,8 @@ CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 
 # OTA 回滚：新镜像首启若崩溃，bootloader 自动退回上一版
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# OTA 写 flash 时中断会短暂关闭；默认 300ms 的 IWDT 在长擦除上太紧
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=1000
 
 # ── 内部 RAM 再挤一挤（BLE 控制器要内部 RAM，腾不出来就起不了广播）────────
 # WiFi/LWIP 的动态缓冲优先从 PSRAM 分（失败再退内部 RAM）

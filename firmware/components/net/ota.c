@@ -70,8 +70,12 @@ static void ota_task(void *arg)
     const esp_partition_t *upd = esp_ota_get_next_update_partition(NULL);
     if (!upd) { fail("no partition"); goto out_cli; }
 
+    /* 必须传实际镜像大小：OTA_SIZE_UNKNOWN 会把整个 6.4MB 分区一次性擦掉，
+     * 长擦除期间中断被关，实测直接触发 300ms 的 Interrupt WDT 重启。 */
+    size_t img_size = (content_len > 0 && (size_t)content_len <= upd->size)
+                      ? (size_t)content_len : OTA_SIZE_UNKNOWN;
     esp_ota_handle_t oh = 0;
-    esp_err_t e = esp_ota_begin(upd, OTA_SIZE_UNKNOWN, &oh);
+    esp_err_t e = esp_ota_begin(upd, img_size, &oh);
     if (e != ESP_OK) { fail("ota begin"); goto out_cli; }
 
     uint8_t *buf = heap_caps_malloc(OTA_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -137,7 +141,7 @@ int ota_start(const char *url)
     s_pct = 0;
     s_running = 1;
     if (!xTaskCreateStaticPinnedToCore(ota_task, "ota", OTA_STACK_WORDS, NULL, 4,
-                                       s_stack, &s_tcb, 0)) {
+                                       s_stack, &s_tcb, 1)) {
         s_running = 0;
         s_pct = -1;
         return -2;
