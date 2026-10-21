@@ -296,6 +296,11 @@ void wifi_sta_ip(char *buf, int len)
     }
 }
 
+void wifi_sta_ssid(char *buf, int len)
+{
+    snprintf(buf, len, "%s", s_ssid);
+}
+
 int wifi_sta_connected(void)
 {
     return wifi_events && (xEventGroupGetBits(wifi_events) & WIFI_EVT_GOT_IP);

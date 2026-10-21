@@ -16,6 +16,9 @@ esp_err_t wifi_sta_wait(int timeout_ms);
 /** 拿到 IP 后读字符串，如 "192.168.1.55" */
 void wifi_sta_ip(char *buf, int len);
 
+/** 当前配置的 SSID（助手回答"连的哪个 WiFi"用） */
+void wifi_sta_ssid(char *buf, int len);
+
 /** 当前 AP 的 RSSI（dBm）；未关联返回 -127 */
 int wifi_sta_rssi(void);
 

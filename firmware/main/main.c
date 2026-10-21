@@ -319,6 +319,14 @@ static void stat_send(void)
     char bn_part[32] = "";
     if (bn[0]) snprintf(bn_part, sizeof(bn_part), "\"bn\":\"%s\",", bn);
 
+    /* SSID 是用户/配网页填的，转义掉会破坏 JSON 的字符（只用于展示） */
+    char ssid[40];
+    wifi_sta_ssid(ssid, sizeof(ssid));
+    for (char *p = ssid; *p; p++)
+        if (*p == '"' || *p == '\\' || (unsigned char)*p < 0x20) *p = '?';
+    char net_part[64];
+    snprintf(net_part, sizeof(net_part), "\"ssid\":\"%s\",", ssid);
+
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
         int t10 = (int)(t * 10 + (t >= 0 ? 0.5f : -0.5f));
@@ -328,13 +336,13 @@ static void stat_send(void)
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, bt, rssi, up, ip, bn_part, t10 / 10, tf, h10 / 10, hf);
+                 "\"ip\":\"%s\",%s%s\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s\"noroom\":1}",
-                 bat, vol, bt, rssi, up, ip, bn_part);
+                 "\"ip\":\"%s\",%s%s\"noroom\":1}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part);
     }
     ws_send_json(msg);
 }

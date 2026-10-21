@@ -268,6 +268,8 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (Number.isFinite(room.h) && room.h > -0.5) parts.push(`室内湿度 ${room.h}%`);
       if (st && Number.isFinite(st.vol)) parts.push(`音量 ${st.vol}%`);
       if (st && Number.isFinite(st.bt)) parts.push(`蓝牙${BT_ZH[st.bt] ?? st.bt}`);
+      if (st?.bn) parts.push(`蓝牙广播名 ${st.bn}`);
+      if (st?.ssid) parts.push(`WiFi ${st.ssid}`);
       if (st && Number.isFinite(st.rssi) && st.rssi > -127) parts.push(`WiFi 信号 ${st.rssi}dBm`);
       if (st?.ip) parts.push(`IP ${st.ip}`);
       if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
@@ -312,17 +314,22 @@ export async function executeTool(name, args = {}, ctx, session) {
       const name = session.lastStat?.bn ? `，手机搜索「${session.lastStat.bn}」就能连` : "";
       const action = String(args.action ?? "").trim();
       if (action === "on") {
+        const before = session.lastStat?.at ?? 0;
         session.send(build.evt("bt_on"));
-        if (session.lastStat) session.lastStat.bt = 1;   /* 乐观值，设备的真实上报马上覆盖 */
-        const bt = await session.waitBt(1500);           /* 等设备回真实状态，别替它说谎 */
-        if (bt === 1) return `蓝牙已打开并开始广播${name}。`;
-        if (bt === 2) return `蓝牙已打开，已经有手机连上了${name}。`;
-        return "打开蓝牙的指令已经发出，但板子还没开始广播（内部内存可能太紧张），请稍后再问一次蓝牙状态确认。";
+        const bt = await session.waitBt(before, 1800);   /* 等设备回真实状态，别替它说谎 */
+        const name2 = session.lastStat?.bn ? `，手机搜索「${session.lastStat.bn}」就能连` : "";
+        if (bt === 1) return `蓝牙已打开并开始广播${name2}。`;
+        if (bt === 2) return `蓝牙已打开，已经有手机连上了${name2}。`;
+        if (bt === 0) return "设备回报蓝牙仍是关闭状态（广播没起来，通常是内部内存不足），请稍后再试一次。";
+        return "打开蓝牙的指令已发出，但设备没有回报新状态（可能重启或掉线了），请稍后再问一次蓝牙状态。";
       }
       if (action === "off") {
+        const before = session.lastStat?.at ?? 0;
         session.send(build.evt("bt_off"));
-        if (session.lastStat) session.lastStat.bt = 0;
-        return "已关闭蓝牙。";
+        const bt = await session.waitBt(before, 1200);
+        if (bt === 0) return "已关闭蓝牙。";
+        if (bt === undefined) return "关闭蓝牙的指令已发出，但设备没有回报新状态，请稍后再确认一次。";
+        return "指令已发出，但设备回报蓝牙还没关掉，请再试一次。";
       }
       if (action === "status") {
         const bt = session.lastStat?.bt;

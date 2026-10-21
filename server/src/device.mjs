@@ -157,16 +157,15 @@ export class DeviceSession {
   /** 某回合是否已作废（被新录音打断 / 会话关闭） */
   stale(turn) { return this.aborted || turn !== this.turn; }
 
-  /** 等设备上报一次蓝牙状态（设备收到 bt_on/off 会立刻回 stat）；超时返回当前值 */
-  async waitBt(timeoutMs) {
-    const since = Date.now();
-    const deadline = since + timeoutMs;
+  /** 等设备上报一次新状态（at 晚于 since）；超时返回 undefined，不拿旧值充数 */
+  async waitBt(since, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const st = this.lastStat;
       if (st && st.at > since) return st.bt;
       await sleep(80);
     }
-    return this.lastStat?.bt;
+    return undefined;
   }
 
   /* ── 消息分发 ─────────────────────────────────────────────────────── */
@@ -190,7 +189,7 @@ export class DeviceSession {
       case DEV.STAT:
         this.lastStat = {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
-          up: m.up, ip: m.ip, bn: m.bn, at: Date.now(),
+          up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, at: Date.now(),
         };
         return;
       case DEV.LUA_RESULT: {
