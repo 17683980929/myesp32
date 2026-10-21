@@ -314,9 +314,10 @@ static void on_lua_result(int id, bool ok, const char *out)
 static void stat_send(void)
 {
     int bat = sensors_battery_pct();
-    char msg[256];
+    char msg[288];
     char ip[20];
     wifi_sta_ip(ip, sizeof(ip));
+    const char *part = esp_ota_get_running_partition()->label;   /* ota_0 / ota_1 */
     int rssi = wifi_sta_rssi();
     int vol = audio_volume_get();
     int bt = (int)ble_state();
@@ -342,13 +343,13 @@ static void stat_send(void)
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part, t10 / 10, tf, h10 / 10, hf);
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"noroom\":1}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part);
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",\"noroom\":1}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part);
     }
     ws_send_json(msg);
 }

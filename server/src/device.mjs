@@ -197,7 +197,7 @@ export class DeviceSession {
       case DEV.STAT:
         this.lastStat = {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
-          up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, at: Date.now(),
+          up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, part: m.part, at: Date.now(),
         };
         return;
       case "ota":
