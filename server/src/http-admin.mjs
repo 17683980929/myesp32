@@ -262,11 +262,13 @@ export async function handleHttp(req, res, ctx) {
         if (!list.length) return json(res, 400, { ok: false, msg: "没有在线设备" });
         if (!existsSync(OTA_APP)) return json(res, 400, { ok: false, msg: "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）" });
 
-        /* 用设备这条连接上的服务器地址：设备就是从那个 IP 连过来的，一定可达 */
+        /* 云服务器上"设备连接看到的本地地址"是内网 IP，必须用配置的公网地址；
+         * 局域网部署留空时再退回本地地址 */
+        const base = String(getConfig().server.publicUrl || "").replace(/\/+$/, "");
         const localIp = list[0].ws?._socket?.localAddress;
         const port = req.socket.localPort || 8080;
         const host = localIp ? `${localIp}:${port}` : (req.headers.host || `127.0.0.1:${port}`);
-        const dst = `http://${host}/firmware/app.bin`;
+        const dst = base ? `${base}/firmware/app.bin` : `http://${host}/firmware/app.bin`;
 
         for (const d of list) d.startOta(dst);
         log(`推送 OTA → ${list.length} 台：${dst}`);

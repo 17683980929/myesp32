@@ -21,6 +21,10 @@ export const DEFAULT_CONFIG = {
     authToken: "",
     /** 配置网页密码。空字符串 = 不鉴权（公网部署必须设置） */
     adminPassword: "",
+    /** 公网访问基地址，例如 http://1.2.3.4:8080 或 https://pet.example.com。
+     *  OTA 用它拼设备下载地址；留空则用"设备连接上看到的服务器地址"
+     *  （局域网够用，云服务器上那是内网 IP，设备连不上）。 */
+    publicUrl: "",
   },
   device: {
     name: "MyEsp32",
