@@ -26,3 +26,6 @@ build-tmp/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# ── 第三方资料（HowToLiveBetter 正文，用 server/tools/fetch-life-guide.mjs 重新拉取）──
+server/data/life-guide/

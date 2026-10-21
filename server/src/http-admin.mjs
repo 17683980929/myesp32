@@ -235,8 +235,8 @@ export async function handleHttp(req, res, ctx) {
           error: skillsError(),
           skills: loadedSkills().map((s) => ({
             name: s.name, description: s.description, file: s.file,
-            method: String(s.request.method || "GET").toUpperCase(),
-            url: s.request.url,
+            method: s.type === "docs" ? "docs" : String(s.request.method || "GET").toUpperCase(),
+            url: s.type === "docs" ? s.dir : s.request.url,
           })),
         });
       }

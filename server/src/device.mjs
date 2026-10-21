@@ -13,7 +13,7 @@ import { DEV, SRV, build, buildTimeInfo } from "./protocol.mjs";
 import { createASR } from "./services/asr.mjs";
 import { chatSentences } from "./services/llm.mjs";
 import { TOOLS, executeTool, matchLocalCommand } from "./services/tools.mjs";
-import { skillTools, runSkill } from "./services/skills.mjs";
+import { skillTools, runSkill, preSkillFor } from "./services/skills.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -340,6 +340,16 @@ export class DeviceSession {
         log(`[${this.sid}] 本地指令: ${local.name}(${JSON.stringify(local.args)}) → ${result}`);
         localNote = `系统备注：用户这句话「${text}」已经由本地直连执行完毕，工具返回：「${result}」。` +
                     `不要重复执行、不要再调用任何工具，保持你的人设，用一两句话自然地确认结果即可。`;
+      }
+
+      /* 本地预检索：模型经常"凭嘴回答"不调工具，命中决策类问题就先查好原文塞给它 */
+      const pre = preSkillFor(text);
+      if (pre) {
+        log(`[${this.sid}] 预检索技能 ${pre.name}（${pre.text.length} 字符）`);
+        const note = `系统备注：针对用户这句话「${text}」，系统已用技能 ${pre.name} 检索到以下原文。\n` +
+                     `只能依据这些原文回答，注明出处（节名 + 条目号 + 标题）；原文没写的就直说书里没写，` +
+                     `不要凭记忆补数字、补法条。\n\n${pre.text}`;
+        localNote = localNote ? localNote + "\n" + note : note;
       }
 
       /* 2) 大模型 + 语音合成，边生成边播 */
