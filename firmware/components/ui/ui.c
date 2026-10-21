@@ -463,17 +463,27 @@ static void status_row(int y, const char *label, const char *value)
     draw_cjk(PANEL_X + PANEL_SEP_W - cjk_text_w(value, 1) - 4, y, value, 1, 1);
 }
 
-/** 右侧整栏画字幕（说话中）：11 字/行 × 14 行，白底黑字。
- *  说话时右栏不放任何板载信息，全部让给字幕。 */
+/** 右侧整栏画字幕：11 字/行，整块文字在右栏水平+垂直居中，
+ *  行数增加时上下对称延伸（而不是从顶部往下堆）。 */
 static void draw_sub_column(void)
 {
     const int cols = SUB_COLS;               /* 184px / 16px 每字 */
     const int line_h = 20;
-    int x = PANEL_X + 6;
-    int y = 8;
+    const int x0 = PANEL_X + 4;
+    const int w = PANEL_SEP_W - 8;           /* 176px = 11 字 */
+
+    /* 先数总字数和行数，算出整块高度，再定顶部 y（块居中） */
+    int total = 0;
+    for (const char *p = s_sub; *p; ) { utf8_next(&p); total++; }
+    int lines = (total + cols - 1) / cols;
+    if (lines < 1) lines = 1;
+    if (lines > SUB_ROWS) lines = SUB_ROWS;
+    int block_h = lines * line_h - (line_h - 16);   /* 最后一行只有 16px 高 */
+    int y = (LCD_H - block_h) / 2;
+    if (y < 4) y = 4;
+
     const char *p = s_sub;
     char line[64];
-
     while (*p && y + 16 <= LCD_H) {
         const char *q = p;
         int n = 0;
@@ -482,6 +492,8 @@ static void draw_sub_column(void)
         if (len > sizeof(line) - 1) len = sizeof(line) - 1;
         memcpy(line, p, len);
         line[len] = 0;
+        int x = x0 + (w - n * 16) / 2;       /* 每行也水平居中 */
+        if (x < x0) x = x0;
         draw_cjk(x, y, line, 1, 1);
         y += line_h;
         p = q;
@@ -490,8 +502,10 @@ static void draw_sub_column(void)
 
 static void render_panel(void)
 {
-    /* 说话中（以及最后一句的 4 秒保留期）：右栏整栏显示字幕，不显示板载信息 */
-    if (s_voice == UI_VOICE_SPEAKING || s_sub[0]) {
+    /* 只有真的有字幕时才占用右栏（唤醒"叮咚"提示音期间没有字幕，
+     * 右栏保持正常信息页，避免主页闪一下空白栏）。
+     * 字幕在说话中到达，最后一句还会保留 4 秒。 */
+    if (s_sub[0]) {
         draw_sub_column();
         return;
     }
