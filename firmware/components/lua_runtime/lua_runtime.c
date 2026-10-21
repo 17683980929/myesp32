@@ -45,6 +45,11 @@
 static const char *TAG = "lua";
 
 #define LUA_MEM_CAP       (128 * 1024)
+/* Lua 任务栈：必须在内部 RAM —— 脚本部署会写 fatfs，flash 写入期间 cache 关闭、
+ * PSRAM 不可访问，栈放在 PSRAM 会直接崩。
+ * 8192 字 = 32KB，够 Lua 解释器 + fatfs + flash 写入路径（原来按 12288 字 = 48KB
+ * 申请，是内部堆最大的一块占用，把 BLE 控制器挤到 Memory Capacity Exceeded）。 */
+#define LUA_STACK_WORDS   8192
 #define EXEC_TIMEOUT_US   (2000 * 1000)
 #define OUT_CAP           2048
 #define CODE_MAX          6144
@@ -650,12 +655,7 @@ void lua_runtime_set_result_cb(lua_result_cb_t cb)
     s_result_cb = cb;
 }
 
-/* Lua 任务栈：必须在内部 RAM —— 脚本部署会写 fatfs，flash 写入期间 cache 关闭、
- * PSRAM 不可访问，栈放在 PSRAM 会直接崩。
- * 8192 字 = 32KB，够 Lua 解释器 + fatfs + flash 写入路径（原来按 12288 字 = 48KB
- * 申请，是内部堆最大的一块占用，把 BLE 控制器挤到 Memory Capacity Exceeded）。 */
-#define LUA_STACK_WORDS 8192
-
+/* Lua 任务栈走显式内部 RAM 静态分配（见 lua_runtime_start）。 */
 static StaticTask_t s_lua_tcb;
 static StackType_t *s_lua_stack;
 
