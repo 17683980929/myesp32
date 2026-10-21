@@ -106,5 +106,6 @@ void buttons_init(btn_cb_t cb)
     };
     ESP_ERROR_CHECK(gpio_config(&c));
 
-    xTaskCreate(poll_task, "btn", 2048, NULL, 5, NULL);
+    /* 12KB：单击要拼 JSON 再走 lwIP 发出去，8KB 实测会栈溢出重启。别再压。 */
+    xTaskCreate(poll_task, "btn", 3072, NULL, 5, NULL);
 }
