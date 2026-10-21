@@ -412,13 +412,14 @@ typedef struct {
     const char *b;
 } fio_req_t;
 
-#define FIO_STACK_WORDS 1536          /* 6KB 内部栈：fatfs 挂载/写文件够用 */
+#define FIO_STACK_WORDS 2048          /* 8KB 内部栈：fatfs 挂载/写文件够用 */
 
 static QueueHandle_t     s_fio_q;
-static SemaphoreHandle_t s_fio_done;
-static volatile int      s_fio_rc;
+static QueueHandle_t     s_fio_done;      /* 完成通知队列（放一个 int，不用信号量） */
 static StaticTask_t      s_fio_tcb;
 static StackType_t      *s_fio_stack;
+
+static int fio_call(fio_op_t op, const char *a, const char *b);
 
 static int persist_script_impl(const char *code)
 {
@@ -502,7 +503,7 @@ static int run_code(const char *code, int persist)
     s_hook_active = 0;
     s_capture = 0;
 
-    if (ok && persist) persist_script_impl(code);
+    if (ok && persist) fio_call(FIO_SAVE, code, NULL);
     return ok;
 }
 
@@ -599,8 +600,9 @@ static void fio_task(void *arg)
             rc = (r.a && r.b) ? rename(r.a, r.b) : -1;
             break;
         }
-        s_fio_rc = rc;
-        xSemaphoreGive(s_fio_done);
+        int done = rc;
+        if (xQueueSend(s_fio_done, &done, 0) != pdTRUE)
+            ESP_LOGW(TAG, "flash 操作 %d 完成通知失败", (int)r.op);
     }
 }
 
@@ -613,18 +615,22 @@ static int fio_call(fio_op_t op, const char *a, const char *b)
         ESP_LOGW(TAG, "flash 代理队列忙，操作 %d 丢弃", (int)op);
         return -1;
     }
-    if (xSemaphoreTake(s_fio_done, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    int done = -1;
+    if (xQueueReceive(s_fio_done, &done, pdMS_TO_TICKS(15000)) != pdTRUE) {
         ESP_LOGW(TAG, "flash 操作 %d 超时", (int)op);
         return -1;
     }
-    return s_fio_rc;
+    return done;
 }
 
 static void lua_task(void *arg)
 {
     (void)arg;
 
-    fio_call(FIO_MOUNT, NULL, NULL);
+    int mrc = fio_call(FIO_MOUNT, NULL, NULL);
+    ESP_LOGI(TAG, "flash 代理就绪（mount rc=%d，内部堆 %u B / 最大块 %u B）", mrc,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     /* 开机执行上次保存的脚本 */
     if (s_fs_ok) {
@@ -730,11 +736,11 @@ void lua_runtime_start(void)
     if (s_task) return;
     s_q = xQueueCreate(DEPLOY_Q_LEN, sizeof(deploy_msg_t));
     s_fio_q = xQueueCreate(2, sizeof(fio_req_t));
-    s_fio_done = xSemaphoreCreateBinary();
+    s_fio_done = xQueueCreate(1, sizeof(int));
     s_fio_stack = heap_caps_malloc(FIO_STACK_WORDS * sizeof(StackType_t),
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!s_q || !s_fio_q || !s_fio_done || !s_fio_stack) {
-        ESP_LOGE(TAG, "队列/信号量/flash 代理栈创建失败（内部 RAM 不足）");
+        ESP_LOGE(TAG, "队列/flash 代理栈创建失败（内部 RAM 不足）");
         return;
     }
     if (!xTaskCreateStaticPinnedToCore(fio_task, "lua_fio", FIO_STACK_WORDS, NULL, 4,
