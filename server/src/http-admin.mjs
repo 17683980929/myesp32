@@ -19,6 +19,7 @@ import { createReadStream, existsSync, statSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
+import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -226,6 +227,27 @@ export async function handleHttp(req, res, ctx) {
         const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
         log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
         return json(res, 200, { ok: true, sent: list.length, id, results });
+      }
+
+      if (p === "/api/skills" && req.method === "GET") {
+        return json(res, 200, {
+          dir: skillsDir(),
+          error: skillsError(),
+          skills: loadedSkills().map((s) => ({
+            name: s.name, description: s.description, file: s.file,
+            method: String(s.request.method || "GET").toUpperCase(),
+            url: s.request.url,
+          })),
+        });
+      }
+
+      if (p === "/api/skills/reload" && req.method === "POST") {
+        const list = reloadSkills();
+        log(`重载技能 → ${list.length} 个${skillsError() ? "（有错误：" + skillsError() + "）" : ""}`);
+        return json(res, 200, {
+          ok: true, count: list.length, error: skillsError(),
+          skills: list.map((s) => ({ name: s.name, description: s.description, file: s.file })),
+        });
       }
 
       if (p === "/api/ota" && req.method === "GET") {

@@ -235,6 +235,18 @@
     </div>
   </div>
 
+  <!-- 技能 -->
+  <div class="card">
+    <h2>技能 <span class="tag">server/skills</span></h2>
+    <div class="actions">
+      <span class="msg" id="skillInfo">读取中…</span>
+    </div>
+    <div class="actions">
+      <button onclick="reloadSkills()">重载技能</button>
+      <span class="msg" id="skillMsg"></span>
+    </div>
+  </div>
+
   <div class="actions" style="justify-content:flex-end">
     <span class="msg" id="saveMsg"></span>
     <button class="primary" onclick="saveAll()">保存全部配置</button>
@@ -499,11 +511,40 @@ async function pushOta() {
   }
 }
 
+async function refreshSkills() {
+  try {
+    const r = await fetch("/api/skills");
+    const j = await r.json();
+    const list = j.skills || [];
+    if (!list.length) {
+      $("skillInfo").textContent = `还没有技能（把 JSON 放到 ${j.dir}）`;
+      return;
+    }
+    $("skillInfo").textContent = list.map((s) => `${s.name}（${s.method} ${s.url}）`).join("　");
+    if (j.error) $("skillInfo").textContent += `  ⚠ ${j.error}`;
+  } catch (e) {
+    $("skillInfo").textContent = "读取技能失败";
+  }
+}
+
+async function reloadSkills() {
+  setMsg($("skillMsg"), "重载中…", "");
+  try {
+    const r = await fetch("/api/skills/reload", { method: "POST" });
+    const j = await r.json();
+    setMsg($("skillMsg"), `已加载 ${j.count} 个${j.error ? "；" + j.error : ""}`, j.error ? "warn" : "ok");
+    refreshSkills();
+  } catch (e) {
+    setMsg($("skillMsg"), "重载失败", "err");
+  }
+}
+
 loadConfig();
 refreshStatus();
 setInterval(refreshStatus, 5000);
 refreshOta();
 setInterval(refreshOta, 3000);
+refreshSkills();
 </script>
 </body>
 </html>

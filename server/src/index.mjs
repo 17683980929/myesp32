@@ -14,6 +14,7 @@ import { WeatherCache } from "./services/weather.mjs";
 import { getHotNews } from "./services/news.mjs";
 import { WsGateway } from "./ws-gateway.mjs";
 import { handleHttp } from "./http-admin.mjs";
+import { reloadSkills } from "./services/skills.mjs";
 
 const config = getConfig();
 const weather = new WeatherCache();
@@ -33,6 +34,9 @@ const server = http.createServer((req, res) => {
 });
 
 ctx.gateway = new WsGateway(server, ctx);
+
+const skillList = reloadSkills();
+if (skillList.length) console.log(`[skills] 已加载 ${skillList.length} 个声明式技能`);
 
 server.listen(config.server.port, config.server.host, async () => {
   const { port, host, authToken, adminPassword } = config.server;

@@ -1,0 +1,10 @@
+{
+  "name": "get_public_ip",
+  "description": "查询本机当前的公网 IP、所在城市和运营商。用户问公网 IP、出口 IP、当前网络归属地时调用。",
+  "parameters": { "type": "object", "properties": {} },
+  "request": {
+    "method": "GET",
+    "url": "https://ipinfo.io/json"
+  },
+  "render": "当前公网 IP 是 {{data.ip}}，位置在 {{data.city}}（{{data.region}}，{{data.country}}），运营商 {{data.org}}。"
+}

@@ -13,6 +13,7 @@ import { DEV, SRV, build, buildTimeInfo } from "./protocol.mjs";
 import { createASR } from "./services/asr.mjs";
 import { chatSentences } from "./services/llm.mjs";
 import { TOOLS, executeTool, matchLocalCommand } from "./services/tools.mjs";
+import { skillTools, runSkill } from "./services/skills.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -463,7 +464,7 @@ export class DeviceSession {
           for await (const sentence of chatSentences({
             ...genOpts,
             messages: msgs,
-            tools: toolsOn ? TOOLS : undefined,
+            tools: toolsOn ? [...TOOLS, ...skillTools()] : undefined,
             toolSink: toolsOn ? toolSink : undefined,
           })) {
             if (this.stale(myTurn)) break;
@@ -495,7 +496,12 @@ export class DeviceSession {
         for (const c of asstCalls) {
           let result;
           try {
-            result = await executeTool(c.function.name, parseToolArgs(c.function.arguments), this.ctx, this);
+            const args = parseToolArgs(c.function.arguments);
+            /* 内置工具优先；其余名字落到声明式技能（server/skills/*.json） */
+            const builtin = TOOLS.some((t) => t.function.name === c.function.name);
+            result = builtin
+              ? await executeTool(c.function.name, args, this.ctx, this)
+              : await runSkill(c.function.name, args);
           } catch (e) {
             result = `工具执行失败：${e.message}`;
           }
