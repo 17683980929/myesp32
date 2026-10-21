@@ -1,4 +1,4 @@
--- 多功能框架 v2：单击 = 进入第一个功能 / 切换下一个；走完最后一个再单击 = 关回主页。
+-- 多功能框架 v3：单击 = 进入第一个功能 / 切换下一个；走完最后一个再单击 = 关回主页。
 -- 单击即时无延迟（不注册 key_double）；30 秒不碰画布自动回主页（固件保鲜到期）。
 -- 语音指令（助手技能 control_screen）：open_timetable / open_env / canvas_close / canvas_next。
 -- 固件会等播报结束、画布可见了再派发，不会被语音让位清掉。
@@ -42,14 +42,14 @@ sys.on("key_click", click)
 
 -- ── 语音/服务器指令（固件播报结束后派发）──────────────────────────
 sys.on("canvas_next", click)
-sys.on("open_timetable", function() show(1) end)
-sys.on("open_env", function() show(2) end)
+sys.on("open_timetable", function() show(2) end)
+sys.on("open_env", function() show(3) end)
 sys.on("canvas_close", function()
   up = false
   display.close()
 end)
 
--- ── 功能 1：政治课表（改课表只动 T 表）─────────────────────────────
+-- ── 课表数据（页面 1 的上课状态也用这份）─────────────────────────────
 local T = {
   --   周一   周二   周三   周四   周五   周六   周日
   { "24",  nil,   nil,  "1",  "1",  nil,  nil },  -- 1节 07:35
@@ -70,7 +70,81 @@ local T = {
 local DAYS = { "周一", "周二", "周三", "周四", "周五", "周六", "周日" }
 local GUT  = { "1节", "2节", "3节", "4节", "5节", "6节", "7节", "8节", "9节",
                "晚1", "晚2", "晚3", "晚4" }
+local PT   = { "07:35", "08:25", "09:15", "10:25", "11:10", "14:20", "15:10",
+               "16:00", "16:50", "18:30", "19:20", "20:15", "21:00" }
+local PT_MIN = {}
+for i = 1, #PT do
+  local h, m = string.match(PT[i], "(%d+):(%d+)")
+  PT_MIN[i] = tonumber(h) * 60 + tonumber(m)
+end
+local CLASS_MIN = 45                -- 一节课按 45 分钟算
 
+-- ── 功能 1：上课状态（今天第几节 / 还剩多久）────────────────────────
+local function center(y, s, size)
+  local n = utf8.len(s) or 1
+  local px = (size >= 24) and 32 or 16
+  local x = (400 - n * px) // 2
+  if x < 0 then x = 0 end
+  display.text(x, y, s, size)
+end
+
+local function left_txt(mins)
+  if mins >= 60 then
+    local h, m = mins // 60, mins % 60
+    if m == 0 then return h .. " 小时" end
+    return h .. " 小时 " .. m .. " 分"
+  end
+  return mins .. " 分钟"
+end
+
+local function draw_status()
+  display.clear()
+  center(8, "上课状态", 16)
+
+  local sec, wd = sys.clock()
+  if not sec or sec < 0 then
+    center(120, "读不到时钟", 16)
+    return
+  end
+
+  local now = sec // 60
+  local col = (wd == 0) and 7 or wd          -- 课表列：1=周一 … 7=周日
+  local cur_r, nxt_r, today_n = nil, nil, 0
+  for r = 1, #PT_MIN do
+    if T[r][col] then
+      today_n = today_n + 1
+      if now >= PT_MIN[r] and now < PT_MIN[r] + CLASS_MIN then cur_r = r end
+      if now < PT_MIN[r] and not nxt_r then nxt_r = r end
+    end
+  end
+
+  if cur_r then
+    local left = PT_MIN[cur_r] + CLASS_MIN - now
+    center(46, "正在上课", 16)
+    center(72, GUT[cur_r] .. " · " .. PT[cur_r], 16)
+    center(104, T[cur_r][col] .. " 班", 24)
+    center(160, "还剩 " .. left .. " 分钟", 16)
+    if nxt_r then
+      center(210, "下一节 " .. PT[nxt_r] .. " · " .. T[nxt_r][col] .. " 班", 16)
+    else
+      center(210, "这是今天的最后一节", 16)
+    end
+  elseif nxt_r then
+    center(46, "现在没课", 16)
+    center(80, "下一节 " .. PT[nxt_r], 16)
+    center(112, T[nxt_r][col] .. " 班", 24)
+    center(168, "还有 " .. left_txt(PT_MIN[nxt_r] - now), 16)
+  else
+    center(70, "今天的课都上完了", 16)
+    center(110, "辛苦啦，好好休息", 16)
+  end
+
+  center(250, DAYS[col] .. " · 今天 " .. today_n .. " 节课", 16)
+end
+
+add("上课状态", draw_status)
+
+-- ── 功能 2：政治课表 ────────────────────────────────────────────────
 local function put(x, y, w, s)               -- 16px 字水平居中
   local n = utf8.len(s) or 1
   local dx = (w - n * 16) // 2
@@ -128,7 +202,7 @@ add("政治课表", function()
   end
 end)
 
--- ── 功能 2：环境与电池 ─────────────────────────────────────────────
+-- ── 功能 3：环境与电池 ─────────────────────────────────────────────
 add("环境与电池", function()
   local t, h = sensor.temp(), sensor.hum()
   local b, mv = sensor.battery(), sensor.voltage()
@@ -143,6 +217,11 @@ add("环境与电池", function()
   display.text(28, 258, "电压", 16)
   display.text(200, 252, mv <= 0 and "--" or string.format("%.2f V", mv / 1000), 24)
   display.text(104, 278, "单击切换 · 走完回主页", 16)
+end)
+
+-- 上课状态页每 10 秒自己刷新一次（只在它显示时）
+timer.every(10000, function()
+  if up and cur == 1 then show(1) end
 end)
 
 print("多功能框架就绪：" .. #F .. " 个功能（单击进入/切换，走完回主页）")

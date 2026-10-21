@@ -15,6 +15,7 @@ import { getHotNews } from "./services/news.mjs";
 import { WsGateway } from "./ws-gateway.mjs";
 import { handleHttp } from "./http-admin.mjs";
 import { reloadSkills } from "./services/skills.mjs";
+import { startReminders } from "./services/reminders.mjs";
 
 const config = getConfig();
 const weather = new WeatherCache();
@@ -34,6 +35,7 @@ const server = http.createServer((req, res) => {
 });
 
 ctx.gateway = new WsGateway(server, ctx);
+startReminders(ctx);
 
 const skillList = reloadSkills();
 if (skillList.length) console.log(`[skills] 已加载 ${skillList.length} 个声明式技能`);

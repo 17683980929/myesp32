@@ -92,6 +92,14 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_politics_news",
+      description: "查今天的时政热点（政策、会议、教育、法治、民生等），供政治老师备课用。用户问今天有什么时政新闻、最近有什么政策、有什么可以讲的热点时调用。回答挑 3~5 条口语化说，不要念全部。",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_timetable",
       description: "查询用户的课表。用户问今天/明天/昨天有没有课、有几节课、某天什么课、课表怎么安排时调用。参数 day 可填 today / tomorrow / yesterday / 周一..周日，默认 today。回答时把节次、时间、班号都说清楚。",
       parameters: {
@@ -298,6 +306,19 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (st?.ip) parts.push(`IP ${st.ip}`);
       if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
       return `板子状态：${parts.join("；")}。`;
+    }
+
+    case "get_politics_news": {
+      if (ctx.config.news?.enabled === false) return "新闻功能没开启。";
+      try {
+        const { list, source } = await getHotNews(ctx.config.news ?? {});
+        const KEY = /(政策|国务院|中央|教育部|人大|政协|会议|总书记|主席|总理|党建|反腐|法治|民生|改革|两会|外交|高考|学生|教师|学校|未成年|乡村振兴|经济工作会议)/;
+        const hit = list.filter((s) => KEY.test(s));
+        const pick = (hit.length ? hit : list).slice(0, 6);
+        return `时政热点（来源：${source}）：\n${pick.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
+      } catch (e) {
+        return `查时政失败：${e.message}`;
+      }
     }
 
     case "get_timetable": {

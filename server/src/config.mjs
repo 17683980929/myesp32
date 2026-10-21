@@ -26,6 +26,19 @@ export const DEFAULT_CONFIG = {
      *  （局域网够用，云服务器上那是内网 IP，设备连不上）。 */
     publicUrl: "",
   },
+  /** 定时播报：用课表 + 北京时间，到点让设备说一句 */
+  reminders: {
+    enabled: true,
+    classLeadMin: 10,        /* 课前几分钟提醒 */
+    classEndAfterMin: 45,    /* 上课后多少分钟算下课 */
+    waterEnabled: true,
+    waterEveryMin: 60,
+    waterStartHour: 8,
+    waterEndHour: 17,
+    morningEnabled: true,
+    morningHour: 6,
+    morningMinute: 50,
+  },
   device: {
     name: "MyEsp32",
     /** 允许连接的设备 MAC 白名单，空数组 = 不限制 */

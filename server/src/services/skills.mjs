@@ -77,7 +77,11 @@ export function reloadSkills() {
         emergency: typeof j.emergency === "string" ? j.emergency : "",
         /* 预检索触发词：决策语气 + 生活领域，两个都命中才自动查（避免误触发） */
         triggers: (j.triggers && typeof j.triggers === "object")
-          ? { decision: String(j.triggers.decision || ""), domain: String(j.triggers.domain || "") }
+          ? {
+              decision: String(j.triggers.decision || ""),
+              domain: String(j.triggers.domain || ""),
+              ask: String(j.triggers.ask || ""),
+            }
           : null,
         file: f,
       });
@@ -220,7 +224,15 @@ export function preSkillFor(text) {
   if (t.length < 4) return null;
   for (const s of cache) {
     if (s.type !== "docs" || !s.triggers) continue;
-    const { decision, domain } = s.triggers;
+    const { decision, domain, ask } = s.triggers;
+
+    /* ask：问定义/区别类（"什么是…""…和…的区别"），命中就检索，不需要领域词 */
+    if (ask && new RegExp(ask).test(t)) {
+      const text = searchDocs(s, t);
+      if (text) return { name: s.name, text };
+      continue;
+    }
+
     if (!decision || !domain) continue;
     if (!new RegExp(decision).test(t)) continue;
     if (!new RegExp(domain).test(t)) continue;

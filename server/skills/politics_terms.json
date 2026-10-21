@@ -1,0 +1,21 @@
+{
+  "type": "docs",
+  "name": "politics_terms",
+  "description": "查高中政治教材的核心概念（必修1~4）：全过程人民民主、人民代表大会制度、民主集中制、依法治国、社会主义市场经济、新发展理念、矛盾、量变质变、实践与认识、社会存在与社会意识等。用户问某个政治名词是什么意思、几个概念有什么区别、考点是什么时调用。回答按教材口径，注明是哪一条。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "要查的名词或问题，例如：全过程人民民主、量变和质变的区别、人民代表大会制度"
+      }
+    },
+    "required": ["query"]
+  },
+  "dir": "data/politics-terms/book",
+  "maxEntries": 3,
+  "entryChars": 700,
+  "triggers": {
+    "ask": "什么是|啥是|是什么意思|啥意思|解释一下|名词解释|定义|区别|考点|怎么理解"
+  }
+}

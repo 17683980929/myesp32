@@ -38,6 +38,7 @@
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #include "sensors.h"
+#include "pcf85063.h"
 #include "ui.h"
 #include "lua.h"
 #include "lauxlib.h"
@@ -266,6 +267,20 @@ static int l_sys_delay(lua_State *L)
     return 0;
 }
 
+/** sys.clock() → 当天秒数(0..86399), 星期(0=周日)；读不到 RTC 返回 -1,-1 */
+static int l_sys_clock(lua_State *L)
+{
+    int Y, Mo, D, Wd, H, Mi, S;
+    if (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) != 0) {
+        lua_pushinteger(L, -1);
+        lua_pushinteger(L, -1);
+        return 2;
+    }
+    lua_pushinteger(L, H * 3600 + Mi * 60 + S);
+    lua_pushinteger(L, Wd % 7);
+    return 2;
+}
+
 /* timer.* */
 static void timers_clear(void)
 {
@@ -349,6 +364,7 @@ static void register_apis(lua_State *L)
     };
     static const luaL_Reg f_sys[] = {
         { "millis", l_sys_millis }, { "delay", l_sys_delay }, { "log", l_sys_log },
+        { "clock", l_sys_clock },
         { "on", l_sys_on },
         { NULL, NULL }
     };
