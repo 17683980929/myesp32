@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -72,7 +73,8 @@ typedef struct {
     int  n_frames;                  /* 该句总帧数（服务器下发；0=未知，不翻页） */
 } sub_item_t;
 
-static sub_item_t s_subq[SUBQ_MAX];
+/* 字幕队列放 PSRAM：12 条 × 264B ≈ 3KB，静态占内部 RAM 不值得（BLE 要连续块） */
+static sub_item_t *s_subq;
 static int s_subq_head = 0, s_subq_tail = 0;
 
 static void subq_clear(void) { s_subq_head = s_subq_tail = 0; }
@@ -90,6 +92,7 @@ static void sub_cur_clear(void)
 
 static void subq_push(const char *text, int at_frame, int n_frames)
 {
+    if (!s_subq) return;
     int next = (s_subq_tail + 1) % SUBQ_MAX;
     if (next == s_subq_head)                       /* 满：丢最旧 */
         s_subq_head = (s_subq_head + 1) % SUBQ_MAX;
@@ -675,7 +678,7 @@ static void main_loop(void)
         {
             int pushed = 0, played = 0;
             audio_play_stats(&pushed, &played);
-            while (s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
+            while (s_subq && s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
                 sub_item_t *it = &s_subq[s_subq_head];
                 snprintf(s_sub_cur, sizeof(s_sub_cur), "%s", it->text);
                 s_sub_cur_at     = it->at_frame;
@@ -821,6 +824,8 @@ static void boot_online(const wifi_cfg_t *cfg)
     buttons_init(on_button);
     lua_runtime_set_result_cb(on_lua_result);
     lua_runtime_start();                     /* 挂载 fatfs、开机脚本、等下发（不阻塞） */
+    s_subq = heap_caps_malloc(sizeof(sub_item_t) * SUBQ_MAX, MALLOC_CAP_SPIRAM);
+    if (!s_subq) ESP_LOGE(TAG, "字幕队列分配失败（字幕不可用）");
     ESP_LOGI(TAG, "启动完成（服务器 %s）", cfg->host);
     main_loop();
 }

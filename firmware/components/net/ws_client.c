@@ -8,6 +8,7 @@
 #include "ws_client.h"
 #include <string.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_websocket_client.h"
@@ -24,7 +25,12 @@ static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .ba
 /* 文本帧组装缓冲：esp_websocket_client 1.4+ 按每次 read 分片派发
  * （payload_offset/payload_len），大帧会拆成多次回调——攒齐整包再解析。
  * 缓冲里的字符串仅在本次回调期间引用（上层自己会拷贝）。 */
-static char s_rx_text[7168];
+/* 文本帧组装缓冲：esp_websocket_client 1.4+ 按每次 read 分片派发
+ * （payload_offset/payload_len），大帧会拆成多次回调——攒齐整包再解析。
+ * 缓冲里的字符串仅在本次回调期间引用（上层自己会拷贝）。
+ * 放 PSRAM：7KB 静态 .bss 直接占内部 RAM，而 BLE 控制器要一块 30KB 连续块。 */
+#define RX_TEXT_CAP 7168
+static char *s_rx_text;
 static int  s_rx_len;
 
 /* 最近一次收到应用层数据的毫秒时刻（esp_timer 基准；服务器 ping 不算）。
@@ -141,7 +147,7 @@ static void on_data(char *data, int len)
         cJSON *v = cJSON_GetObjectItem(root, "id");
         ev.lua_id = v ? v->valueint : 0;
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(root, "code"));
-        if (code && strlen(code) < sizeof(s_rx_text)) {
+        if (code && strlen(code) < RX_TEXT_CAP) {
             ev.lua_code = code;              /* 指向组装缓冲，仅本次回调期间有效 */
         } else {
             ev.lua_code = NULL;          /* 缺失或过长：main 回错误给服务器 */
@@ -190,10 +196,10 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
     }
     case WEBSOCKET_EVENT_DATA:
         /* 应用数据活跃度由 on_data 按类型统计（ping 不算）；这里只管分片组装 */
-        if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr) {
+        if (e->op_code == 0x1 && e->data_len > 0 && e->data_ptr && s_rx_text) {
             /* 大帧会被拆成多次回调（一次 read 一段）：先攒齐再解析 */
             if (e->payload_offset == 0) s_rx_len = 0;
-            if (s_rx_len >= 0 && s_rx_len + e->data_len < (int)sizeof(s_rx_text)) {
+            if (s_rx_len >= 0 && s_rx_len + e->data_len < RX_TEXT_CAP) {
                 memcpy(s_rx_text + s_rx_len, e->data_ptr, e->data_len);
                 s_rx_len += e->data_len;
             } else {
@@ -225,6 +231,14 @@ static void on_event(void *handler_args, esp_event_base_t base, int32_t id, void
 
 esp_err_t ws_client_start(const char *host_port, const char *token)
 {
+    if (!s_rx_text) {
+        s_rx_text = heap_caps_malloc(RX_TEXT_CAP, MALLOC_CAP_SPIRAM);
+        if (!s_rx_text) {
+            ESP_LOGE(TAG, "收帧缓冲分配失败（PSRAM 不足）");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     char url[192];
     snprintf(url, sizeof(url), "ws://%s/device%s%s",
              host_port, token ? "?token=" : "", token ? token : "");
