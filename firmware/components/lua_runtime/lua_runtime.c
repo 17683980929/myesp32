@@ -404,15 +404,17 @@ static int read_file(const char *path, char *buf, int cap)
  * PSRAM 不可访问 —— 所有写文件的调用都必须换到内部栈的任务上执行。
  * 读文件走 cache 映射，可以在 Lua 任务里做。 */
 
-typedef enum { FIO_MOUNT = 0, FIO_SAVE, FIO_RENAME } fio_op_t;
+typedef enum { FIO_MOUNT = 0, FIO_SAVE, FIO_RENAME, FIO_READ } fio_op_t;
 
 typedef struct {
     fio_op_t    op;
     const char *a;
     const char *b;
+    char       *out;          /* FIO_READ：读入缓冲 */
+    int         out_cap;
 } fio_req_t;
 
-#define FIO_STACK_WORDS 4096          /* 16KB 内部栈：fatfs 挂载调用链很深（6KB 实测会踩内存） */
+#define FIO_STACK_WORDS 3072          /* 12KB 内部栈：挂载实测用 2040 字，留约 4KB 余量 */
 
 static QueueHandle_t     s_fio_q;
 static QueueHandle_t     s_fio_done;      /* 完成通知队列（放一个 int，不用信号量） */
@@ -420,6 +422,7 @@ static StaticTask_t      s_fio_tcb;
 static StackType_t      *s_fio_stack;
 
 static int fio_call(fio_op_t op, const char *a, const char *b);
+static int fio_read(const char *path, char *buf, int cap);
 
 static int persist_script_impl(const char *code)
 {
@@ -522,7 +525,7 @@ static void handle_deploy(const deploy_msg_t *m)
         /* 回滚：重新跑持久化的上一版（active.lua 只在执行成功时才被覆盖，
          * 所以它就是上一版好脚本；首次部署失败则不存在，跳过） */
         static char code[CODE_MAX + 1];
-        if (s_fs_ok && read_file(ACTIVE_PATH, code, sizeof(code) - 1) > 0) {
+        if (s_fs_ok && fio_read(ACTIVE_PATH, code, sizeof(code) - 1) > 0) {
             ESP_LOGI(TAG, "回滚：重新执行上一版脚本");
             run_code(code, 0);
         }
@@ -602,6 +605,9 @@ static void fio_task(void *arg)
             if (r.b) remove(r.b);
             rc = (r.a && r.b) ? rename(r.a, r.b) : -1;
             break;
+        case FIO_READ:
+            rc = read_file(r.a, r.out, r.out_cap);
+            break;
         }
         int done = rc;
         if (xQueueSend(s_fio_done, &done, 0) != pdTRUE)
@@ -613,7 +619,7 @@ static void fio_task(void *arg)
 static int fio_call(fio_op_t op, const char *a, const char *b)
 {
     if (!s_fio_q || !s_fio_done) return -1;
-    fio_req_t r = { op, a, b };
+    fio_req_t r = { .op = op, .a = a, .b = b, .out = NULL, .out_cap = 0 };
     if (xQueueSend(s_fio_q, &r, pdMS_TO_TICKS(2000)) != pdTRUE) {
         ESP_LOGW(TAG, "flash 代理队列忙，操作 %d 丢弃", (int)op);
         return -1;
@@ -624,6 +630,21 @@ static int fio_call(fio_op_t op, const char *a, const char *b)
         return -1;
     }
     return done;
+}
+
+/** 由 flash 代理任务读文件（fatfs 的读也会走关闭 cache 的 flash 路径，
+ *  PSRAM 栈的任务不能直接读）。返回读到的字节数，失败 <0。 */
+static int fio_read(const char *path, char *buf, int cap)
+{
+    if (!s_fio_q || !s_fio_done) return -1;
+    fio_req_t r = { .op = FIO_READ, .a = path, .b = NULL, .out = buf, .out_cap = cap };
+    if (xQueueSend(s_fio_q, &r, pdMS_TO_TICKS(2000)) != pdTRUE) return -1;
+    int n = -1;
+    if (xQueueReceive(s_fio_done, &n, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGW(TAG, "读 %s 超时", path);
+        return -1;
+    }
+    return n;
 }
 
 static void lua_task(void *arg)
@@ -638,7 +659,7 @@ static void lua_task(void *arg)
     /* 开机执行上次保存的脚本 */
     if (s_fs_ok) {
         static char code[CODE_MAX + 1];
-        int n = read_file(ACTIVE_PATH, code, sizeof(code) - 1);
+        int n = fio_read(ACTIVE_PATH, code, sizeof(code) - 1);
         if (n > 0) {
             ESP_LOGI(TAG, "开机脚本 active.lua（%d 字节）", n);
             if (!run_code(code, 0)) {
