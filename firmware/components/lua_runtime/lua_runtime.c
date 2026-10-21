@@ -414,7 +414,7 @@ typedef struct {
     int         out_cap;
 } fio_req_t;
 
-#define FIO_STACK_WORDS 3072          /* 12KB 内部栈：挂载实测用 2040 字，留约 4KB 余量 */
+#define FIO_STACK_WORDS 2560          /* 10KB 内部栈：挂载实测用 2056 字，留 2KB 余量 */
 
 static QueueHandle_t     s_fio_q;
 static QueueHandle_t     s_fio_done;      /* 完成通知队列（放一个 int，不用信号量） */

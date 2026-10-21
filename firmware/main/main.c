@@ -63,7 +63,7 @@ static int s_rec_auto_mode = 0;         /* 本次录音是自动聆听（VAD 收
  * 服务器为了让设备端有缓冲，发帧比实时快（字幕消息也随之提前 ~2 秒到）。
  * 直接显示会"音画不同步"——把字幕连同「收到时的已入队帧数」入队，
  * 主循环里等播放帧计数追上再显示。 */
-#define SUB_MAX   512
+#define SUB_MAX   256            /* 256B ≈ 85 个汉字；屏幕每页 24 字，够用 */
 #define SUBQ_MAX  12
 
 typedef struct {

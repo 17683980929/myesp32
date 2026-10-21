@@ -271,7 +271,9 @@ esp_err_t wifi_sta_start(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_start());
     esp_wifi_set_ps(WIFI_PS_NONE);   /* 关省电：避免 beacon 超时断连 + 降低延迟 */
 
-    xTaskCreate(guard_task, "wguard", 2048, NULL, 3, NULL);
+    /* 12KB：esp_wifi_scan_start/get_ap_records 的调用链很深，
+     * 8KB 实测会在扫描完成后踩栈（LoadProhibited 重启）。别再压。 */
+    xTaskCreate(guard_task, "wguard", 3072, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "WiFi 启动，连接 %s", s_ssid);
     return ESP_OK;
