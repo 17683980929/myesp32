@@ -675,7 +675,7 @@ static void render_frame(void)
     draw_pet();
 
     /* 语音状态字（桌宠区顶部居中）：录音中 / 思考中 / 说话中 */
-    static const char *VOICE_TXT[] = { "", "录音中", "思考中", "说话中" };
+    static const char *VOICE_TXT[] = { "", "认真倾听中", "思考中", "说话中" };
     if (s_voice != UI_VOICE_NONE) {
         const char *vt = VOICE_TXT[s_voice];
         draw_cjk((PET_W - cjk_text_w(vt, 1)) / 2, 0, vt, 1, 1);

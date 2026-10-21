@@ -34,6 +34,9 @@ void audio_rec_start_auto(int bargein);  /* bargein=1：播报中打断进入（
 int  audio_rec_vad_stop(void);           /* 读一次即清：1=说完 2=没说话 3=超时 0=继续 */
 int  audio_rec_heard_speech(void);       /* 本段录音是否检测到有效说话（否 → 本地静默收尾） */
 
+/** 是否在空闲态跟踪环境底噪（main 在 voice_to 里设置；录音/播报时关掉） */
+void audio_env_track(int on);
+
 /* ── 音量 ───────────────────────────────────────────────────────────── */
 void audio_set_volume(int vol); /* 0..100 */
 void audio_volume_cycle(void);  /* BOOT 短按：逐档增大 → 顶档后静音 → 回到最小档循环（带反馈音） */

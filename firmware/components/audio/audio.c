@@ -87,7 +87,7 @@ static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放�
 
 /* ── 自动聆听（唤醒流程）：静音检测自动结束录音 ─────────────────────── */
 
-#define VAD_SPEECH_RMS   600     /* 高于此电平判定"在说话"（空闲底噪 ≈150~350） */
+#define VAD_SPEECH_RMS   450     /* 说话判定门槛的下限（实际门槛见 vad_threshold()） */
 #define VAD_SIL_FRAMES   22      /* 说完后连续安静 22×60ms ≈1.3 秒 → 结束 */
 #define VAD_NOSPEECH_MS  6000    /* 一直没说话 6 秒 → 放弃 */
 #define VAD_MAX_MS       15000   /* 总时长上限 15 秒 */
@@ -95,6 +95,24 @@ static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放�
 /* "有效说话"门槛：超过 VAD_SPEECH_RMS 的帧数 ≥3（180ms）才算用户真说了话；
  * 只闪 1~2 帧（咳嗽、桌椅声、唤醒词尾音）会被当"没说话"本地静默丢弃，不送 ASR */
 #define VAD_MIN_VOICED   3
+
+/* 环境底噪跟踪：只在空闲时更新（main 通过 audio_env_track 控制），录音时冻结。
+ * 空调/风扇/音乐这类持续噪声会一直高于固定门槛 600，以前会被当成"一直在说话"，
+ * 录音拖到 15 秒上限。这里用"快降慢升"估底噪，判定门槛 = 底噪×2.5（最低 450）。 */
+#define NOISE_MIN        80.0f
+#define NOISE_MAX        3000.0f
+static float        s_noise = 150.0f;
+static volatile int s_env_track = 0;
+
+void audio_env_track(int on) { s_env_track = on ? 1 : 0; }
+
+static float vad_threshold(void)
+{
+    float t = s_noise * 2.5f;
+    if (t < (float)VAD_SPEECH_RMS) t = (float)VAD_SPEECH_RMS;
+    if (t > 6000.0f) t = 6000.0f;
+    return t;
+}
 
 /* 播报中打断进入的录音：开头几帧永远是喇叭尾音/房间混响（实测帧 1 电平
  * 达 6000~13000），从第 5 帧（300ms）起才计有效说话，防"尾音当指令" */
@@ -151,6 +169,17 @@ static void mic_task(void *arg)
                         mono[i] = (int16_t)v;
                     }
                     wake_feed(mono, READ_CHUNK);
+
+                    /* 空闲时更新底噪（快降慢升）；播放/录音时不更新，免得把喇叭声当底噪 */
+                    if (s_env_track) {
+                        double acc = 0;
+                        for (int i = 0; i < READ_CHUNK; i++) acc += (double)mono[i] * mono[i];
+                        float rms = (float)sqrt(acc / READ_CHUNK);
+                        if (rms < s_noise) s_noise = s_noise * 0.6f + rms * 0.4f;
+                        else               s_noise = s_noise * 0.99f + rms * 0.01f;
+                        if (s_noise < NOISE_MIN) s_noise = NOISE_MIN;
+                        if (s_noise > NOISE_MAX) s_noise = NOISE_MAX;
+                    }
                 } else {
                     vTaskDelay(pdMS_TO_TICKS(5));
                 }
@@ -217,14 +246,14 @@ static void mic_task(void *arg)
                  * 喇叭尾音、KEY 瞬间的功放尾音都会被跳过） */
                 if (s_rec_on) {
                     s_vad_frames++;
-                    if (rms > VAD_SPEECH_RMS && s_vad_frames > s_vad_skip)
+                    if (rms > vad_threshold() && s_vad_frames > s_vad_skip)
                         s_vad_voiced++;
                 }
 
                 /* 自动聆听：VAD 判"说完"（或一直没说话/超时）→ 由 main 收尾 */
                 if (s_rec_auto && !s_vad_stop) {
                     int t = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-                    int voiced = (rms > VAD_SPEECH_RMS) && s_vad_frames > s_vad_skip;
+                    int voiced = (rms > vad_threshold()) && s_vad_frames > s_vad_skip;
                     if (voiced) {
                         s_vad_spoke = 1;
                         s_vad_sil_run = 0;
@@ -420,6 +449,7 @@ void audio_rec_start_auto(int bargein)
     s_rec_auto_at = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_enc_reset   = 1;
     s_rec_on      = 1;
+    ESP_LOGI(TAG, "自动聆听：底噪 %.0f，说话门槛 %.0f", s_noise, vad_threshold());
 }
 
 /* 读一次即清：1=说完 2=没说话 3=超时 0=继续录 */

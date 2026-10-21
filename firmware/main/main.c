@@ -119,6 +119,7 @@ static void voice_to(voice_state_t v)
 {
     s_voice_state = v;
     ui_lua_release();                 /* 语音优先：脚本画布让位（脚本本身继续跑） */
+    audio_env_track(v == VOICE_IDLE); /* 只在空闲时跟踪环境底噪 */
     /* 空闲、播报中、思考中都听唤醒词（播报/思考中命中 → 用户优先：
      * 打断当前回答或放弃等待服务器，直接重开一轮）；
      * 录音中不听（录音里是用户自己的声音，会自触发） */

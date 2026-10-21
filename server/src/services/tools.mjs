@@ -9,6 +9,16 @@
 import { build, buildTimeInfo } from "../protocol.mjs";
 import { getHotNews } from "./news.mjs";
 import { webSearch } from "./search.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/* 课表数据（服务器侧，供"明天有没有课/今天几节"这类问答用；
+ * 板子上的 Lua 画布是另一份展示用数据） */
+const TT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../data/timetable.json");
+function loadTimetable() {
+  try { return JSON.parse(readFileSync(TT_PATH, "utf8")); } catch { return null; }
+}
 
 const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
 const BT_ZH = { 0: "关闭", 1: "广播中", 2: "已连接" };
@@ -77,6 +87,20 @@ export const TOOLS = [
       name: "get_device_status",
       description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、蓝牙状态、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面。用户问板子/设备的电量、温度、音量、蓝牙、网络、状态时调用。",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_timetable",
+      description: "查询用户的课表。用户问今天/明天/昨天有没有课、有几节课、某天什么课、课表怎么安排时调用。参数 day 可填 today / tomorrow / yesterday / 周一..周日，默认 today。回答时把节次、时间、班号都说清楚。",
+      parameters: {
+        type: "object",
+        properties: {
+          day: { type: "string", description: "today / tomorrow / yesterday / 周一 / 周二 … / 周日" },
+        },
+        required: [],
+      },
     },
   },
   {
@@ -274,6 +298,34 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (st?.ip) parts.push(`IP ${st.ip}`);
       if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
       return `板子状态：${parts.join("；")}。`;
+    }
+
+    case "get_timetable": {
+      const tt = loadTimetable();
+      if (!tt || !Array.isArray(tt.grid)) return "课表数据还没配置好。";
+
+      const DAYS = tt.days;
+      const now = new Date(Date.now() + 8 * 3600e3);      /* 北京时间 */
+      const todayIdx = (now.getUTCDay() + 6) % 7;         /* 0=周一 */
+      const arg = String(args.day ?? "today").trim();
+      let idx = todayIdx;
+      if (arg === "明天" || arg === "tomorrow") idx = (todayIdx + 1) % 7;
+      else if (arg === "昨天" || arg === "yesterday") idx = (todayIdx + 6) % 7;
+      else {
+        const i = DAYS.indexOf(arg);
+        if (i >= 0) idx = i;
+      }
+
+      const d = new Date(now.getTime() + ((idx - todayIdx + 7) % 7) * 86400e3);
+      const dateLabel = `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
+
+      const cells = [];
+      for (let r = 0; r < tt.grid.length && r < tt.periods.length; r++) {
+        const v = tt.grid[r]?.[idx];
+        if (v) cells.push(`${tt.periods[r].label} ${tt.periods[r].time} ${v}班`);
+      }
+      if (!cells.length) return `${DAYS[idx]}（${dateLabel}）没有课。`;
+      return `${DAYS[idx]}（${dateLabel}）共 ${cells.length} 节课：${cells.join("；")}。`;
     }
 
     case "control_screen": {
