@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "wifi_sta.c" "wifi_cfg.c" "wifi_portal.c" "ws_client.c"
+    SRCS "wifi_sta.c" "wifi_cfg.c" "wifi_portal.c" "ws_client.c" "ota.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_wifi esp_event esp_netif esp_http_server lwip json esp_websocket_client nvs_flash esp_timer
-    PRIV_REQUIRES hw esp_driver_gpio
+    PRIV_REQUIRES hw esp_driver_gpio esp_http_client app_update
 )

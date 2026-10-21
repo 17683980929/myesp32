@@ -154,6 +154,11 @@ static void on_data(char *data, int len)
             ESP_LOGW(TAG, "lua 脚本%s", code ? "过长" : "缺失");
         }
         dispatch(&ev);
+    } else if (t && !strcmp(t, "ota")) {
+        ev.kind = WS_EVT_OTA;
+        const char *u = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+        strncpy(ev.url, u ?: "", sizeof(ev.url) - 1);
+        dispatch(&ev);
     } else if (t && !strcmp(t, "err")) {
         ev.kind = WS_EVT_ERROR;
         const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(root, "msg"));

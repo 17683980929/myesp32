@@ -70,6 +70,7 @@ jobs:
           name: myesp32-merged
           path: |
             firmware/build/merged-binary.bin
+            firmware/build/myesp32.bin
             firmware/build/flash_args
           if-no-files-found: error
           retention-days: 14

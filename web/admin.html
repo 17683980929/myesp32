@@ -223,6 +223,18 @@
     </div>
   </div>
 
+  <!-- 固件 OTA -->
+  <div class="card">
+    <h2>固件 OTA <span class="tag">推送到设备</span></h2>
+    <div class="actions">
+      <span class="msg" id="otaInfo">读取中…</span>
+    </div>
+    <div class="actions">
+      <button class="primary" onclick="pushOta()">推送到设备</button>
+      <span class="msg" id="otaMsg"></span>
+    </div>
+  </div>
+
   <div class="actions" style="justify-content:flex-end">
     <span class="msg" id="saveMsg"></span>
     <button class="primary" onclick="saveAll()">保存全部配置</button>
@@ -450,9 +462,48 @@ async function deployLua() {
   }
 }
 
+async function refreshOta() {
+  try {
+    const r = await fetch("/api/ota");
+    const j = await r.json();
+    const f = j.file;
+    if (!f) {
+      $("otaInfo").textContent = "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）";
+      return;
+    }
+    const mb = (f.size / 1048576).toFixed(2);
+    const t = new Date(f.mtime).toLocaleString();
+    const dev = (j.devices || []).map((d) => {
+      if (!d.ota) return d.fw;
+      const p = d.ota.p;
+      return `${d.fw}：${p >= 0 ? p + "%" : d.ota.msg || "失败"}`;
+    }).join(" / ");
+    $("otaInfo").textContent =
+      `服务器固件：${f.version || "?"}，${mb} MB，${t}${dev ? "；在线设备 " + dev : ""}`;
+  } catch (e) {
+    $("otaInfo").textContent = "读取 OTA 状态失败";
+  }
+}
+
+async function pushOta() {
+  if (!confirm("把服务器上的固件推送到设备？更新期间不要断电。")) return;
+  setMsg($("otaMsg"), "推送中…", "");
+  try {
+    const r = await fetch("/api/ota", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) { setMsg($("otaMsg"), j.msg || "推送失败", "err"); return; }
+    setMsg($("otaMsg"), `已通知 ${j.sent} 台设备，开始下载…`, "");
+    setTimeout(refreshOta, 1500);
+  } catch (e) {
+    setMsg($("otaMsg"), "请求失败", "err");
+  }
+}
+
 loadConfig();
 refreshStatus();
 setInterval(refreshStatus, 5000);
+refreshOta();
+setInterval(refreshOta, 3000);
 </script>
 </body>
 </html>

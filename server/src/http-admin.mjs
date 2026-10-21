@@ -15,10 +15,26 @@
  * 鉴权：配置了 server.adminPassword 就走 HTTP Basic（浏览器原生支持）。
  */
 
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
+
+/* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
+ * （我的烧录流程会在解压新包时自动更新它） */
+const OTA_APP = path.resolve(ROOT, "../firmware/build/ota-app.bin");
+
+function otaInfo() {
+  if (!existsSync(OTA_APP)) return null;
+  const st = statSync(OTA_APP);
+  let version = "";
+  try {
+    const s = readFileSync(OTA_APP).toString("latin1");
+    const all = s.match(/0\.1\.\d+/g);
+    if (all && all.length) version = all[all.length - 1];
+  } catch { /* 读不到就不显示版本 */ }
+  return { size: st.size, mtime: st.mtimeMs, version };
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -106,6 +122,22 @@ export async function handleHttp(req, res, ctx) {
   const url = new URL(req.url, "http://x");
   const p = url.pathname;
 
+  /* ── 固件下载（设备 OTA 用；不带鉴权，设备没有密码）────────────── */
+  if (p === "/firmware/app.bin" && req.method === "GET") {
+    if (!existsSync(OTA_APP)) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("no firmware");
+      return;
+    }
+    const st = statSync(OTA_APP);
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": st.size,
+    });
+    createReadStream(OTA_APP).pipe(res);
+    return;
+  }
+
   try {
     /* ── API ──────────────────────────────────────────────────────── */
     if (p.startsWith("/api/")) {
@@ -148,6 +180,7 @@ export async function handleHttp(req, res, ctx) {
             busy: d.busy,
             recording: d.recording,
             stat: d.lastStat,
+            ota: d.ota,
           })),
           weather: ctx.weather.data,
           weatherError: ctx.weather.lastError,
@@ -193,6 +226,29 @@ export async function handleHttp(req, res, ctx) {
         const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
         log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
         return json(res, 200, { ok: true, sent: list.length, id, results });
+      }
+
+      if (p === "/api/ota" && req.method === "GET") {
+        return json(res, 200, {
+          file: otaInfo(),
+          devices: [...ctx.devices].map((d) => ({ sid: d.sid, fw: d.fw, ota: d.ota })),
+        });
+      }
+
+      if (p === "/api/ota" && req.method === "POST") {
+        const list = [...ctx.devices];
+        if (!list.length) return json(res, 400, { ok: false, msg: "没有在线设备" });
+        if (!existsSync(OTA_APP)) return json(res, 400, { ok: false, msg: "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）" });
+
+        /* 用设备这条连接上的服务器地址：设备就是从那个 IP 连过来的，一定可达 */
+        const localIp = list[0].ws?._socket?.localAddress;
+        const port = req.socket.localPort || 8080;
+        const host = localIp ? `${localIp}:${port}` : (req.headers.host || `127.0.0.1:${port}`);
+        const dst = `http://${host}/firmware/app.bin`;
+
+        for (const d of list) d.startOta(dst);
+        log(`推送 OTA → ${list.length} 台：${dst}`);
+        return json(res, 200, { ok: true, sent: list.length, url: dst, file: otaInfo() });
       }
 
       return json(res, 404, { ok: false, msg: "未知接口" });

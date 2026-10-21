@@ -95,6 +95,7 @@ export class DeviceSession {
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.timers = [];
     this.lastStat = null;
+    this.ota = null;               /* 最近一次 OTA 状态 {p, at, msg} */
     this.luaWaiters = new Map();   /* id → resolve(fn)：等下发的 Lua 执行回执 */
     this.lastLua = null;           /* 最近一次 Lua 执行结果（诊断用） */
   }
@@ -128,6 +129,13 @@ export class DeviceSession {
         out: `回执超时（${timeoutMs}ms，脚本已保存，设备可能已执行）`,
       }), timeoutMs);
     });
+  }
+
+  /** 让设备从 url 下载固件做 OTA */
+  startOta(url) {
+    this.ota = { p: 0, at: Date.now(), msg: null };
+    this.send({ t: "ota", url });
+    log(`[${this.sid}] 推送 OTA → ${url}`);
   }
 
   /* ── 生命周期 ─────────────────────────────────────────────────────── */
@@ -191,6 +199,10 @@ export class DeviceSession {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
           up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, at: Date.now(),
         };
+        return;
+      case "ota":
+        this.ota = { p: m.p ?? -1, at: Date.now(), msg: m.m ?? null };
+        log(`[${this.sid}] OTA ${m.p}%${m.m ? " " + m.m : ""}`);
         return;
       case DEV.LUA_RESULT: {
         log(`[${this.sid}] Lua#${m.id} ${m.ok ? "成功" : "失败"} ${m.out ?? ""}`);

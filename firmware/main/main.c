@@ -19,6 +19,7 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "nvs_flash.h"
 
 #include "hw_config.h"
@@ -30,6 +31,7 @@
 #include "wifi_cfg.h"
 #include "wifi_portal.h"
 #include "ws_client.h"
+#include "ota.h"
 #include "ui.h"
 #include "audio.h"
 #include "wake.h"
@@ -389,6 +391,22 @@ static void on_ws_event(const ws_event_t *ev)
             lua_runtime_deploy(ev->lua_id, ev->lua_code);
         }
         break;
+    case WS_EVT_OTA: {
+        int r = ota_start(ev->url);
+        if (r == 0) {
+            ui_set_sub("固件下载中…");
+            s_sub_clear_at = 0;
+            s_dirty = 1;
+        } else if (r == -2) {
+            ui_set_sub("内存不足，先关闭蓝牙再更新");
+            s_sub_clear_at = now_ms() + 6000;
+            s_dirty = 1;
+        } else {
+            ESP_LOGW(TAG, "OTA 未启动（%d）", r);
+            ws_send_json("{\"t\":\"ota\",\"p\":-3}");
+        }
+        break;
+    }
     case WS_EVT_PAGE: {
         /* 设备是页面唯一权威（服务器不再下发翻页）；仅认 "home" 兜底 */
         if (strcmp(ev->name, "home") == 0) ui_set_page(UI_PAGE_HOME);
@@ -673,6 +691,31 @@ static void main_loop(void)
             else voice_rec_void();
         }
 
+        /* OTA 进度 → 右栏字幕（下载缓冲在 OTA 任务里，主循环只读百分比） */
+        {
+            static int s_ota_pct = -1;
+            int p = ota_percent();
+            if (p != s_ota_pct) {
+                s_ota_pct = p;
+                char note[64];
+                if (p >= 0 && p < 100) {
+                    snprintf(note, sizeof(note), "固件更新 %d%%，请勿断电", p);
+                    ui_set_sub(note);
+                    s_sub_clear_at = 0;
+                    s_dirty = 1;
+                } else if (p == 100) {
+                    ui_set_sub("更新完成，正在重启…");
+                    s_sub_clear_at = 0;
+                    s_dirty = 1;
+                } else if (p == -2) {
+                    snprintf(note, sizeof(note), "更新失败：%s", ota_err());
+                    ui_set_sub(note);
+                    s_sub_clear_at = now_ms() + 8000;
+                    s_dirty = 1;
+                }
+            }
+        }
+
         /* 字幕：等对应句子的首帧真正播出去再显示（对齐声音）；
          * 长句超过一页（24 字）时按播放进度翻页，保证整句都看得到 */
         {
@@ -873,6 +916,10 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "MyEsp32 %s 启动", MYESP32_FW);
+
+    /* OTA 首启确认：开了 rollback 后，新镜像首启要标记有效，
+     * 否则下一次复位会被 bootloader 回滚。USB 烧录的镜像无副作用。 */
+    esp_ota_mark_app_valid_cancel_rollback();
 
     /* 配置：NVS（配网页保存）优先，其次编译期默认（CI Secrets / menuconfig） */
     static wifi_cfg_t cfg;
