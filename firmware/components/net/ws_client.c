@@ -232,7 +232,11 @@ esp_err_t ws_client_start(const char *host_port, const char *token)
     esp_websocket_client_config_t cfg = {
         .uri = url,
         .buffer_size = 8192,             /* 要装下放大的 lua 帧（脚本 ≤6KB + JSON 开销） */
-        .task_stack = 4096,              /* 解析事件用的任务栈（内部 RAM 紧，别再超配） */
+        /* 事件回调是在这个任务栈上跑的：on_ws_event → ble_set_enabled(1) →
+         * nimble_port_init()（控制器+PHY+NVS）调用链很深。
+         * 实测 4096 字（16KB）在开蓝牙时直接栈溢出重启（表现为"说打开蓝牙就断网"），
+         * 6144 字（24KB）是验证过的值，别再往下压。 */
+        .task_stack = 6144,
         .reconnect_timeout_ms = 10000,   /* 链路坏时别 5 秒一次猛重连：每次失败都会占内存，
                                           * 实测 2 分钟就能把内部堆耗到换节点任务都建不出来 */
         .network_timeout_ms = 10000,

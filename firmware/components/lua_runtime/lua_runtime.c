@@ -47,9 +47,9 @@ static const char *TAG = "lua";
 #define LUA_MEM_CAP       (128 * 1024)
 /* Lua 任务栈：必须在内部 RAM —— 脚本部署会写 fatfs，flash 写入期间 cache 关闭、
  * PSRAM 不可访问，栈放在 PSRAM 会直接崩。
- * 8192 字 = 32KB，够 Lua 解释器 + fatfs + flash 写入路径（原来按 12288 字 = 48KB
- * 申请，是内部堆最大的一块占用，把 BLE 控制器挤到 Memory Capacity Exceeded）。 */
-#define LUA_STACK_WORDS   8192
+ * 6144 字 = 24KB：实测跑完 fatfs 挂载 + 开机脚本 + 框架加载后水位是
+ * "余量 4524/8192 字"（即只用了 3668 字），降到 6144 仍留 ~9.9KB 余量。 */
+#define LUA_STACK_WORDS   6144
 #define EXEC_TIMEOUT_US   (2000 * 1000)
 #define OUT_CAP           2048
 #define CODE_MAX          6144
