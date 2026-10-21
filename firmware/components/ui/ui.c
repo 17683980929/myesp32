@@ -22,6 +22,7 @@
 #include "pcf85063.h"
 #include "wifi_sta.h"
 #include "ble.h"
+#include "esp_random.h"
 
 #ifndef PET_W
 #define PET_W            200
@@ -268,12 +269,20 @@ static int weather_kind(const char *text)
 
 /* ── 桌宠 ─────────────────────────────────────────────────────────── */
 
-typedef enum { PET_IDLE, PET_BLINK, PET_LISTENING, PET_THINKING, PET_SPEAKING } pet_state_t;
+typedef enum { PET_IDLE, PET_LISTENING, PET_THINKING, PET_SPEAKING } pet_state_t;
 
 static pet_state_t s_pet = PET_IDLE;
 static int s_frame_idx = 0;
 static int s_blink_phase = 0;
 static ui_voice_t s_voice = UI_VOICE_NONE;
+
+/* 空闲随机小动作：用现成的 15 帧表情（开心/爱心/疑惑/困/睡/敬礼/指路/巡逻/音符/充电），
+ * 每 8~20 秒随机播一个 1.2~3 秒，个别动作带轻微上下位移。 */
+static int      s_act_frame = -1;      /* ≥0 = 正在播随机动作 */
+static uint32_t s_act_until;
+static uint32_t s_act_next;
+static int      s_act_dy;              /* 动作期间的垂直偏移（像素） */
+static int      s_act_bob;             /* 1 = 这个动作要上下动 */
 
 /* Lua 画布（M5）：帧缓冲互斥 + 停止周期重绘的"保鲜"窗口 + 桌宠表情覆盖 */
 static SemaphoreHandle_t s_fb_lock;
@@ -298,28 +307,64 @@ static void draw_pet(void)
     if (fi < 0 || fi >= PET_FRAME_COUNT) fi = 0;
     const uint8_t *frame = PET_NAMES[fi];
     int dx = (PET_W - PET_FRAME_W) / 2;              /* 0 */
-    int dy = (LCD_H - PET_FRAME_H) / 2;              /* 16 */
+    int dy = (LCD_H - PET_FRAME_H) / 2 + s_act_dy;   /* 16，随机动作时轻微上下 */
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
+}
+
+/** 开始一个随机空闲动作：从非语音的 10 个表情里挑一个 */
+static void start_idle_action(uint32_t now)
+{
+    static const uint8_t picks[] = { 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+    static const uint8_t bob[]   = { 1, 1, 0, 0, 0, 1, 0, 0, 1, 0 };  /* 开心/爱心/敬礼/音符会动 */
+    uint32_t r = esp_random();
+    int i = (int)(r % (sizeof(picks) / sizeof(picks[0])));
+
+    s_act_frame = picks[i];
+    s_act_bob   = bob[i];
+    s_act_until = now + 1200 + (r >> 8) % 1800;              /* 1.2~3.0 秒 */
+    s_act_next  = now + 8000 + (r >> 16) % 12000;            /* 下次 8~20 秒后 */
+    s_act_dy    = 0;
 }
 
 static void pet_tick(uint32_t now)
 {
-    switch (s_pet) {
-    case PET_IDLE:
-    case PET_BLINK:
-        /* 每 3.2 秒眨一次眼，眨 160ms */
-        if (s_blink_phase == 0 && (now % 3200) < 40) {
-            s_frame_idx = 1;
-            s_blink_phase = 1;
-        } else if (s_blink_phase == 1 && (now % 3200) > 200) {
-            s_frame_idx = 0;
-            s_blink_phase = 0;
+    if (s_pet != PET_IDLE) {
+        /* 语音状态优先：打断随机动作 */
+        s_act_frame = -1;
+        s_act_dy = 0;
+        switch (s_pet) {
+        case PET_LISTENING: s_frame_idx = 2; break;
+        case PET_THINKING:  s_frame_idx = 3; break;
+        case PET_SPEAKING:  s_frame_idx = 4; break;
+        default: break;
         }
-        break;
-    case PET_LISTENING: s_frame_idx = 2; break;
-    case PET_THINKING: s_frame_idx = 3; break;
-    case PET_SPEAKING: s_frame_idx = 4; break;
+        return;
     }
+
+    /* 正在播随机动作 → 到点回 idle；需要动的动作按 150ms 抖一下 */
+    if (s_act_frame >= 0) {
+        if ((int32_t)(now - s_act_until) >= 0) {
+            s_act_frame = -1;
+            s_act_dy = 0;
+            s_frame_idx = 0;
+        } else {
+            s_frame_idx = s_act_frame;
+            s_act_dy = s_act_bob ? (((now / 150) % 2) ? -3 : 0) : 0;
+        }
+        return;
+    }
+
+    /* 空闲：眨眼 + 到点随机来个表情 */
+    if (s_blink_phase == 0 && (now % 3200) < 40) {
+        s_frame_idx = 1;
+        s_blink_phase = 1;
+    } else if (s_blink_phase == 1 && (now % 3200) > 200) {
+        s_frame_idx = 0;
+        s_blink_phase = 0;
+    }
+
+    if (s_act_next == 0) s_act_next = now + 6000;            /* 开机先等 6 秒 */
+    if ((int32_t)(now - s_act_next) >= 0) start_idle_action(now);
 }
 
 /* ── 页面 ──────────────────────────────────────────────────────────── */
@@ -416,12 +461,13 @@ int ui_tick(uint32_t now)
 {
     pet_state_t prev_state = s_pet;
     int prev_idx = s_frame_idx;
+    int prev_dy = s_act_dy;
 
     s_pet = (s_voice == UI_VOICE_LISTENING) ? PET_LISTENING :
             (s_voice == UI_VOICE_THINKING)  ? PET_THINKING  :
             (s_voice == UI_VOICE_SPEAKING)  ? PET_SPEAKING  :
             (s_busy ? PET_THINKING : PET_IDLE);
-    pet_tick(now);
+    if (s_page == UI_PAGE_HOME) pet_tick(now);
 
     int vol_changed = 0;
     if (s_vol_overlay >= 0 && s_vol_bar != s_vol_target) {
@@ -435,6 +481,7 @@ int ui_tick(uint32_t now)
     }
 
     int changed = (s_pet != prev_state) || (s_frame_idx != prev_idx) ||
+                  (s_act_dy != prev_dy) ||
                   (s_lua_frame != s_lua_frame_prev) || vol_changed;
     s_lua_frame_prev = s_lua_frame;
     return changed;
