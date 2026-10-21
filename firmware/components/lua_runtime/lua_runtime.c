@@ -34,6 +34,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #include "sensors.h"
@@ -398,13 +399,34 @@ static int read_file(const char *path, char *buf, int cap)
     return n;
 }
 
-static void persist_script(const char *code)
+/* ── flash 写入代理 ──────────────────────────────────────────────────
+ * Lua 任务栈放在 PSRAM（省 24KB 内部 RAM），但 flash 写入期间 cache 关闭、
+ * PSRAM 不可访问 —— 所有写文件的调用都必须换到内部栈的任务上执行。
+ * 读文件走 cache 映射，可以在 Lua 任务里做。 */
+
+typedef enum { FIO_MOUNT = 0, FIO_SAVE, FIO_RENAME } fio_op_t;
+
+typedef struct {
+    fio_op_t    op;
+    const char *a;
+    const char *b;
+} fio_req_t;
+
+#define FIO_STACK_WORDS 1536          /* 6KB 内部栈：fatfs 挂载/写文件够用 */
+
+static QueueHandle_t     s_fio_q;
+static SemaphoreHandle_t s_fio_done;
+static volatile int      s_fio_rc;
+static StaticTask_t      s_fio_tcb;
+static StackType_t      *s_fio_stack;
+
+static int persist_script_impl(const char *code)
 {
-    if (!s_fs_ok) return;
+    if (!s_fs_ok) return -1;
     FILE *f = fopen(TMP_PATH, "wb");
     if (!f) {
         ESP_LOGW(TAG, "写 %s 失败", TMP_PATH);
-        return;
+        return -1;
     }
     size_t n = strlen(code);
     size_t w = fwrite(code, 1, n, f);
@@ -412,13 +434,15 @@ static void persist_script(const char *code)
     if (w != n) {
         ESP_LOGW(TAG, "写脚本不完整");
         remove(TMP_PATH);
-        return;
+        return -1;
     }
     remove(ACTIVE_PATH);
-    if (rename(TMP_PATH, ACTIVE_PATH) != 0)
+    if (rename(TMP_PATH, ACTIVE_PATH) != 0) {
         ESP_LOGW(TAG, "rename → active.lua 失败（本次已生效，但重启后不保留）");
-    else
-        ESP_LOGI(TAG, "脚本已保存 active.lua（%d 字节）", (int)n);
+        return -1;
+    }
+    ESP_LOGI(TAG, "脚本已保存 active.lua（%d 字节）", (int)n);
+    return 0;
 }
 
 static void reply(int id, int ok, const char *out)
@@ -478,7 +502,7 @@ static int run_code(const char *code, int persist)
     s_hook_active = 0;
     s_capture = 0;
 
-    if (ok && persist) persist_script(code);
+    if (ok && persist) persist_script_impl(code);
     return ok;
 }
 
@@ -538,7 +562,7 @@ static void handle_event(int evt)
 
 /* ── fatfs 与任务 ──────────────────────────────────────────────────── */
 
-static void mount_fs(void)
+static int mount_fs_impl(void)
 {
     esp_vfs_fat_mount_config_t cfg = {
         .format_if_mount_failed = true,
@@ -548,18 +572,59 @@ static void mount_fs(void)
     esp_err_t e = esp_vfs_fat_spiflash_mount_rw_wl(MOUNT_POINT, "fatfs", &cfg, &s_wl);
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "fatfs 挂载失败（%s）：脚本可用但不持久化", esp_err_to_name(e));
-        return;
+        return -1;
     }
     mkdir(SCRIPT_DIR, 0777);                  /* 已存在则忽略 */
     s_fs_ok = 1;
     ESP_LOGI(TAG, "fatfs 就绪（%s）", MOUNT_POINT);
+    return 0;
+}
+
+static void fio_task(void *arg)
+{
+    (void)arg;
+    fio_req_t r;
+    for (;;) {
+        if (xQueueReceive(s_fio_q, &r, portMAX_DELAY) != pdTRUE) continue;
+        int rc = -1;
+        switch (r.op) {
+        case FIO_MOUNT:
+            rc = mount_fs_impl();
+            break;
+        case FIO_SAVE:
+            rc = persist_script_impl(r.a);
+            break;
+        case FIO_RENAME:
+            if (r.b) remove(r.b);
+            rc = (r.a && r.b) ? rename(r.a, r.b) : -1;
+            break;
+        }
+        s_fio_rc = rc;
+        xSemaphoreGive(s_fio_done);
+    }
+}
+
+/** 在内部栈任务上执行一次 flash 操作（阻塞直到做完）。成功返回 0。 */
+static int fio_call(fio_op_t op, const char *a, const char *b)
+{
+    if (!s_fio_q || !s_fio_done) return -1;
+    fio_req_t r = { op, a, b };
+    if (xQueueSend(s_fio_q, &r, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW(TAG, "flash 代理队列忙，操作 %d 丢弃", (int)op);
+        return -1;
+    }
+    if (xSemaphoreTake(s_fio_done, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGW(TAG, "flash 操作 %d 超时", (int)op);
+        return -1;
+    }
+    return s_fio_rc;
 }
 
 static void lua_task(void *arg)
 {
     (void)arg;
 
-    mount_fs();
+    fio_call(FIO_MOUNT, NULL, NULL);
 
     /* 开机执行上次保存的脚本 */
     if (s_fs_ok) {
@@ -569,13 +634,12 @@ static void lua_task(void *arg)
             ESP_LOGI(TAG, "开机脚本 active.lua（%d 字节）", n);
             if (!run_code(code, 0)) {
                 ESP_LOGW(TAG, "开机脚本执行失败：%s → 改名不再重跑", s_err);
-                remove(BROKEN_PATH);
-                rename(ACTIVE_PATH, BROKEN_PATH);
+                fio_call(FIO_RENAME, ACTIVE_PATH, BROKEN_PATH);
             }
         }
     }
 
-    /* 栈余量（字）：跑完挂载 + 开机脚本后的水位，用来校验 8192 字够不够 */
+    /* 栈余量（字）：跑完挂载 + 开机脚本后的水位，用来校验栈大小够不够 */
     ESP_LOGI(TAG, "任务栈余量 %u 字（共 %d 字）",
              (unsigned)uxTaskGetStackHighWaterMark(NULL), LUA_STACK_WORDS);
 
@@ -655,7 +719,9 @@ void lua_runtime_set_result_cb(lua_result_cb_t cb)
     s_result_cb = cb;
 }
 
-/* Lua 任务栈走显式内部 RAM 静态分配（见 lua_runtime_start）。 */
+/* Lua 任务栈放 PSRAM（省 24KB 内部 RAM，给 BLE 控制器腾连续块）；
+ * 写 flash 的调用都走 fio 代理任务（内部栈），见文件中部。
+ * 因为栈在 PSRAM，任务固定钉在 core0（IDF 对外部栈任务的约束）。 */
 static StaticTask_t s_lua_tcb;
 static StackType_t *s_lua_stack;
 
@@ -663,20 +729,27 @@ void lua_runtime_start(void)
 {
     if (s_task) return;
     s_q = xQueueCreate(DEPLOY_Q_LEN, sizeof(deploy_msg_t));
-    if (!s_q) {
-        ESP_LOGE(TAG, "队列创建失败");
+    s_fio_q = xQueueCreate(2, sizeof(fio_req_t));
+    s_fio_done = xSemaphoreCreateBinary();
+    s_fio_stack = heap_caps_malloc(FIO_STACK_WORDS * sizeof(StackType_t),
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_q || !s_fio_q || !s_fio_done || !s_fio_stack) {
+        ESP_LOGE(TAG, "队列/信号量/flash 代理栈创建失败（内部 RAM 不足）");
         return;
     }
-    s_lua_stack = heap_caps_malloc(LUA_STACK_WORDS * sizeof(StackType_t),
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!xTaskCreateStaticPinnedToCore(fio_task, "lua_fio", FIO_STACK_WORDS, NULL, 4,
+                                       s_fio_stack, &s_fio_tcb, 0)) {
+        ESP_LOGE(TAG, "flash 代理任务创建失败");
+        return;
+    }
+
+    s_lua_stack = heap_caps_malloc(LUA_STACK_WORDS * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
     if (!s_lua_stack) {
-        ESP_LOGE(TAG, "Lua 任务栈分配失败（内部 RAM 不足：空闲 %u B / 最大块 %u B）",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        ESP_LOGE(TAG, "Lua 任务栈分配失败（PSRAM 不足）");
         return;
     }
     s_task = xTaskCreateStaticPinnedToCore(lua_task, "lua", LUA_STACK_WORDS, NULL, 4,
-                                           s_lua_stack, &s_lua_tcb, tskNO_AFFINITY);
+                                           s_lua_stack, &s_lua_tcb, 0);
     if (!s_task) ESP_LOGE(TAG, "Lua 任务创建失败");
 }
 

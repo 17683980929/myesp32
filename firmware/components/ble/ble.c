@@ -171,6 +171,20 @@ int ble_init(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
+    /* 控制器初始化时会一次性向内部 DMA 池申请一整块连续内存（实测 30,720B）。
+     * 总空闲够、但最大连续块不够时就会 Malloc failed → 控制器内部 assert
+     * → 整机重启（用户看到"开蓝牙就断网/闪退"）。先探测同样大小的连续块，
+     * 不行就优雅放弃，让 UI/助手如实说蓝牙没起来，而不是重启。 */
+    enum { BLE_CTRL_POOL = 30720 };
+    void *probe = heap_caps_malloc(BLE_CTRL_POOL, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!probe) {
+        ESP_LOGE(TAG, "内部连续内存不足（最大块 %u B < %d B），跳过蓝牙初始化",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+                 BLE_CTRL_POOL);
+        return -1;
+    }
+    heap_caps_free(probe);
+
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init 失败：%s（内部堆空闲 %u B）",
