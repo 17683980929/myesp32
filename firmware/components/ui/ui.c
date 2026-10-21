@@ -284,6 +284,10 @@ static uint32_t s_act_next;
 static int      s_act_dy;              /* 动作期间的垂直偏移（像素） */
 static int      s_act_bob;             /* 1 = 这个动作要上下动 */
 
+/* 上下动的波形：0→-1→-2→-3→-2→-1→0→0，70ms 一步（约 14fps），比两档方波顺得多 */
+static const int8_t BOB_STEPS[] = { 0, -1, -2, -3, -2, -1, 0, 0 };
+#define BOB_STEP_MS 70
+
 /* Lua 画布（M5）：帧缓冲互斥 + 停止周期重绘的"保鲜"窗口 + 桌宠表情覆盖 */
 static SemaphoreHandle_t s_fb_lock;
 static uint32_t s_lua_hold_until;
@@ -349,7 +353,9 @@ static void pet_tick(uint32_t now)
             s_frame_idx = 0;
         } else {
             s_frame_idx = s_act_frame;
-            s_act_dy = s_act_bob ? (((now / 150) % 2) ? -3 : 0) : 0;
+            s_act_dy = s_act_bob
+                ? BOB_STEPS[(now / BOB_STEP_MS) % (sizeof(BOB_STEPS) / sizeof(BOB_STEPS[0]))]
+                : 0;
         }
         return;
     }
@@ -549,9 +555,7 @@ static void draw_sub_column(void)
 
 static void render_panel(void)
 {
-    /* 只有真的有字幕时才占用右栏（唤醒"叮咚"提示音期间没有字幕，
-     * 右栏保持正常信息页，避免主页闪一下空白栏）。
-     * 字幕在说话中到达，最后一句还会保留 4 秒。 */
+    /* 说话中（以及最后一句的 4 秒保留期）：右栏整栏显示字幕，不显示板载信息 */
     if (s_sub[0]) {
         draw_sub_column();
         return;
@@ -559,12 +563,19 @@ static void render_panel(void)
 
     dev_info_t *info = ws_client_info();
 
-    /* 本地传感器 */
-    float t = -99, h = -99;
-    if (sensors_read_th(&t, &h) != ESP_OK) {
-        t = -99;
-        h = -99;
+    /* 本地传感器：5 秒缓存。桌宠动画会以 ~14fps 重绘，若每帧都同步读 SHTC3，
+     * 每帧要阻塞 I2C 约 17ms，抖动就会一顿一顿的。 */
+    static float s_th_t = -99, s_th_h = -99;
+    static uint32_t s_th_at;
+    uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if (s_th_at == 0 || now_ms - s_th_at > 5000) {
+        float nt = -99, nh = -99;
+        if (sensors_read_th(&nt, &nh) != ESP_OK) { nt = -99; nh = -99; }
+        s_th_t = nt;
+        s_th_h = nh;
+        s_th_at = now_ms;
     }
+    float t = s_th_t, h = s_th_h;
     int bat = sensors_battery_pct();
 
     /* 时钟：HH:MM:SS（RTC），居中放大 */
