@@ -412,7 +412,7 @@ typedef struct {
     const char *b;
 } fio_req_t;
 
-#define FIO_STACK_WORDS 2048          /* 8KB 内部栈：fatfs 挂载/写文件够用 */
+#define FIO_STACK_WORDS 4096          /* 16KB 内部栈：fatfs 挂载调用链很深（6KB 实测会踩内存） */
 
 static QueueHandle_t     s_fio_q;
 static QueueHandle_t     s_fio_done;      /* 完成通知队列（放一个 int，不用信号量） */
@@ -591,6 +591,9 @@ static void fio_task(void *arg)
         switch (r.op) {
         case FIO_MOUNT:
             rc = mount_fs_impl();
+            /* 挂载是这里最深的一条路径；打出余量，避免再次因为栈不够踩内存 */
+            ESP_LOGI(TAG, "fatfs 挂载栈余量 %u 字（共 %d 字）",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL), FIO_STACK_WORDS);
             break;
         case FIO_SAVE:
             rc = persist_script_impl(r.a);
