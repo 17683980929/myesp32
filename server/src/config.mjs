@@ -38,6 +38,8 @@ export const DEFAULT_CONFIG = {
     morningEnabled: true,
     morningHour: 6,
     morningMinute: 50,
+    /** 纪念日/生日：早间问候里加一句"距离 X 还有 N 天"（date 用 MM-DD） */
+    anniversary: { enabled: false, date: "", label: "纪念日" },
   },
   device: {
     name: "MyEsp32",

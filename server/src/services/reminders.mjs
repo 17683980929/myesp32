@@ -21,11 +21,25 @@ function beijing() {
   const d = new Date(Date.now() + 8 * 3600e3);
   return {
     ymd: `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`,
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
     wd: d.getUTCDay(),                                  /* 0=周日 */
     minute: d.getUTCHours() * 60 + d.getUTCMinutes(),
     hour: d.getUTCHours(),
     min: d.getUTCMinutes(),
   };
+}
+
+/** 距离下一个 MM-DD 还有几天（0 = 就是今天） */
+function daysToAnniversary(mmdd, b) {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(String(mmdd || ""));
+  if (!m) return null;
+  const mm = Number(m[1]), dd = Number(m[2]);
+  const today = Date.UTC(b.year, b.month - 1, b.day);
+  let target = Date.UTC(b.year, mm - 1, dd);
+  if (target < today) target = Date.UTC(b.year + 1, mm - 1, dd);
+  return Math.round((target - today) / 86400e3);
 }
 
 function loadTimetable() {
@@ -76,7 +90,14 @@ export function startReminders(ctx) {
         }
         const w = ctx.weather?.data;
         const wtxt = (w && w.text && Number.isFinite(w.temp)) ? `今天${w.text}，${w.temp} 度。` : "";
-        say(`早上好。${wtxt}${line}路上小心。`);
+        let ann = "";
+        const a = cfg.anniversary;
+        if (a?.enabled) {
+          const days = daysToAnniversary(a.date, b);
+          if (days === 0) ann = `今天是${a.label}。`;
+          else if (days > 0) ann = `距离${a.label}还有 ${days} 天。`;
+        }
+        say(`早上好。${wtxt}${line}${ann}路上小心。`);
       }
     }
 
