@@ -20,9 +20,17 @@
 
 static const char *TAG = "ota";
 
-#define OTA_STACK_WORDS  2048      /* 8KB 内部栈 */
+#define OTA_STACK_WORDS  3072      /* 12KB 内部栈：esp_ota_end 的图像校验调用链较深 */
 #define OTA_BUF_SIZE     4096      /* 内部下载缓冲 */
 #define OTA_MIN_INTERNAL (24 * 1024)
+
+/* 把当前阶段也报给服务器：失败时能看出停在 write / verify / setboot 哪一步 */
+static void report(const char *stage, int pct)
+{
+    char m[96];
+    snprintf(m, sizeof(m), "{\"t\":\"ota\",\"p\":%d,\"m\":\"%s\"}", pct, stage);
+    ws_send_json(m);
+}
 
 static volatile int  s_pct = -1;
 static volatile int  s_running;
@@ -104,15 +112,17 @@ static void ota_task(void *arg)
     }
     free(buf);
 
+    report("verify", 96);
     e = esp_ota_end(oh);
     if (e != ESP_OK) { fail("ota end"); goto out_cli; }
 
+    report("setboot", 98);
     e = esp_ota_set_boot_partition(upd);
     if (e != ESP_OK) { fail("set boot"); goto out_cli; }
 
     ESP_LOGI(TAG, "固件写入完成（%d 字节，分区 %s），重启生效", total, upd->label);
     s_pct = 100;
-    ws_send_json("{\"t\":\"ota\",\"p\":100}");
+    report("done", 100);
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 
