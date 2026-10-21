@@ -364,23 +364,28 @@ void ui_set_sub(const char *text)
     s_sub[sizeof(s_sub) - 1] = 0;
 }
 
+/* 右栏字幕容量：11 字/行 × 14 行 = 154 字/页（184px 宽，16px/字） */
+#define SUB_COLS      11
+#define SUB_ROWS      14
+#define SUB_PAGE_CHARS (SUB_COLS * SUB_ROWS)
+
 int ui_sub_pages(const char *text)
 {
     if (!text) return 0;
     int n = 0;
     const char *p = text;
     while (*p) { utf8_next(&p); n++; }
-    return (n + 23) / 24;                    /* 每页 24 字（16px/字，整行全宽） */
+    return (n + SUB_PAGE_CHARS - 1) / SUB_PAGE_CHARS;
 }
 
 void ui_set_sub_page(const char *text, int page)
 {
     if (!text || page < 0) { ui_set_sub(""); return; }
     const char *p = text;
-    for (int i = 0; i < page * 24 && *p; i++) utf8_next(&p);
+    for (int i = 0; i < page * SUB_PAGE_CHARS && *p; i++) utf8_next(&p);
     const char *q = p;
     int n = 0;
-    while (*q && n < 24) { utf8_next(&q); n++; }
+    while (*q && n < SUB_PAGE_CHARS) { utf8_next(&q); n++; }
     size_t len = (size_t)(q - p);
     if (len >= sizeof(s_sub)) len = sizeof(s_sub) - 1;
     memcpy(s_sub, p, len);
@@ -458,8 +463,39 @@ static void status_row(int y, const char *label, const char *value)
     draw_cjk(PANEL_X + PANEL_SEP_W - cjk_text_w(value, 1) - 4, y, value, 1, 1);
 }
 
+/** 右侧整栏画字幕（说话中）：11 字/行 × 14 行，白底黑字。
+ *  说话时右栏不放任何板载信息，全部让给字幕。 */
+static void draw_sub_column(void)
+{
+    const int cols = SUB_COLS;               /* 184px / 16px 每字 */
+    const int line_h = 20;
+    int x = PANEL_X + 6;
+    int y = 8;
+    const char *p = s_sub;
+    char line[64];
+
+    while (*p && y + 16 <= LCD_H) {
+        const char *q = p;
+        int n = 0;
+        while (*q && n < cols) { utf8_next(&q); n++; }
+        size_t len = (size_t)(q - p);
+        if (len > sizeof(line) - 1) len = sizeof(line) - 1;
+        memcpy(line, p, len);
+        line[len] = 0;
+        draw_cjk(x, y, line, 1, 1);
+        y += line_h;
+        p = q;
+    }
+}
+
 static void render_panel(void)
 {
+    /* 说话中（以及最后一句的 4 秒保留期）：右栏整栏显示字幕，不显示板载信息 */
+    if (s_voice == UI_VOICE_SPEAKING || s_sub[0]) {
+        draw_sub_column();
+        return;
+    }
+
     dev_info_t *info = ws_client_info();
 
     /* 本地传感器 */
@@ -549,24 +585,12 @@ static void render_panel(void)
     snprintf(bb, sizeof(bb), "%d%%", bat);
     draw_text(vx, 180, bb, 2, 1);
 
-    /* 底部：连接状态（WiFi / 服务器 / 蓝牙）+ 字幕 */
+    /* 底部：连接状态（WiFi / 服务器 / 蓝牙）。
+     * 字幕已经整栏挪到右栏（说话中显示），底部不再画字幕。 */
     lcd_hline(PANEL_X, 212, PANEL_SEP_W, 1);
     status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
     status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
     status_row(262, "蓝牙", ble_state_str());
-    if (s_sub[0]) {
-        /* 字幕：整行全宽放在桌宠下方（16px/字），最多 24 字（超出截断），居中显示。
-         * 原来只画右栏 11 字——长句"看起来缺字"就有它一份。 */
-        const char *p = s_sub;
-        int cnt = 0;
-        while (*p && cnt < 24) { utf8_next(&p); cnt++; }
-        size_t blen = (size_t)(p - s_sub);
-        char line[80];
-        if (blen > sizeof(line) - 1) blen = sizeof(line) - 1;
-        memcpy(line, s_sub, blen);
-        line[blen] = 0;
-        draw_cjk((LCD_W - cnt * 16) / 2, 284, line, 1, 1);
-    }
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */
