@@ -77,10 +77,12 @@ static int64_t         s_exec_start_us;    /* 本次执行墙钟起点 */
 static int64_t         s_paused_us;        /* sys.delay 累计暂停时间 */
 static int             s_hook_active;      /* 只在执行脚本主体时计时 */
 
-static char            s_out[OUT_CAP];     /* 回执输出（print/sys.log/返回值） */
+/* 以下三块都放 PSRAM：合计 ~10KB 内部 RAM 让给 BLE 主机/控制器 */
+static char            *s_out;             /* 回执输出（print/sys.log/返回值） */
 static int             s_out_len;
 static int             s_capture;          /* 只有部署执行期间收集输出 */
-static char            s_err[OUT_CAP];     /* 最近一次错误文本 */
+static char            *s_err;             /* 最近一次错误文本 */
+static char            *s_code_buf;        /* 开机脚本 / 回滚脚本缓冲 */
 
 typedef struct {
     int      ref;                          /* registry 引用；0=空槽 */
@@ -471,7 +473,7 @@ static int run_code(const char *code, int persist)
 
     s_L = lua_newstate(lua_alloc, NULL, luaL_makeseed(NULL));
     if (!s_L) {
-        snprintf(s_err, sizeof(s_err), "内存不足，无法创建 Lua 状态");
+        snprintf(s_err, OUT_CAP, "内存不足，无法创建 Lua 状态");
         return 0;
     }
     open_sandbox(s_L);
@@ -499,7 +501,7 @@ static int run_code(const char *code, int persist)
         lua_settop(s_L, 0);
     } else {
         const char *err = lua_tostring(s_L, -1);
-        snprintf(s_err, sizeof(s_err), "%s", err ? err : "未知错误");
+        snprintf(s_err, OUT_CAP, "%s", err ? err : "未知错误");
         lua_settop(s_L, 0);
     }
 
@@ -524,10 +526,9 @@ static void handle_deploy(const deploy_msg_t *m)
     if (!ok) {
         /* 回滚：重新跑持久化的上一版（active.lua 只在执行成功时才被覆盖，
          * 所以它就是上一版好脚本；首次部署失败则不存在，跳过） */
-        static char code[CODE_MAX + 1];
-        if (s_fs_ok && fio_read(ACTIVE_PATH, code, sizeof(code) - 1) > 0) {
+        if (s_fs_ok && fio_read(ACTIVE_PATH, s_code_buf, CODE_MAX) > 0) {
             ESP_LOGI(TAG, "回滚：重新执行上一版脚本");
-            run_code(code, 0);
+            run_code(s_code_buf, 0);
         }
     }
 }
@@ -658,11 +659,10 @@ static void lua_task(void *arg)
 
     /* 开机执行上次保存的脚本 */
     if (s_fs_ok) {
-        static char code[CODE_MAX + 1];
-        int n = fio_read(ACTIVE_PATH, code, sizeof(code) - 1);
+        int n = fio_read(ACTIVE_PATH, s_code_buf, CODE_MAX);
         if (n > 0) {
             ESP_LOGI(TAG, "开机脚本 active.lua（%d 字节）", n);
-            if (!run_code(code, 0)) {
+            if (!run_code(s_code_buf, 0)) {
                 ESP_LOGW(TAG, "开机脚本执行失败：%s → 改名不再重跑", s_err);
                 fio_call(FIO_RENAME, ACTIVE_PATH, BROKEN_PATH);
             }
@@ -758,6 +758,13 @@ static StackType_t *s_lua_stack;
 void lua_runtime_start(void)
 {
     if (s_task) return;
+    s_out = heap_caps_malloc(OUT_CAP, MALLOC_CAP_SPIRAM);
+    s_err = heap_caps_malloc(OUT_CAP, MALLOC_CAP_SPIRAM);
+    s_code_buf = heap_caps_malloc(CODE_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!s_out || !s_err || !s_code_buf) {
+        ESP_LOGE(TAG, "Lua 回执/脚本缓冲分配失败（PSRAM 不足）");
+        return;
+    }
     s_q = xQueueCreate(DEPLOY_Q_LEN, sizeof(deploy_msg_t));
     s_fio_q = xQueueCreate(2, sizeof(fio_req_t));
     s_fio_done = xQueueCreate(1, sizeof(int));
