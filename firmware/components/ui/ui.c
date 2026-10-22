@@ -288,6 +288,11 @@ static int      s_act_bob;             /* 1 = 这个动作要上下动 */
 static const int8_t BOB_STEPS[] = { 0, -1, -2, -3, -2, -1, 0, 0 };
 #define BOB_STEP_MS 70
 
+/* 喝水提醒状态（函数在 draw_pet 之后实现，变量必须先声明） */
+static int      s_water_on;
+static int      s_water_dy;
+static uint32_t s_water_until;
+
 /* Lua 画布（M5）：帧缓冲互斥 + 停止周期重绘的"保鲜"窗口 + 桌宠表情覆盖 */
 static SemaphoreHandle_t s_fb_lock;
 static uint32_t s_lua_hold_until;
@@ -375,10 +380,7 @@ static void pet_tick(uint32_t now)
     if ((int32_t)(now - s_act_next) >= 0) start_idle_action(now);
 }
 
-/* ── 喝水提醒气泡（服务器到点下发 evt，桌宠顶上冒"该喝水啦!"，跳 12 秒）── */
-static int      s_water_on;
-static int      s_water_dy;
-static uint32_t s_water_until;
+/* ── 喝水提醒气泡（服务器到点下发 evt，桌宠顶上冒"该喝水啦!"）── */
 
 /** 在桌宠头顶显示喝水气泡；secs<=0 表示不自动消失，等按 KEY 确认 */
 void ui_water_reminder(int secs)
