@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig } from "../config.mjs";
+import { build } from "../protocol.mjs";
 
 const TT_PATH = path.resolve(ROOT, "data/timetable.json");
 const log = (...a) => console.log("[remind]", ...a);
@@ -131,7 +132,13 @@ export function startReminders(ctx) {
         const at = (next - end <= 30) ? Math.floor((end + next) / 2) : end + 5;
         if (b.minute === at) {
           const key = `${b.ymd}:water${r}`;
-          if (!fired.has(key)) { fired.add(key); say("下课啦，喝口水，歇一会儿。"); }
+          if (!fired.has(key)) {
+            fired.add(key);
+            /* 先让桌宠冒气泡（固件 0.1.29+ 才认识这个事件），再播报 */
+            for (const d of [...ctx.devices].filter((x) => !x.busy && !x.recording))
+              d.send(build.evt("water_reminder"));
+            say("下课啦，喝口水，歇一会儿。");
+          }
         }
       }
     }

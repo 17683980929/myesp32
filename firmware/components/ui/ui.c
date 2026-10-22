@@ -373,6 +373,32 @@ static void pet_tick(uint32_t now)
     if ((int32_t)(now - s_act_next) >= 0) start_idle_action(now);
 }
 
+/* ── 喝水提醒气泡（服务器到点下发 evt，桌宠顶上冒"该喝水啦!"，跳 12 秒）── */
+static int      s_water_on;
+static int      s_water_dy;
+static uint32_t s_water_until;
+
+/** 在桌宠头顶显示喝水气泡，secs 秒后自动消失 */
+void ui_water_reminder(int secs)
+{
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_water_on = 1;
+    s_water_dy = 0;
+    s_water_until = now + (uint32_t)(secs > 0 ? secs : 10) * 1000;
+}
+
+static void draw_water_bubble(void)
+{
+    int w = 176, h = 46;
+    int x = (PET_W - w) / 2;
+    int y = 22 + s_water_dy;
+    lcd_fill(x, y, w, h, 0);                 /* 白底，盖住桌宠 */
+    lcd_rect(x, y, w, h, 1);
+    lcd_rect(x + 2, y + 2, w - 4, h - 4, 1);
+    const char *s = "该喝水啦!";
+    draw_cjk(x + (w - cjk_text_w(s, 1)) / 2, y + 15, s, 1, 1);
+}
+
 /* ── 页面 ──────────────────────────────────────────────────────────── */
 
 static ui_page_t s_page = UI_PAGE_HOME;
@@ -486,8 +512,21 @@ int ui_tick(uint32_t now)
         vol_changed = 1;
     }
 
+    /* 喝水气泡：到期消失；显示期间每 180ms 上下跳一次 */
+    int water_changed = 0;
+    if (s_water_on) {
+        if ((int32_t)(now - s_water_until) >= 0) {
+            s_water_on = 0;
+            s_water_dy = 0;
+            water_changed = 1;
+        } else {
+            int dy = ((now / 180) % 2) ? -4 : 0;
+            if (dy != s_water_dy) { s_water_dy = dy; water_changed = 1; }
+        }
+    }
+
     int changed = (s_pet != prev_state) || (s_frame_idx != prev_idx) ||
-                  (s_act_dy != prev_dy) ||
+                  (s_act_dy != prev_dy) || water_changed ||
                   (s_lua_frame != s_lua_frame_prev) || vol_changed;
     s_lua_frame_prev = s_lua_frame;
     return changed;
@@ -731,6 +770,7 @@ static void render_frame(void)
     /* ── 主页 ── */
     lcd_clear(0);
     draw_pet();
+    if (s_water_on) draw_water_bubble();
 
     /* 语音状态字（桌宠区顶部居中）：录音中 / 思考中 / 说话中 */
     static const char *VOICE_TXT[] = { "", "认真倾听中", "思考中", "说话中" };

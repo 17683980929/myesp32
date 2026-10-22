@@ -432,6 +432,13 @@ static void on_ws_event(const ws_event_t *ev)
         if (!strcmp(ev->name, "bt_on"))  { ble_set_enabled(1); s_stat_at = 0; s_dirty = 1; break; }
         if (!strcmp(ev->name, "bt_off")) { ble_set_enabled(0); s_stat_at = 0; s_dirty = 1; break; }
 
+        /* 喝水提醒：桌宠头顶冒气泡跳 12 秒（服务器到点下发） */
+        if (!strcmp(ev->name, "water_reminder")) {
+            ui_water_reminder(12);
+            s_dirty = 1;
+            break;
+        }
+
         if (s_voice_state == VOICE_IDLE) {
             lua_runtime_event(ev->name);
         } else {
