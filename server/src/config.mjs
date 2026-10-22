@@ -38,7 +38,7 @@ export const DEFAULT_CONFIG = {
   reminders: {
     enabled: true,
     classLeadMin: 10,        /* 课前几分钟提醒 */
-    classEndAfterMin: 45,    /* 上课后多少分钟算下课 */
+    classEndAfterMin: 40,    /* 上课后多少分钟算下课（补课表每节 40 分钟） */
     waterEnabled: true,      /* 喝水：她上完课后的课间中点提醒 */
     waterStartHour: 8,
     waterEndHour: 17,
@@ -48,6 +48,8 @@ export const DEFAULT_CONFIG = {
     /** 纪念日/生日：早间问候里加一句"距离 X 还有 N 天"（date 用 MM-DD） */
     anniversary: { enabled: false, date: "", label: "纪念日" },
   },
+  /** 板子显示哪一轮补课（1/2/3）。语音切换会改这里，重连时服务器再推给设备 */
+  timetable: { round: 1 },
   device: {
     name: "MyEsp32",
     /** 允许连接的设备 MAC 白名单，空数组 = 不限制 */

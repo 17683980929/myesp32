@@ -27,26 +27,27 @@ sys.on("open_timetable",function() show(2) end)
 sys.on("open_env",function() show(3) end)
 sys.on("canvas_close",function() up=false display.close() end)
 
-local T={
-{"24",nil,nil,"1","1",nil,nil},
-{"18",nil,nil,"1","1",nil,nil},
-{nil,"20",nil,"24","24",nil,nil},
-{"24",nil,nil,"24","24",nil,nil},
-{"20","20",nil,nil,nil,nil,nil},
-{nil,"18",nil,"18","18",nil,nil},
-{nil,nil,nil,"18","18",nil,nil},
-{nil,nil,nil,"1","1",nil,nil},
-{nil,nil,nil,nil,nil,nil,nil},
-{"20",nil,nil,"1","1",nil,nil},
-{"24",nil,nil,"24","24",nil,nil},
-{"24","20",nil,"24","24",nil,nil},
-{nil,nil,nil,"1","1",nil,nil},
+-- 三轮补课表：A=1班 B=18班 C=20班 D=24班，"-"=空；每行 周一..周日
+local RS={
+{"-B--A-A","-B--A-A","--C-D-D","--B-D-D","DBC----","-C---B-","-----B-","-----A-","-----A-","-B--C--","-C--C--","-D--D--","-A--D--"},
+{"-B--A--","-B--A--","--C-D--","--B-D--","DBC----","-C---C-","-----C-","------C","------C","-B---B-","-C---B-","-D---A-","-A---A-"},
+{"-B--A-D","-B--A-D","--C-D-B","--B-D-B","DBC----","-C-----","-------","-------","-------","-B-----","-C-----","-D-----","-A-----"},
 }
+local CN={A="1",B="18",C="20",D="24"}
+local R=1
+local function cell(r,c)
+  local k=RS[R][r]:sub(c,c)
+  if k=="-" then return nil end
+  return CN[k]
+end
 local DAYS={"周一","周二","周三","周四","周五","周六","周日"}
 local GUT={"1节","2节","3节","4节","5节","6节","7节","8节","9节","晚1","晚2","晚3","晚4"}
 local PT={"07:35","08:25","09:15","10:25","11:10","14:20","15:10","16:00","16:50","18:30","19:20","20:15","21:00"}
 local PM={}
 for i=1,#PT do local h,m=string.match(PT[i], "(%d+):(%d+)") PM[i]=h*60+m end
+local PE={"08:15","09:05","09:55","11:05","11:45","15:00","15:50","16:40","17:40","19:10","20:00","20:55","21:40"}
+local PEM={}
+for i=1,#PE do local h,m=string.match(PE[i], "(%d+):(%d+)") PEM[i]=h*60+m end
 
 local function center(y,s,size)
   local n=utf8.len(s) or 1
@@ -74,7 +75,7 @@ local function draw_status()
   local col=(wd==0) and 7 or wd
   local cr,nx,n=nil,nil,0
   for r=1,#PM do
-    if T[r][col] then
+    if cell(r,col) then
       n=n+1
       if now>=PM[r] and now<PM[r]+45 then cr=r end
       if now<PM[r] and not nx then nx=r end
@@ -84,16 +85,16 @@ local function draw_status()
   display.rect(0,52,400,2,true)
   if cr then
     center(66,"正在上课",32)
-    center(106,T[cr][col].." 班",32)
-    center(146,"还剩 "..(PM[cr]+45-now).." 分钟",32)
+    center(106,cell(cr,col).." 班",32)
+    center(146,"还剩 "..(PEM[cr]-now).." 分钟",32)
     display.rect(50,190,300,8)
-    local w=math.floor(294*(now-PM[cr])/45)
+    local w=math.floor(294*(now-PM[cr])/(PEM[cr]-PM[cr]))
     if w>0 then display.rect(53,193,w,2,true) end
-    if nx then center(212,"下节 "..PT[nx].." "..T[nx][col].."班",32)
+    if nx then center(212,"下节 "..PT[nx].." "..cell(nx,col).."班",32)
     else center(212,"今天的最后一节",32) end
   elseif nx then
     center(66,"现在没课",32)
-    center(106,"下节"..T[nx][col].."班 "..PT[nx],32)
+    center(106,"下节"..cell(nx,col).."班 "..PT[nx],32)
     center(146,"还有 "..(PM[nx]-now).." 分钟",32)
   else
     center(96,"今天的课上完了",32)
@@ -118,7 +119,7 @@ local function cls(x,y,w,v)
 end
 add("政治课表",function()
   display.clear()
-  display.text(72,2,"26秋 · 第7周 · 政治课表",16)
+  center(2,"第"..R.."轮补课 · 课表",16)
   local gx,gy,lw,cw=2,20,36,51
   local rh=(300-gy)//(#GUT+1)
   display.rect(gx,gy,lw,rh,false)
@@ -135,12 +136,12 @@ add("政治课表",function()
   for c=1,7 do
     local x=gx+lw+(c-1)*cw
     local r=1
-    while r<=#T do
-      local v=T[r][c]
+    while r<=13 do
+      local v=cell(r,c)
       local y0=gy+r*rh
       if v then
         local r2=r
-        while r2<#T and (r2~=5 and r2~=9) and T[r2+1][c]==v do r2=r2+1 end
+        while r2<13 and (r2~=5 and r2~=9) and cell(r2+1,c)==v do r2=r2+1 end
         local h=(r2-r+1)*rh
         display.rect(x,y0,cw,h,false)
         cls(x,y0+(h-16)//2,cw,v)
@@ -169,4 +170,8 @@ add("环境与电池",function()
   display.text(104,278,"单击切换 · 走完回主页",16)
 end)
 
+local function setR(n) R=n if up then show(cur+1) end end
+pcall(sys.on,"round_1",function() setR(1) end)
+pcall(sys.on,"round_2",function() setR(2) end)
+pcall(sys.on,"round_3",function() setR(3) end)
 print("框架就绪："..#F.." 个功能")

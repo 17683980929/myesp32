@@ -258,6 +258,9 @@ export class DeviceSession {
 
     await this.pushInfo(true);
     this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data)));
+    /* 补课轮次：设备重启后 Lua 里的 R 会回到 1，这里按服务器记的再推一次 */
+    const round = Number(this.ctx.config.timetable?.round) || 1;
+    this.send(build.evt("round_" + round));
   }
 
   onBtn(m) {

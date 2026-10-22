@@ -1,35 +1,234 @@
 {
-  "note": "26秋 第7周 政治课表；grid 里的字符串是班号，null 表示没课",
+  "note": "26秋 政治课表：rounds 为三轮补课表（A=1班 B=18班 C=20班 D=24班，\"-\"=空），grid 为旧常规表",
   "updated": "2026-10-21",
-  "days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+  "days": [
+    "周一",
+    "周二",
+    "周三",
+    "周四",
+    "周五",
+    "周六",
+    "周日"
+  ],
   "periods": [
-    { "label": "1节", "time": "07:35" },
-    { "label": "2节", "time": "08:25" },
-    { "label": "3节", "time": "09:15" },
-    { "label": "4节", "time": "10:25" },
-    { "label": "5节", "time": "11:10" },
-    { "label": "6节", "time": "14:20" },
-    { "label": "7节", "time": "15:10" },
-    { "label": "8节", "time": "16:00" },
-    { "label": "9节", "time": "16:50" },
-    { "label": "晚1", "time": "18:30" },
-    { "label": "晚2", "time": "19:20" },
-    { "label": "晚3", "time": "20:15" },
-    { "label": "晚4", "time": "21:00" }
+    {
+      "label": "1节",
+      "time": "07:35"
+    },
+    {
+      "label": "2节",
+      "time": "08:25"
+    },
+    {
+      "label": "3节",
+      "time": "09:15"
+    },
+    {
+      "label": "4节",
+      "time": "10:25"
+    },
+    {
+      "label": "5节",
+      "time": "11:10"
+    },
+    {
+      "label": "6节",
+      "time": "14:20"
+    },
+    {
+      "label": "7节",
+      "time": "15:10"
+    },
+    {
+      "label": "8节",
+      "time": "16:00"
+    },
+    {
+      "label": "9节",
+      "time": "16:50"
+    },
+    {
+      "label": "晚1",
+      "time": "18:30"
+    },
+    {
+      "label": "晚2",
+      "time": "19:20"
+    },
+    {
+      "label": "晚3",
+      "time": "20:15"
+    },
+    {
+      "label": "晚4",
+      "time": "21:00"
+    }
   ],
   "grid": [
-    ["24", null, null, "1", "1", null, null],
-    ["18", null, null, "1", "1", null, null],
-    [null, "20", null, "24", "24", null, null],
-    ["24", null, null, "24", "24", null, null],
-    ["20", "20", null, null, null, null, null],
-    [null, "18", null, "18", "18", null, null],
-    [null, null, null, "18", "18", null, null],
-    [null, null, null, "1", "1", null, null],
-    [null, null, null, null, null, null, null],
-    ["20", null, null, "1", "1", null, null],
-    ["24", null, null, "24", "24", null, null],
-    ["24", "20", null, "24", "24", null, null],
-    [null, null, null, "1", "1", null, null]
+    [
+      "24",
+      null,
+      null,
+      "1",
+      "1",
+      null,
+      null
+    ],
+    [
+      "18",
+      null,
+      null,
+      "1",
+      "1",
+      null,
+      null
+    ],
+    [
+      null,
+      "20",
+      null,
+      "24",
+      "24",
+      null,
+      null
+    ],
+    [
+      "24",
+      null,
+      null,
+      "24",
+      "24",
+      null,
+      null
+    ],
+    [
+      "20",
+      "20",
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      "18",
+      null,
+      "18",
+      "18",
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      "18",
+      "18",
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      "1",
+      "1",
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    [
+      "20",
+      null,
+      null,
+      "1",
+      "1",
+      null,
+      null
+    ],
+    [
+      "24",
+      null,
+      null,
+      "24",
+      "24",
+      null,
+      null
+    ],
+    [
+      "24",
+      "20",
+      null,
+      "24",
+      "24",
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      null,
+      "1",
+      "1",
+      null,
+      null
+    ]
+  ],
+  "periodMin": 40,
+  "rounds": [
+    [
+      "-B--A-A",
+      "-B--A-A",
+      "--C-D-D",
+      "--B-D-D",
+      "DBC----",
+      "-C---B-",
+      "-----B-",
+      "-----A-",
+      "-----A-",
+      "-B--C--",
+      "-C--C--",
+      "-D--D--",
+      "-A--D--"
+    ],
+    [
+      "-B--A--",
+      "-B--A--",
+      "--C-D--",
+      "--B-D--",
+      "DBC----",
+      "-C---C-",
+      "-----C-",
+      "------C",
+      "------C",
+      "-B---B-",
+      "-C---B-",
+      "-D---A-",
+      "-A---A-"
+    ],
+    [
+      "-B--A-D",
+      "-B--A-D",
+      "--C-D-B",
+      "--B-D-B",
+      "DBC----",
+      "-C-----",
+      "-------",
+      "-------",
+      "-------",
+      "-B-----",
+      "-C-----",
+      "-D-----",
+      "-A-----"
+    ]
   ]
 }

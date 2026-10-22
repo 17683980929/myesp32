@@ -44,7 +44,16 @@ function daysToAnniversary(mmdd, b) {
 }
 
 function loadTimetable() {
-  try { return JSON.parse(readFileSync(TT_PATH, "utf8")); } catch { return null; }
+  try {
+    const tt = JSON.parse(readFileSync(TT_PATH, "utf8"));
+    const round = Number(getConfig().timetable?.round) || 0;
+    const key = tt.rounds?.[round - 1];
+    if (key) {
+      const M = { A: "1", B: "18", C: "20", D: "24" };
+      tt.grid = key.map((s) => [...s].map((ch) => (ch === "-" ? null : M[ch] || null)));
+    }
+    return tt;
+  } catch { return null; }
 }
 
 function toMin(hhmm) {
@@ -108,7 +117,7 @@ export function startReminders(ctx) {
 
     /* 课前提醒 */
     const lead = cfg.classLeadMin ?? 10;
-    const dur = cfg.classEndAfterMin ?? 45;
+    const dur = cfg.classEndAfterMin ?? 40;
     (tt.periods || []).forEach((p, r) => {
       const cls = tt.grid[r]?.[col];
       if (!cls) return;

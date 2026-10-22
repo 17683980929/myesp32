@@ -7,6 +7,7 @@
  */
 
 import { build, buildTimeInfo } from "../protocol.mjs";
+import { getConfig, saveConfig } from "../config.mjs";
 import { getHotNews } from "./news.mjs";
 import { webSearch } from "./search.mjs";
 import { readFileSync } from "node:fs";
@@ -17,7 +18,16 @@ import { fileURLToPath } from "node:url";
  * 板子上的 Lua 画布是另一份展示用数据） */
 const TT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../data/timetable.json");
 function loadTimetable() {
-  try { return JSON.parse(readFileSync(TT_PATH, "utf8")); } catch { return null; }
+  try {
+    const tt = JSON.parse(readFileSync(TT_PATH, "utf8"));
+    const round = Number(getConfig().timetable?.round) || 0;
+    const key = tt.rounds?.[round - 1];
+    if (key) {
+      const M = { A: "1", B: "18", C: "20", D: "24" };
+      tt.grid = key.map((s) => [...s].map((ch) => (ch === "-" ? null : M[ch] || null)));
+    }
+    return tt;
+  } catch { return null; }
 }
 
 const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
@@ -199,6 +209,15 @@ export function matchLocalCommand(text) {
   if (/调小音量|音量.{0,2}小|声音.{0,3}小|小点声|小声一点/.test(t))
     return { name: "set_volume", args: { action: "down" } };
 
+  /* 补课轮次：`切换到第二轮` / `用第三轮补课` / `第一轮` */
+  {
+    const mr = t.match(/([一二三123])轮/);
+    if (mr && /(补课|切换|切到|换到|换成|改成|用|第|换)/.test(t)) {
+      const n = cnNum(mr[1]);
+      if (n >= 1 && n <= 3) return { name: "set_round", args: { round: n } };
+    }
+  }
+
   /* 屏幕：必须带"打开/看看/切到"这类动词，避免劫走"课表上有什么课" */
   const OPEN = "(打开|开启|看看|看下|看一下|显示|调出|调出?来|进入|切到|切到?|翻到|我要看|给我看)";
   if (/画布/.test(t) && /(关闭|收起|关掉|关了)/.test(t))
@@ -347,6 +366,14 @@ export async function executeTool(name, args = {}, ctx, session) {
       }
       if (!cells.length) return `${DAYS[idx]}（${dateLabel}）没有课。`;
       return `${DAYS[idx]}（${dateLabel}）共 ${cells.length} 节课：${cells.join("；")}。`;
+    }
+
+    case "set_round": {
+      const n = Math.round(Number(args.round));
+      if (!(n >= 1 && n <= 3)) return "补课轮次只有 1、2、3 三轮。";
+      saveConfig({ timetable: { round: n } });
+      session.send(build.evt("round_" + n));
+      return `已切换到第 ${n} 轮补课课表，屏幕上的课表会跟着变（轮次我也会记住）。`;
     }
 
     case "control_screen": {
