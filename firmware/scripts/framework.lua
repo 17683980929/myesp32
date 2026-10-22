@@ -65,39 +65,51 @@ local function left_txt(m)
   return m.." 分钟"
 end
 
+local function tw(s,z) return (utf8.len(s) or 1)*((z>=24) and 32 or 16) end
+local function rt(y,s,z) local x=392-tw(s,z) if x<0 then x=0 end display.text(x,y,s,z) end
+local function bar(y,p) display.rect(20,y,360,14) local w=math.floor(354*p) if w>0 then display.rect(23,y+3,w,8,true) end end
+
 local function draw_status()
   display.clear()
-  center(8,"上课状态",16)
   local sec,wd=-1,-1
   if sys.clock then sec,wd=sys.clock() end
-  if not sec or sec<0 then center(120,"读不到时钟",16) return end
+  if not sec or sec<0 then center(130,"读不到时钟",16) return end
   local now=sec//60
   local col=(wd==0) and 7 or wd
-  local cr,nx,n= nil,nil,0
+  local cr,nx,n,done=nil,nil,0,0
   for r=1,#PM do
     if T[r][col] then
       n=n+1
       if now>=PM[r] and now<PM[r]+45 then cr=r end
+      if now>=PM[r]+45 then done=done+1 end
       if now<PM[r] and not nx then nx=r end
     end
   end
+  display.text(10,8,DAYS[col].." "..string.format("%02d:%02d",now//60,now%60),16)
+  if cr then rt(8,GUT[cr],16) elseif nx then rt(8,"下一节",16) end
+  display.rect(0,30,400,2,true)
   if cr then
-    center(46,"正在上课",16)
-    center(72,GUT[cr].." · "..PT[cr],16)
-    center(104,T[cr][col].." 班",24)
-    center(160,"还剩 "..(PM[cr]+45-now).." 分钟",16)
-    if nx then center(210,"下一节 "..PT[nx].." · "..T[nx][col].." 班",16)
-    else center(210,"这是今天的最后一节",16) end
+    center(40,"正在上课",16)
+    center(64,T[cr][col].." 班",32)
+    center(108,"还剩 "..(PM[cr]+45-now).." 分钟",32)
+    bar(144,(now-PM[cr])/45)
+    display.text(20,160,PT[cr],16)
+    local em=PM[cr]+45
+    rt(160,string.format("%02d:%02d",em//60,em%60),16)
+    display.rect(0,184,400,2,true)
+    if nx then center(194,"下一节 "..PT[nx].." · "..T[nx][col].." 班",16)
+    else center(194,"今天的最后一节",16) end
   elseif nx then
-    center(46,"现在没课",16)
-    center(80,"下一节 "..PT[nx],16)
-    center(112,T[nx][col].." 班",24)
-    center(168,"还有 "..left_txt(PM[nx]-now),16)
+    center(52,"现在没课",32)
+    center(100,"下一节 "..PT[nx].." · "..T[nx][col].." 班",16)
+    center(128,"还有 "..left_txt(PM[nx]-now),32)
+    display.rect(0,184,400,2,true)
   else
-    center(70,"今天的课都上完了",16)
-    center(110,"辛苦啦，好好休息",16)
+    center(90,"今天的课上完了",32)
+    center(140,"辛苦啦，好好休息",16)
+    display.rect(0,184,400,2,true)
   end
-  center(250,DAYS[col].." · 今天 "..n.." 节课",16)
+  center(220,"今天 "..n.." 节 · 已上 "..done.." 节",16)
 end
 add("上课状态",draw_status)
 

@@ -75,6 +75,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Push OTA image to server
+        if: github.ref == 'refs/heads/main' && secrets.FW_UPLOAD_TOKEN != ''
+        shell: bash
+        run: |
+          echo "上传 $(ls -lh firmware/build/myesp32.bin | awk '{print $5}') 到 0929.site …"
+          code=$(curl -sS -o /tmp/fw.json -w '%{http_code}' --max-time 120             -X POST "https://0929.site/pet/api/firmware"             -H "X-FW-Token: ${{ secrets.FW_UPLOAD_TOKEN }}"             -H "Content-Type: application/octet-stream"             --data-binary @firmware/build/myesp32.bin) || code=000
+          cat /tmp/fw.json || true
+          if [ "$code" = "200" ]; then
+            echo "::notice::固件已上传，可到 https://0929.site/pet/admin 点下发"
+          else
+            echo "::warning::固件上传失败（HTTP $code）——检查 FW_UPLOAD_TOKEN、服务器是否在线"
+          fi
+
       - name: Upload individual bins (fallback)
         uses: actions/upload-artifact@v4
         with:

@@ -40,6 +40,19 @@ startReminders(ctx);
 const skillList = reloadSkills();
 if (skillList.length) console.log(`[skills] 已加载 ${skillList.length} 个声明式技能`);
 
+/* 设备专用端口：只跑 WS，不暴露管理页/API（公网部署时 8080 可以只绑 127.0.0.1） */
+const { devicePort, deviceHost } = config.server;
+if (devicePort && devicePort !== config.server.port) {
+  const devServer = http.createServer((req, res) => {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("device port");
+  });
+  ctx.deviceGateway = new WsGateway(devServer, ctx);
+  devServer.listen(devicePort, deviceHost, () => {
+    console.log(`   设备直连   ws://<公网IP>:${devicePort}/device（不经 nginx）`);
+  });
+}
+
 server.listen(config.server.port, config.server.host, async () => {
   const { port, host, authToken, adminPassword } = config.server;
 
@@ -47,8 +60,8 @@ server.listen(config.server.port, config.server.host, async () => {
   console.log("  ┌────────────────────────────────────────────────┐");
   console.log("  │  MyEsp32 桌面宠物 · 服务器                     │");
   console.log("  └────────────────────────────────────────────────┘");
-  console.log(`   配置网页   http://<服务器IP>:${port}/admin`);
-  console.log(`   设备连接   ws://<服务器IP>:${port}/device`);
+  console.log(`   配置网页   http://${host}:${port}/admin${host === "127.0.0.1" ? "（只本机，请走 nginx）" : ""}`);
+  console.log(`   设备连接   ws://<公网IP>:${config.server.devicePort || port}/device`);
   console.log(`   配置文件   ${CONFIG_PATH}`);
   console.log("");
   console.log(`   设备鉴权   ${authToken ? "已开启（token）" : "⚠ 未开启，任何人都能连"}`);

@@ -97,6 +97,8 @@
       <h2>服务器 <span class="tag">安全</span></h2>
       <label>监听端口</label>
       <input id="s_port" type="number" min="1" max="65535">
+      <label>公网地址<span class="hint"> OTA 下发用；必须是 http://0929.site 这种形式，不能 https</span></label>
+      <input id="s_publicUrl" placeholder="http://0929.site（留空则用内网地址，云上会连不上）">
       <label>设备鉴权 Token<span class="hint"> 留空则不鉴权（公网必须设置）</span></label>
       <input id="s_token" placeholder="留空 = 不鉴权">
       <label>配置网页密码<span class="hint"> 留空则不设密码（公网必须设置）</span></label>
@@ -266,7 +268,7 @@ function setMsg(el, text, kind) {
 async function loadVoices() {
   const sel = $("t_voice");
   try {
-    const r = await fetch("/api/voices");
+    const r = await fetch("api/voices");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     sel.innerHTML = "";
@@ -289,10 +291,11 @@ async function loadVoices() {
 
 async function loadConfig() {
   await loadVoices();
-  const r = await fetch("/api/config");
+  const r = await fetch("api/config");
   cfg = await r.json();
 
   $("s_port").value = cfg.server.port;
+  $("s_publicUrl").value = cfg.server.publicUrl || "";
   $("s_token").value = cfg.server.authToken;
   $("s_adminPwd").value = cfg.server.adminPassword;
 
@@ -349,6 +352,7 @@ async function saveAll() {
   const body = {
     server: {
       port: +$("s_port").value,
+      publicUrl: $("s_publicUrl").value.trim(),
       authToken: $("s_token").value,
       adminPassword: $("s_adminPwd").value,
     },
@@ -385,7 +389,7 @@ async function saveAll() {
     },
   };
 
-  const r = await fetch("/api/config", {
+  const r = await fetch("api/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -397,7 +401,7 @@ async function saveAll() {
 
 async function refreshStatus() {
   try {
-    const r = await fetch("/api/status");
+    const r = await fetch("api/status");
     const s = await r.json();
 
     const up = s.uptimeSec;
@@ -435,7 +439,7 @@ async function refreshStatus() {
 async function refreshWeather() {
   setMsg($("weatherMsg"), "刷新中…");
   try {
-    const r = await fetch("/api/weather/refresh", { method: "POST" });
+    const r = await fetch("api/weather/refresh", { method: "POST" });
     const j = await r.json();
     setMsg($("weatherMsg"), j.ok ? `已更新：${j.weather.text} ${j.weather.temp}℃` : `失败：${j.error}`,
            j.ok ? "ok" : "err");
@@ -450,7 +454,7 @@ async function deployLua() {
   if (!code.trim()) { setMsg($("luaMsg"), "脚本为空", "err"); return; }
   setMsg($("luaMsg"), "下发中…", "");
   try {
-    const r = await fetch("/api/lua", {
+    const r = await fetch("api/lua", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
@@ -476,7 +480,7 @@ async function deployLua() {
 
 async function refreshOta() {
   try {
-    const r = await fetch("/api/ota");
+    const r = await fetch("api/ota");
     const j = await r.json();
     const f = j.file;
     if (!f) {
@@ -484,14 +488,18 @@ async function refreshOta() {
       return;
     }
     const mb = (f.size / 1048576).toFixed(2);
-    const t = new Date(f.mtime).toLocaleString();
-    const dev = (j.devices || []).map((d) => {
-      if (!d.ota) return d.fw;
-      const p = d.ota.p;
-      return `${d.fw}：${p >= 0 ? p + "%" : d.ota.msg || "失败"}`;
-    }).join(" / ");
-    $("otaInfo").textContent =
-      `服务器固件：${f.version || "?"}，${mb} MB，${t}${dev ? "；在线设备 " + dev : ""}`;
+    const built = f.built || new Date(f.mtime).toLocaleString();
+    const devs = j.devices || [];
+    const dev = devs.map((d) => {
+      if (d.ota) {
+        const p = d.ota.p;
+        return `${d.fw} → ${p >= 0 ? p + "%" : d.ota.msg || "失败"}`;
+      }
+      return d.updatable ? `${d.fw}（可更新）` : `${d.fw}（已最新）`;
+    }).join(" ／ ");
+    $("otaInfo").innerHTML =
+      `可下发 <b>${f.version || "?"}</b>（${mb} MB，${built} 构建）` +
+      (dev ? `<br>设备：${dev}` : "<br>设备：离线");
   } catch (e) {
     $("otaInfo").textContent = "读取 OTA 状态失败";
   }
@@ -501,7 +509,7 @@ async function pushOta() {
   if (!confirm("把服务器上的固件推送到设备？更新期间不要断电。")) return;
   setMsg($("otaMsg"), "推送中…", "");
   try {
-    const r = await fetch("/api/ota", { method: "POST" });
+    const r = await fetch("api/ota", { method: "POST" });
     const j = await r.json();
     if (!j.ok) { setMsg($("otaMsg"), j.msg || "推送失败", "err"); return; }
     setMsg($("otaMsg"), `已通知 ${j.sent} 台设备，开始下载…`, "");
@@ -513,7 +521,7 @@ async function pushOta() {
 
 async function refreshSkills() {
   try {
-    const r = await fetch("/api/skills");
+    const r = await fetch("api/skills");
     const j = await r.json();
     const list = j.skills || [];
     if (!list.length) {
@@ -530,7 +538,7 @@ async function refreshSkills() {
 async function reloadSkills() {
   setMsg($("skillMsg"), "重载中…", "");
   try {
-    const r = await fetch("/api/skills/reload", { method: "POST" });
+    const r = await fetch("api/skills/reload", { method: "POST" });
     const j = await r.json();
     setMsg($("skillMsg"), `已加载 ${j.count} 个${j.error ? "；" + j.error : ""}`, j.error ? "warn" : "ok");
     refreshSkills();

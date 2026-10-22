@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #ifndef MYESP32_FW
-#define MYESP32_FW "0.1.31"
+#define MYESP32_FW "0.1.32"
 #endif
 
 /** 信息栏数据（服务器下发的 + 板子本地读的） */

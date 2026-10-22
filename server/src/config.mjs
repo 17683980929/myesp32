@@ -16,7 +16,15 @@ export const CONFIG_PATH = path.join(ROOT, "config.json");
 export const DEFAULT_CONFIG = {
   server: {
     port: 8080,
+    /** 管理页/API 的绑定地址。公网部署建议 127.0.0.1，只让 nginx 转发 */
     host: "0.0.0.0",
+    /** 设备 WS 专用端口：只挂 /device，给板子直连（不经过 nginx）。
+     *  设成和 port 相同 = 不拆分（旧的单端口行为）。 */
+    devicePort: 8081,
+    /** 设备端口的绑定地址，公网部署要保持 0.0.0.0 */
+    deviceHost: "0.0.0.0",
+    /** CI 上传固件用的 token（GitHub Actions 的 secret）。空 = 关闭上传接口 */
+    uploadToken: "",
     /** 设备连接鉴权 token。空字符串 = 不鉴权（公网部署必须设置） */
     authToken: "",
     /** 配置网页密码。空字符串 = 不鉴权（公网部署必须设置） */
