@@ -169,7 +169,4 @@ add("环境与电池",function()
   display.text(104,278,"单击切换 · 走完回主页",16)
 end)
 
-timer.every(10000,function()
-  if up and cur==1 then show(1) end
-end)
 print("框架就绪："..#F.." 个功能")
