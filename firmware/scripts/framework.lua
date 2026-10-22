@@ -101,7 +101,9 @@ local function draw_status()
   display.clear()
   center(8, "上课状态", 16)
 
-  local sec, wd = sys.clock()
+  -- 老固件没有 sys.clock（0.1.27 及以前）：降级显示"读不到时钟"，别整页报错
+  local sec, wd = -1, -1
+  if sys.clock then sec, wd = sys.clock() end
   if not sec or sec < 0 then
     center(120, "读不到时钟", 16)
     return
