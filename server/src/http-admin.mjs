@@ -20,6 +20,7 @@ import path from "node:path";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
+import { build } from "./protocol.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -227,6 +228,15 @@ export async function handleHttp(req, res, ctx) {
         const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
         log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
         return json(res, 200, { ok: true, sent: list.length, id, results });
+      }
+
+      if (p === "/api/evt" && req.method === "POST") {
+        const { n } = JSON.parse(await readBody(req));
+        if (!n) return json(res, 400, { ok: false, msg: "缺少 n" });
+        const list = [...ctx.devices];
+        for (const d of list) d.send(build.evt(String(n)));
+        log(`下发事件 ${n} → ${list.length} 台`);
+        return json(res, 200, { ok: true, sent: list.length, n });
       }
 
       if (p === "/api/skills" && req.method === "GET") {
