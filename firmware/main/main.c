@@ -724,6 +724,10 @@ static void main_loop(void)
                     ui_set_sub("更新完成，正在重启…");
                     s_sub_clear_at = 0;
                     s_dirty = 1;
+                } else if (p == -1) {
+                    ui_set_sub("固件更新准备中…");
+                    s_sub_clear_at = 0;
+                    s_dirty = 1;
                 } else if (p == -2) {
                     snprintf(note, sizeof(note), "更新失败：%s", ota_err());
                     ui_set_sub(note);

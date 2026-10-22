@@ -17,7 +17,7 @@
 
 import {
   createReadStream, existsSync, statSync, readFileSync,
-  openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync,
+  openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync, unlinkSync,
 } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
@@ -192,7 +192,22 @@ export async function handleHttp(req, res, ctx) {
       mkdirSync(path.dirname(OTA_APP), { recursive: true });
       const tmp = OTA_APP + ".tmp";
       writeFileSync(tmp, buf);
-      renameSync(tmp, OTA_APP);                  // 原子替换，下载方不会读到半截
+      // Windows 上 rename 偶尔被杀毒/索引服务短暂占用（EPERM）：重试几次，
+      // 仍失败就直接覆盖写，别让一次瞬时锁把 CI 上传打回 500
+      let moved = false;
+      for (let i = 0; i < 5 && !moved; i++) {
+        try { renameSync(tmp, OTA_APP); moved = true; }
+        catch (e) {
+          if (i === 4) {
+            writeFileSync(OTA_APP, buf);
+            try { unlinkSync(tmp); } catch { /* 忽略 */ }
+            moved = true;
+            log("rename 失败（" + (e.code || e.message) + "），已改为直接覆盖写入");
+          } else {
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
+      }
       const info = otaInfo();
       log(`固件已更新：${info.version} ${(buf.length / 1048576).toFixed(2)}MB ${info.built}`);
       return json(res, 200, { ok: true, ...info });

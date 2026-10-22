@@ -80,8 +80,12 @@ static const char *ota_try_once(void)
      * 长擦除期间中断被关，实测直接触发 300ms 的 Interrupt WDT 重启。 */
     size_t img_size = (content_len > 0 && (size_t)content_len <= upd->size)
                       ? (size_t)content_len : OTA_SIZE_UNKNOWN;
+    /* 擦分区要几十秒（2.4MB），期间界面会一直 0%——先报个状态 */
+    s_pct = -1;
+    ws_send_json("{\"t\":\"ota\",\"p\":-1,\"m\":\"擦除分区\"}");
     esp_err_t e = esp_ota_begin(upd, img_size, &oh);
     if (e != ESP_OK) { err = "ota begin"; goto out; }
+    s_pct = 0;
 
     buf = heap_caps_malloc(OTA_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!buf) { err = "no buffer"; esp_ota_abort(oh); goto out; }
