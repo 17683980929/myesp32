@@ -132,6 +132,33 @@ export class DeviceSession {
     });
   }
 
+  /** 她按 KEY 确认喝水：让大模型夸一两句（不提问、不列表） */
+  async onWaterDone() {
+    if (this.busy || this.recording) return;
+    const cfg = this.ctx.config;
+    let text = "";
+    try {
+      for await (const s of chatSentences({
+        apiKey: cfg.llm.apiKey,
+        baseUrl: cfg.llm.baseUrl,
+        model: cfg.llm.model,
+        maxTokens: 120,
+        temperature: cfg.llm.temperature,
+        messages: [
+          { role: "system", content: cfg.llm.systemPrompt },
+          { role: "user", content: "我刚喝完水了。（请用一两句话夸我按时喝水，并说说喝水的好处；口语化，不要提问、不要列表）" },
+        ],
+      })) text += s;
+    } catch (e) {
+      log(`[${this.sid}] 喝水确认失败: ${e.message}`);
+      return;
+    }
+    const say = text.trim();
+    if (!say) return;
+    log(`[${this.sid}] 喝水确认 → ${say}`);
+    this.speakOne(say);
+  }
+
   /** 让设备从 url 下载固件做 OTA */
   startOta(url) {
     this.ota = { p: 0, at: Date.now(), msg: null };
@@ -205,6 +232,8 @@ export class DeviceSession {
         this.ota = { p: m.p ?? -1, at: Date.now(), msg: m.m ?? null };
         log(`[${this.sid}] OTA ${m.p}%${m.m ? " " + m.m : ""}`);
         return;
+      case "water":
+        return this.onWaterDone();
       case DEV.LUA_RESULT: {
         log(`[${this.sid}] Lua#${m.id} ${m.ok ? "成功" : "失败"} ${m.out ?? ""}`);
         this.lastLua = { id: m.id, ok: !!m.ok, out: m.out ?? "", at: Date.now() };

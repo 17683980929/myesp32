@@ -7,7 +7,7 @@
 #define PET_FRAME_W  200
 #define PET_FRAME_H  267
 #define PET_FRAME_STRIDE  25
-#define PET_FRAME_COUNT  15
+#define PET_FRAME_COUNT  16
 
 extern const uint8_t pet_sm_01_idle[];
 extern const uint8_t pet_sm_02_idle_blink[];
@@ -24,5 +24,6 @@ extern const uint8_t pet_sm_12_direct[];
 extern const uint8_t pet_sm_13_patrol[];
 extern const uint8_t pet_sm_14_note[];
 extern const uint8_t pet_sm_15_charging[];
+extern const uint8_t pet_sm_16_water[];   /* 喝水动作帧（ui/pet_water.c，非自动生成） */
 
 #endif

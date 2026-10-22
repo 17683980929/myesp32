@@ -56,6 +56,10 @@ void ui_bt_overlay(int state);
 /** 喝水提醒气泡：桌宠头顶显示"该喝水啦!"并上下跳，secs 秒后自动消失。 */
 void ui_water_reminder(int secs);
 
+/** 喝水提醒是否还在显示 / 手动收起（KEY 确认喝水时用） */
+int  ui_water_active(void);
+void ui_water_clear(void);
+
 /* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
 
 /** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环

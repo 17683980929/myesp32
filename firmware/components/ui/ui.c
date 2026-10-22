@@ -301,6 +301,7 @@ static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_07_love, pet_sm_08_confused, pet_sm_09_sleepy,
     pet_sm_10_sleeping, pet_sm_11_salute, pet_sm_12_direct,
     pet_sm_13_patrol, pet_sm_14_note, pet_sm_15_charging,
+    pet_sm_16_water,
 };
 
 /* 帧数据 1=墨（黑），帧背景 0=白。与全工程约定一致，不用取反 */
@@ -308,6 +309,7 @@ static void draw_pet(void)
 {
     /* 脚本指定的表情优先（说话/聆听等语音状态下让位给语音状态机） */
     int fi = (s_voice == UI_VOICE_NONE && s_lua_frame >= 0) ? s_lua_frame : s_frame_idx;
+    if (s_water_on && s_voice == UI_VOICE_NONE) fi = PET_FRAME_COUNT - 1;   /* 喝水动作帧 */
     if (fi < 0 || fi >= PET_FRAME_COUNT) fi = 0;
     const uint8_t *frame = PET_NAMES[fi];
     int dx = (PET_W - PET_FRAME_W) / 2;              /* 0 */
@@ -391,13 +393,16 @@ static void draw_water_bubble(void)
 {
     int w = 176, h = 46;
     int x = (PET_W - w) / 2;
-    int y = 22 + s_water_dy;
+    int y = 4 + s_water_dy;                  /* 桌宠帽子之上（帧顶部 48 行是空白） */
     lcd_fill(x, y, w, h, 0);                 /* 白底，盖住桌宠 */
     lcd_rect(x, y, w, h, 1);
     lcd_rect(x + 2, y + 2, w - 4, h - 4, 1);
     const char *s = "该喝水啦!";
     draw_cjk(x + (w - cjk_text_w(s, 1)) / 2, y + 15, s, 1, 1);
 }
+
+int  ui_water_active(void) { return s_water_on; }
+void ui_water_clear(void)  { s_water_on = 0; s_water_dy = 0; }
 
 /* ── 页面 ──────────────────────────────────────────────────────────── */
 
