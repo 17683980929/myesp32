@@ -53,49 +53,46 @@ static void fail(const char *why)
     ws_send_json(m);
 }
 
-static void ota_task(void *arg)
+/* 一次完整下载；成功会直接重启（不返回），失败返回原因字符串 */
+static const char *ota_try_once(void)
 {
-    (void)arg;
-
     esp_http_client_config_t cfg = {
         .url = s_url,
-        .timeout_ms = 20000,
+        .timeout_ms = 30000,
         .keep_alive_enable = false,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
-    if (!cli) { fail("http init"); goto out; }
+    if (!cli) return "http init";
 
-    if (esp_http_client_open(cli, 0) != ESP_OK) { fail("connect"); goto out_cli; }
+    const char *err = NULL;
+    esp_ota_handle_t oh = 0;
+    uint8_t *buf = NULL;
+
+    if (esp_http_client_open(cli, 0) != ESP_OK) { err = "connect"; goto out; }
     int content_len = esp_http_client_fetch_headers(cli);
-    int status = esp_http_client_get_status_code(cli);
-    if (status != 200) {
-        ESP_LOGE(TAG, "HTTP %d", status);
-        fail("http status");
-        goto out_cli;
-    }
+    if (esp_http_client_get_status_code(cli) != 200) { err = "http status"; goto out; }
     ESP_LOGI(TAG, "开始下载：%d 字节", content_len);
 
     const esp_partition_t *upd = esp_ota_get_next_update_partition(NULL);
-    if (!upd) { fail("no partition"); goto out_cli; }
+    if (!upd) { err = "no partition"; goto out; }
 
     /* 必须传实际镜像大小：OTA_SIZE_UNKNOWN 会把整个 6.4MB 分区一次性擦掉，
      * 长擦除期间中断被关，实测直接触发 300ms 的 Interrupt WDT 重启。 */
     size_t img_size = (content_len > 0 && (size_t)content_len <= upd->size)
                       ? (size_t)content_len : OTA_SIZE_UNKNOWN;
-    esp_ota_handle_t oh = 0;
     esp_err_t e = esp_ota_begin(upd, img_size, &oh);
-    if (e != ESP_OK) { fail("ota begin"); goto out_cli; }
+    if (e != ESP_OK) { err = "ota begin"; goto out; }
 
-    uint8_t *buf = heap_caps_malloc(OTA_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!buf) { esp_ota_abort(oh); fail("no buffer"); goto out_cli; }
+    buf = heap_caps_malloc(OTA_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf) { err = "no buffer"; esp_ota_abort(oh); goto out; }
 
     int total = 0, last_reported = -1;
     for (;;) {
         int n = esp_http_client_read(cli, (char *)buf, OTA_BUF_SIZE);
-        if (n < 0) { free(buf); esp_ota_abort(oh); fail("read"); goto out_cli; }
+        if (n < 0) { err = "read"; esp_ota_abort(oh); goto out; }
         if (n == 0) break;
         if (esp_ota_write(oh, buf, n) != ESP_OK) {
-            free(buf); esp_ota_abort(oh); fail("write"); goto out_cli;
+            err = "write"; esp_ota_abort(oh); goto out;
         }
         total += n;
         if (content_len > 0) {
@@ -111,14 +108,17 @@ static void ota_task(void *arg)
         }
     }
     free(buf);
+    buf = NULL;
+
+    if (total <= 0 || (content_len > 0 && total != content_len)) {
+        err = "incomplete"; esp_ota_abort(oh); goto out;
+    }
 
     report("verify", 96);
-    e = esp_ota_end(oh);
-    if (e != ESP_OK) { fail("ota end"); goto out_cli; }
+    if (esp_ota_end(oh) != ESP_OK) { err = "ota end"; goto out; }
 
     report("setboot", 98);
-    e = esp_ota_set_boot_partition(upd);
-    if (e != ESP_OK) { fail("set boot"); goto out_cli; }
+    if (esp_ota_set_boot_partition(upd) != ESP_OK) { err = "set boot"; goto out; }
 
     ESP_LOGI(TAG, "固件写入完成（%d 字节，分区 %s），重启生效", total, upd->label);
     s_pct = 100;
@@ -126,10 +126,27 @@ static void ota_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 
-out_cli:
+out:
+    if (buf) free(buf);
     esp_http_client_close(cli);
     esp_http_client_cleanup(cli);
-out:
+    return err;
+}
+
+static void ota_task(void *arg)
+{
+    (void)arg;
+    const char *err = "?";
+    for (int i = 1; i <= 3; i++) {
+        err = ota_try_once();
+        if (!err) break;                       /* 成功不会走到这里（已重启） */
+        ESP_LOGW(TAG, "第 %d 次下载失败：%s", i, err);
+        if (i < 3) {
+            s_pct = 0;                         /* 进度条回到 0，界面显示重试 */
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+    }
+    fail(err);
     s_running = 0;
     vTaskDelete(NULL);
 }
