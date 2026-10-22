@@ -31,8 +31,7 @@ export const DEFAULT_CONFIG = {
     enabled: true,
     classLeadMin: 10,        /* 课前几分钟提醒 */
     classEndAfterMin: 45,    /* 上课后多少分钟算下课 */
-    waterEnabled: true,
-    waterEveryMin: 60,
+    waterEnabled: true,      /* 喝水：她上完课后的课间中点提醒 */
     waterStartHour: 8,
     waterEndHour: 17,
     morningEnabled: true,

@@ -105,7 +105,7 @@ export function startReminders(ctx) {
     if (!tt?.grid) return;
     const col = (b.wd + 6) % 7;                          /* 0=周一 */
 
-    /* 课前提醒 + 下课提醒 */
+    /* 课前提醒 */
     const lead = cfg.classLeadMin ?? 10;
     const dur = cfg.classEndAfterMin ?? 45;
     (tt.periods || []).forEach((p, r) => {
@@ -113,25 +113,26 @@ export function startReminders(ctx) {
       if (!cls) return;
       const start = toMin(p.time);
       if (start < 0) return;
-
       if (b.minute === start - lead) {
         const key = `${b.ymd}:lead${r}`;
         if (!fired.has(key)) { fired.add(key); say(`还有 ${lead} 分钟上课，${p.time}，${cls} 班。`); }
       }
-      if (b.minute === start + dur) {
-        const key = `${b.ymd}:end${r}`;
-        if (!fired.has(key)) { fired.add(key); say("这节课下课了，喝口水，歇一会儿。"); }
-      }
     });
 
-    /* 喝水提醒 */
+    /* 下课+喝水合并成一条，卡在她上完课后的课间中点（上课时提醒没人听得到）。
+     * 课间 ≤30 分钟取中点；更长的（午休）下课 5 分钟后提醒一次，别吵午睡。 */
     if (cfg.waterEnabled !== false) {
-      const every = cfg.waterEveryMin ?? 60;
-      const h0 = cfg.waterStartHour ?? 8;
-      const h1 = cfg.waterEndHour ?? 17;
-      if (b.hour >= h0 && b.hour < h1 && b.min % every === 0) {
-        const key = `${b.ymd}:water${b.hour}:${b.min}`;
-        if (!fired.has(key)) { fired.add(key); say("喝口水吧。"); }
+      const periods = tt.periods || [];
+      for (let r = 0; r < periods.length - 1; r++) {
+        if (!tt.grid[r]?.[col]) continue;             /* 只在她刚上完课的课间提醒 */
+        const end = toMin(periods[r].time) + dur;
+        const next = toMin(periods[r + 1].time);
+        if (end < 0 || next < 0 || next - end < 5) continue;
+        const at = (next - end <= 30) ? Math.floor((end + next) / 2) : end + 5;
+        if (b.minute === at) {
+          const key = `${b.ymd}:water${r}`;
+          if (!fired.has(key)) { fired.add(key); say("下课啦，喝口水，歇一会儿。"); }
+        }
       }
     }
   };
