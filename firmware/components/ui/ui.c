@@ -380,13 +380,13 @@ static int      s_water_on;
 static int      s_water_dy;
 static uint32_t s_water_until;
 
-/** 在桌宠头顶显示喝水气泡，secs 秒后自动消失 */
+/** 在桌宠头顶显示喝水气泡；secs<=0 表示不自动消失，等按 KEY 确认 */
 void ui_water_reminder(int secs)
 {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_water_on = 1;
     s_water_dy = 0;
-    s_water_until = now + (uint32_t)(secs > 0 ? secs : 10) * 1000;
+    s_water_until = (secs > 0) ? now + (uint32_t)secs * 1000 : 0;   /* 0 = 常驻 */
 }
 
 static void draw_water_bubble(void)
@@ -517,10 +517,10 @@ int ui_tick(uint32_t now)
         vol_changed = 1;
     }
 
-    /* 喝水气泡：到期消失；显示期间每 180ms 上下跳一次 */
+    /* 喝水气泡：常驻直到按 KEY 确认（s_water_until==0）；定时模式到点消失 */
     int water_changed = 0;
     if (s_water_on) {
-        if ((int32_t)(now - s_water_until) >= 0) {
+        if (s_water_until && (int32_t)(now - s_water_until) >= 0) {
             s_water_on = 0;
             s_water_dy = 0;
             water_changed = 1;

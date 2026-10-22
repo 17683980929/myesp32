@@ -432,9 +432,10 @@ static void on_ws_event(const ws_event_t *ev)
         if (!strcmp(ev->name, "bt_on"))  { ble_set_enabled(1); s_stat_at = 0; s_dirty = 1; break; }
         if (!strcmp(ev->name, "bt_off")) { ble_set_enabled(0); s_stat_at = 0; s_dirty = 1; break; }
 
-        /* 喝水提醒：桌宠换成喝水动作 + 气泡跳，按 KEY 确认（服务器到点下发） */
+        /* 喝水提醒：桌宠换成喝水动作 + 气泡一直跳，按 KEY 确认才消失 */
         if (!strcmp(ev->name, "water_reminder")) {
-            ui_water_reminder(30);
+            ui_lua_release();               /* 提醒优先：脚本画布让位 */
+            ui_water_reminder(0);           /* 0 = 常驻，等 KEY 确认 */
             s_dirty = 1;
             break;
         }
@@ -526,7 +527,7 @@ static void on_button(btn_id_t id, btn_event_t ev)
             s_key_down_at = -1;
         } else if (ev == BTN_CLICK) {                   /* 短按 → 脚本（进入/切换） */
             /* 喝水提醒期间：KEY = 确认喝水，收起气泡并让服务器说两句 */
-            if (ui_water_active()) {
+            if (ui_water_active() && s_voice_state == VOICE_IDLE) {
                 ui_water_clear();
                 ws_send_json("{\"t\":\"water\",\"s\":\"done\"}");
                 s_dirty = 1;
