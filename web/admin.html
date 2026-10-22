@@ -488,7 +488,7 @@ async function refreshOta() {
       return;
     }
     const mb = (f.size / 1048576).toFixed(2);
-    const built = f.built || new Date(f.mtime).toLocaleString();
+    const built = f.builtMs ? new Date(f.builtMs).toLocaleString() : new Date(f.mtime).toLocaleString();
     const devs = j.devices || [];
     const dev = devs.map((d) => {
       if (d.ota) {
