@@ -24,7 +24,6 @@ end
 sys.on("key_click",click)
 sys.on("canvas_next",click)
 sys.on("open_timetable",function() show(2) end)
-sys.on("open_env",function() show(3) end)
 sys.on("canvas_close",function() up=false display.close() end)
 
 -- 三轮补课表：A=1班 B=18班 C=20班 D=24班，"-"=空；每行 周一..周日
@@ -149,22 +148,6 @@ add("政治课表",function()
       end
     end
   end
-end)
-
-add("环境与电池",function()
-  local t,h=sensor.temp(),sensor.hum()
-  local b,mv=sensor.battery(),sensor.voltage()
-  display.clear()
-  display.text(120,12,"环境与电池",24)
-  display.text(28,78,"温度",16)
-  display.text(200,72,t<=-50 and "--" or string.format("%.1f C",t),24)
-  display.text(28,138,"湿度",16)
-  display.text(200,132,h<=-0.5 and "--" or string.format("%.0f %%",h),24)
-  display.text(28,198,"电量",16)
-  display.text(200,192,b<0 and "--" or (b.." %"),24)
-  display.text(28,258,"电压",16)
-  display.text(200,252,mv<=0 and "--" or string.format("%.2f V",mv/1000),24)
-  display.text(104,278,"单击切换 · 走完回主页",16)
 end)
 
 local function setR(n) R=n if up then show(cur+1) end end

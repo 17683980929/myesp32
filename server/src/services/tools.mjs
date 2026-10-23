@@ -37,8 +37,6 @@ const BT_ZH = { 0: "关闭", 1: "广播中", 2: "已连接" };
  * 固件会把语音期间收到的事件暂存，播报结束回空闲后再执行。 */
 const SCREEN_ACTIONS = {
   timetable: { evt: "open_timetable", zh: "打开课表" },
-  env:       { evt: "open_env",       zh: "打开数据面板（环境与电池）" },
-  dashboard: { evt: "open_env",       zh: "打开数据面板（环境与电池）" },
   close:     { evt: "canvas_close",   zh: "关闭画布" },
   next:      { evt: "canvas_next",    zh: "切到下一个功能页" },
 };
@@ -125,7 +123,7 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "control_screen",
-      description: "控制桌面宠物的屏幕。用户说“打开课表/让我看看课表”→timetable；“打开数据面板/环境页/看看温度和电量”→dashboard；“关掉/收起”→close；“下一个/换一页”→next。env 与 dashboard 等价。执行后简短确认即可，不要反问。",
+      description: "控制桌面宠物的屏幕。用户说“打开课表/让我看看课表”→timetable；“关掉/收起”→close；“下一个/换一页”→next。执行后简短确认即可，不要反问。",
       parameters: {
         type: "object",
         properties: {
@@ -226,8 +224,6 @@ export function matchLocalCommand(text) {
     return { name: "control_screen", args: { feature: "next" } };
   if (new RegExp(OPEN + ".*(课程表|课表)").test(t))
     return { name: "control_screen", args: { feature: "timetable" } };
-  if (new RegExp(OPEN + ".*((数据|环境|状态)?面板|环境页)").test(t))
-    return { name: "control_screen", args: { feature: "dashboard" } };
 
   return null;
 }
