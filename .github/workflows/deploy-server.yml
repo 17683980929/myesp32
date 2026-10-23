@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          zip -qr /tmp/server.zip server/src server/skills server/data server/package.json server/package-lock.json web \
+          zip -qr /tmp/server.zip server/src server/skills server/data web \
             -x 'server/data/life-guide/*'
           ls -lh /tmp/server.zip
           code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 90 \
