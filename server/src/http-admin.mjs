@@ -320,7 +320,7 @@ export async function handleHttp(req, res, ctx) {
         rmSync(stage, { recursive: true, force: true });
         rmSync(bak, { recursive: true, force: true });
         const files = unzipTo(readFileSync(UPD_ZIP), stage, {
-          allowPrefix: ["server/src/", "server/skills/", "server/data/", "web/"],
+          allowPrefix: ["server/src/", "server/skills/", "server/data/", "web/", "server/package"],
         });
         const js = files.filter((f) => f.endsWith(".mjs"));
         if (!js.length) return json(res, 400, { ok: false, msg: "包里没有 .mjs，拒绝应用" });
@@ -342,6 +342,10 @@ export async function handleHttp(req, res, ctx) {
           ["server/src", "server/skills", "web"].forEach(swapDir);
           const dataFrom = path.join(stage, "server/data");
           if (existsSync(dataFrom)) cpSync(dataFrom, path.join(ROOT, "data"), { recursive: true, force: true });
+          for (const f of ["package.json", "package-lock.json"]) {
+            const from = path.join(stage, "server", f);
+            if (existsSync(from)) cpSync(from, path.join(ROOT, f), { force: true });
+          }
         } catch (e) {
           log("应用失败：" + e.message + "（备份在 .update/bak）");
           return json(res, 500, { ok: false, msg: "应用失败：" + e.message });
