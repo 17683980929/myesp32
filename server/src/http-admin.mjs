@@ -17,9 +17,11 @@
 
 import {
   createReadStream, existsSync, statSync, readFileSync,
-  openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync, unlinkSync,
+  openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync, unlinkSync, rmSync, cpSync, readdirSync,
 } from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
@@ -28,6 +30,12 @@ import { build } from "./protocol.mjs";
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
 const OTA_APP = path.resolve(ROOT, "../firmware/build/ota-app.bin");
+
+/* 服务端自更新：CI 上传 zip → 管理页应用 → 进程退出由 NSSM 拉起 */
+const UPD_DIR = path.join(ROOT, ".update");
+const UPD_ZIP = path.join(UPD_DIR, "server.zip");
+const UPD_META = path.join(UPD_DIR, "pending.json");
+const VERSION_FILE = path.join(ROOT, "VERSION");
 
 /** 读 ESP 镜像里的 app 描述符（0x20 起）：版本号 + 构建日期 */
 function appDesc(file = OTA_APP) {
@@ -178,6 +186,26 @@ export async function handleHttp(req, res, ctx) {
   }
 
   try {
+    /* ── 服务端代码包上传（CI 用，同一个独立 token）───────────── */
+    if (p === "/api/server-bundle" && req.method === "POST") {
+      const want = String(getConfig().server.uploadToken || "");
+      if (!want) return json(res, 403, { ok: false, msg: "服务器未配置 uploadToken" });
+      if (String(req.headers["x-fw-token"] || "") !== want)
+        return json(res, 403, { ok: false, msg: "token 不对" });
+
+      const buf = await readRawBody(req, 16 * 1024 * 1024);
+      mkdirSync(UPD_DIR, { recursive: true });
+      writeFileSync(UPD_ZIP, buf);
+      const meta = {
+        sha: String(req.headers["x-commit"] || "").slice(0, 12),
+        at: Date.now(),
+        size: buf.length,
+      };
+      writeFileSync(UPD_META, JSON.stringify(meta));
+      log(`服务端包已上传：${meta.sha} ${(buf.length / 1024).toFixed(0)}KB`);
+      return json(res, 200, { ok: true, ...meta });
+    }
+
     /* ── 固件上传（CI 直传，独立 token，不走网页密码）───────────── */
     if (p === "/api/firmware" && req.method === "POST") {
       const want = String(getConfig().server.uploadToken || "");
@@ -275,6 +303,57 @@ export async function handleHttp(req, res, ctx) {
         for (const d of list) d.speakOne(text.trim()).catch(() => {});
         log(`让设备播报 → ${list.length} 台`);
         return json(res, 200, { ok: true, sent: list.length });
+      }
+
+      if (p === "/api/server-update" && req.method === "GET") {
+        const pending = existsSync(UPD_META) ? JSON.parse(readFileSync(UPD_META, "utf8")) : null;
+        const current = existsSync(VERSION_FILE) ? readFileSync(VERSION_FILE, "utf8").trim() : "";
+        return json(res, 200, { pending, current });
+      }
+
+      if (p === "/api/server-update/apply" && req.method === "POST") {
+        if (!existsSync(UPD_ZIP) || !existsSync(UPD_META))
+          return json(res, 400, { ok: false, msg: "没有待应用的服务端包" });
+        const meta = JSON.parse(readFileSync(UPD_META, "utf8"));
+        const stage = path.join(UPD_DIR, "stage");
+        const bak = path.join(UPD_DIR, "bak");
+        rmSync(stage, { recursive: true, force: true });
+        rmSync(bak, { recursive: true, force: true });
+        const files = unzipTo(readFileSync(UPD_ZIP), stage, {
+          allowPrefix: ["server/src/", "server/skills/", "server/data/", "web/"],
+        });
+        const js = files.filter((f) => f.endsWith(".mjs"));
+        if (!js.length) return json(res, 400, { ok: false, msg: "包里没有 .mjs，拒绝应用" });
+        try {
+          for (const f of js) execFileSync(process.execPath, ["--check", path.join(stage, f)], { stdio: "pipe" });
+        } catch (e) {
+          return json(res, 400, { ok: false, msg: "语法检查失败，已放弃：" + (e.stderr || e.message).toString().slice(0, 200) });
+        }
+
+        mkdirSync(bak, { recursive: true });
+        const swapDir = (rel) => {
+          const from = path.join(stage, rel);
+          const live = path.resolve(ROOT, "..", rel);
+          if (!existsSync(from)) return;
+          if (existsSync(live)) renameSync(live, path.join(bak, rel.replace(/[\/]/g, "_")));
+          renameSync(from, live);
+        };
+        try {
+          ["server/src", "server/skills", "web"].forEach(swapDir);
+          const dataFrom = path.join(stage, "server/data");
+          if (existsSync(dataFrom)) cpSync(dataFrom, path.join(ROOT, "data"), { recursive: true, force: true });
+        } catch (e) {
+          log("应用失败：" + e.message + "（备份在 .update/bak）");
+          return json(res, 500, { ok: false, msg: "应用失败：" + e.message });
+        }
+
+        writeFileSync(VERSION_FILE, meta.sha + " " + new Date(meta.at).toISOString() + "\n");
+        rmSync(UPD_ZIP, { force: true });
+        rmSync(UPD_META, { force: true });
+        log(`服务端已更新到 ${meta.sha}，重启中`);
+        json(res, 200, { ok: true, sha: meta.sha });
+        setTimeout(() => process.exit(0), 600);   /* NSSM 会自动拉起 */
+        return;
       }
 
       if (p === "/api/lua" && req.method === "GET") {

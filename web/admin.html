@@ -249,6 +249,19 @@
     </div>
   </div>
 
+  <!-- 服务端更新 -->
+  <div class="card">
+    <h2>服务端更新 <span class="tag">CI 打包</span></h2>
+    <div class="actions">
+      <span class="msg" id="updInfo">读取中…</span>
+    </div>
+    <div class="actions">
+      <button class="primary" onclick="applyServerUpdate()">应用并重启</button>
+      <span class="msg" id="updMsg"></span>
+    </div>
+    <p class="hint">push 后 CI 会把 server/src、skills、data、web 打成包传上来；点按钮才会真正替换并重启服务。</p>
+  </div>
+
   <div class="actions" style="justify-content:flex-end">
     <span class="msg" id="saveMsg"></span>
     <button class="primary" onclick="saveAll()">保存全部配置</button>
@@ -478,6 +491,30 @@ async function deployLua() {
   }
 }
 
+async function refreshUpd() {
+  try {
+    const r = await fetch("api/server-update");
+    const j = await r.json();
+    const cur = j.current ? j.current.split(" ")[0] : "未知";
+    if (!j.pending) { $("updInfo").textContent = `当前 ${cur}，没有待应用的包`; return; }
+    const t = new Date(j.pending.at).toLocaleString();
+    const mb = (j.pending.size / 1024).toFixed(0);
+    $("updInfo").textContent = `可更新 ${j.pending.sha || "?"}（${t}，${mb} KB）｜当前 ${cur}`;
+  } catch { $("updInfo").textContent = "读取更新状态失败"; }
+}
+
+async function applyServerUpdate() {
+  if (!confirm("应用后服务会重启约 3 秒，期间网页会断开。继续？")) return;
+  setMsg($("updMsg"), "应用中…", "");
+  try {
+    const r = await fetch("api/server-update/apply", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) { setMsg($("updMsg"), j.msg || "失败", "err"); return; }
+    setMsg($("updMsg"), "已应用，重启中…", "ok");
+    setTimeout(() => location.reload(), 5000);
+  } catch { setMsg($("updMsg"), "请求失败（可能已重启）", ""); }
+}
+
 async function refreshOta() {
   try {
     const r = await fetch("api/ota");
@@ -542,6 +579,7 @@ async function reloadSkills() {
     const j = await r.json();
     setMsg($("skillMsg"), `已加载 ${j.count} 个${j.error ? "；" + j.error : ""}`, j.error ? "warn" : "ok");
     refreshSkills();
+refreshUpd();
   } catch (e) {
     setMsg($("skillMsg"), "重载失败", "err");
   }
