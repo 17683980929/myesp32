@@ -579,7 +579,6 @@ async function reloadSkills() {
     const j = await r.json();
     setMsg($("skillMsg"), `已加载 ${j.count} 个${j.error ? "；" + j.error : ""}`, j.error ? "warn" : "ok");
     refreshSkills();
-refreshUpd();
   } catch (e) {
     setMsg($("skillMsg"), "重载失败", "err");
   }
@@ -591,6 +590,8 @@ setInterval(refreshStatus, 5000);
 refreshOta();
 setInterval(refreshOta, 3000);
 refreshSkills();
+refreshUpd();
+setInterval(refreshUpd, 10000);
 </script>
 </body>
 </html>
