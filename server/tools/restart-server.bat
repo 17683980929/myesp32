@@ -56,7 +56,7 @@ echo [5/5] result
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-NetTCPConnection -LocalPort 8080,8081 -State Listen -ErrorAction SilentlyContinue; if ($c) { $c | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize | Out-String | Write-Host } else { Write-Host '   NOT LISTENING - check C:\myesp32\server\server.log' }"
 
 echo --- server.log tail ---
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path C:\myesp32\server\server.log) { Get-Content C:\myesp32\server\server.log -Tail 15 } else { Write-Host '   (no log yet)' }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path C:\myesp32\server\server.log) { Get-Content C:\myesp32\server\server.log -Tail 15 -Encoding UTF8 } else { Write-Host '   (no log yet)' }"
 
 echo.
 echo Done. Press any key to close.
