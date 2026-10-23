@@ -79,6 +79,7 @@ static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步�
 static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
 static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放任务消费） */
 static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放任务消费） */
+static volatile int   s_alarm_req      = 0;   /* 闹钟提示音请求 */
 
 /* 播放流沉默超时：tts_start 后 15 秒既没有帧流入、也没有声音在放
  * （服务器句子合成超时 12 秒；正常到不了）→ 判本轮结束并复位，
@@ -347,6 +348,56 @@ static void play_chime(void)
     vTaskDelay(pdMS_TO_TICKS(60));   /* 等 DMA 里的尾音出去，别被紧接着的录音当语音 */
 }
 
+/* 闹钟提示音：C6-E6-G6 琶音走两遍，末音拉长，约 1.4 秒。
+ * 和唤醒"叮咚"分开，听见就知道是提醒，不是被叫醒。 */
+static void play_alarm(void)
+{
+    enum { NOTE = AUD_SAMPLE_HZ * 16 / 100, GAP = AUD_SAMPLE_HZ * 3 / 100,
+           LAST = AUD_SAMPLE_HZ * 45 / 100, CHUNK = 320, ATK = 80 };
+    static const float F[6] = { 1046.5f, 1318.5f, 1568.0f, 1046.5f, 1318.5f, 1568.0f };
+    int len[6], off[6], total = 0;
+    for (int k = 0; k < 6; k++) {
+        off[k] = total;
+        len[k] = (k == 5) ? LAST : NOTE;
+        total += len[k] + GAP;
+    }
+    int16_t out[CHUNK * 2];
+    for (int base = 0; base < total; base += CHUNK) {
+        int n = total - base;
+        if (n > CHUNK) n = CHUNK;
+        for (int i = 0; i < n; i++) {
+            int t = base + i;
+            float v = 0;
+            for (int k = 0; k < 6; k++) {
+                int lt = t - off[k];
+                if (lt < 0 || lt >= len[k]) continue;
+                float atk = lt < ATK ? (float)lt / ATK : 1.0f;
+                float dec = expf(-(float)lt / (len[k] / 2.2f));
+                float ph  = 6.2831853f * F[k] * (float)lt / AUD_SAMPLE_HZ;
+                v += (sinf(ph) + 0.18f * sinf(2.0f * ph)) * atk * dec;
+            }
+            int32_t s = (int32_t)(v * 6200.0f);
+            if (s > 30000) s = 30000;
+            else if (s < -30000) s = -30000;
+            out[i * 2] = (int16_t)s;
+            out[i * 2 + 1] = (int16_t)s;
+        }
+        esp_codec_dev_write(s_play, out, n * 4);
+    }
+}
+
+void audio_play_alarm(void)
+{
+    if (!s_ready || !s_playq) return;
+    /* 不动 s_play_done：它只在"唤醒提示音播完"那条路径上被 main 消费，
+     * 闹钟如果也置位，会在播报中被误判成"TTS 播完了"。 */
+    xQueueReset(s_playq);
+    s_stream_open = 0;
+    s_frames_pushed = 0;
+    s_frames_played = 0;
+    s_alarm_req = 1;
+}
+
 static void play_task(void *arg)
 {
     static int16_t pcm[FRAME_SAMPLES];
@@ -370,6 +421,12 @@ static void play_task(void *arg)
             s_playing = 0;
             xQueueReset(s_playq);
             s_play_done = 1;
+        }
+
+        if (s_alarm_req) {
+            s_alarm_req = 0;
+            play_alarm();
+            continue;
         }
 
         /* 唤醒提示音：直接合成播放，播完立刻通知 main 进入自动聆听 */
@@ -514,6 +571,7 @@ void audio_play_stop(void)
     if (!s_ready) return;
     xQueueReset(s_playq);
     s_chime_req = 0;           /* 打断时提示音也别响了 */
+    s_alarm_req = 0;
     s_stream_open = 0;           /* 迟到帧丢弃，等下一次 tts_start 重新开闸 */
     s_play_finishing = 1;
     s_playing = 1;              /* 让播放任务尽快走「空 + finishing」分支收敛 */

@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { ROOT, getConfig } from "../config.mjs";
+import { ROOT, getConfig, saveConfig } from "../config.mjs";
 import { build } from "../protocol.mjs";
 
 const TT_PATH = path.resolve(ROOT, "data/timetable.json");
@@ -61,9 +61,27 @@ function toMin(hhmm) {
   return m ? Number(m[1]) * 60 + Number(m[2]) : -1;
 }
 
+/** 到点的闹钟：下发 alarm 事件（带待办文本），提醒音由固件本地合成 */
+function checkAlarms(ctx) {
+  const list = getConfig().alarms || [];
+  if (!list.length) return;
+  const now = Date.now();
+  const due = list.filter((a) => a.at <= now);
+  if (!due.length) return;
+  saveConfig({ alarms: list.filter((a) => a.at > now) });
+  for (const a of due) {
+    log(`闹钟：${a.text}`);
+    for (const d of [...ctx.devices]) {
+      try { d.send(build.evt("alarm", undefined, a.text)); } catch { /* 忽略 */ }
+    }
+  }
+}
+
 export function startReminders(ctx) {
   const fired = new Set();
   let busyUntil = 0;
+
+  setInterval(() => { try { checkAlarms(ctx); } catch (e) { log("闹钟检查异常：" + e.message); } }, 5000);
 
   const say = (text) => {
     const now = Date.now();

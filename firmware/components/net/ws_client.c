@@ -122,6 +122,8 @@ static void on_data(char *data, int len)
         strncpy(ev.name, n ?: "", sizeof(ev.name) - 1);
         cJSON *v = cJSON_GetObjectItem(root, "v");
         ev.value = (v && cJSON_IsNumber(v)) ? v->valueint : 0;
+        const char *s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "s"));
+        strncpy(ev.text, s ?: "", sizeof(ev.text) - 1);
         dispatch(&ev);
     } else if (t && !strcmp(t, "stt")) {
         ev.kind = WS_EVT_STT;

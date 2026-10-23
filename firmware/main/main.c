@@ -432,6 +432,19 @@ static void on_ws_event(const ws_event_t *ev)
         if (!strcmp(ev->name, "bt_on"))  { ble_set_enabled(1); s_stat_at = 0; s_dirty = 1; break; }
         if (!strcmp(ev->name, "bt_off")) { ble_set_enabled(0); s_stat_at = 0; s_dirty = 1; break; }
 
+        /* 闹钟：响一段提示音，右栏显示待办内容，60 秒后自动收起 */
+        if (!strcmp(ev->name, "alarm")) {
+            if (s_voice_state == VOICE_IDLE) audio_play_alarm();
+            if (ev->text[0]) {
+                ui_set_sub(ev->text);
+                s_sub_clear_at = now_ms() + 60000;
+                s_dirty = 1;
+            } else {
+                ESP_LOGW(TAG, "闹钟事件没有内容");
+            }
+            break;
+        }
+
         /* 喝水提醒：桌宠换成喝水动作 + 气泡一直跳，按 KEY 确认才消失 */
         if (!strcmp(ev->name, "water_reminder")) {
             ui_lua_release();               /* 提醒优先：脚本画布让位 */

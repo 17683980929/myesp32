@@ -207,6 +207,27 @@ export function matchLocalCommand(text) {
   if (/调小音量|音量.{0,2}小|声音.{0,3}小|小点声|小声一点/.test(t))
     return { name: "set_volume", args: { action: "down" } };
 
+  /* 闹钟：「5分钟后提醒我喝水」「18点30提醒我交作业」「明天7点叫我起床」 */
+  {
+    const rel = t.match(/(\d{1,2}|[一二三四五六七八九十]+)\s*(分钟|分|小时|钟头)\s*(?:后|以后|之后)?\s*(?:提醒|叫|通知)我?(.*)/);
+    if (rel) {
+      const n = cnNum(rel[1]);
+      if (n > 0) {
+        const mins = /小时|钟头/.test(rel[2]) ? n * 60 : n;
+        const what = (rel[3] || "").trim() || "该做下一件事了";
+        return { name: "set_alarm", args: { inMin: mins, text: what } };
+      }
+    }
+    const abs = t.match(/(今天|明天)?\s*(\d{1,2})\s*[点:：]\s*(\d{1,2})?\s*分?\s*(?:提醒|叫|通知)我?(.*)/);
+    if (abs) {
+      const h = Number(abs[2]), mi = abs[3] ? Number(abs[3]) : 0;
+      if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) {
+        const what = (abs[4] || "").trim() || "该做下一件事了";
+        return { name: "set_alarm", args: { at: (abs[1] || "") + h + ":" + mi, text: what } };
+      }
+    }
+  }
+
   /* 补课轮次：`切换到第二轮` / `用第三轮补课` / `第一轮` */
   {
     const mr = t.match(/([一二三123])轮/);
@@ -362,6 +383,30 @@ export async function executeTool(name, args = {}, ctx, session) {
       }
       if (!cells.length) return `${DAYS[idx]}（${dateLabel}）没有课。`;
       return `${DAYS[idx]}（${dateLabel}）共 ${cells.length} 节课：${cells.join("；")}。`;
+    }
+
+    case "set_alarm": {
+      const text = String(args.text ?? "").trim().slice(0, 40) || "该做下一件事了";
+      let at = 0, label = "";
+      const mins = Number(args.inMin);
+      if (Number.isFinite(mins) && mins > 0) {
+        const m = Math.min(Math.round(mins), 24 * 60);
+        at = Date.now() + m * 60e3;
+        label = m >= 60 ? `${Math.floor(m / 60)} 小时${m % 60 ? " " + (m % 60) + " 分" : ""}后` : `${m} 分钟后`;
+      } else {
+        const mm = String(args.at ?? "").match(/(今天|明天)?\s*(\d{1,2}):(\d{1,2})/);
+        if (!mm) return "没听清时间，可以说「10分钟后」或者「18点30」。";
+        const h = Number(mm[2]), mi = Number(mm[3]);
+        if (!(h >= 0 && h <= 23 && mi >= 0 && mi <= 59)) return "时间超出范围了。";
+        const bj = new Date(Date.now() + 8 * 3600e3);
+        const day = mm[1] === "明天" ? 1 : 0;
+        at = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() + day, h, mi) - 8 * 3600e3;
+        if (at <= Date.now()) at += 86400e3;
+        label = (mm[1] || "") + String(h).padStart(2, "0") + ":" + String(mi).padStart(2, "0");
+      }
+      const list = [...(getConfig().alarms || []), { id: Date.now() % 1000000, at, text }].slice(-10);
+      saveConfig({ alarms: list });
+      return `好，${label}提醒你${text}。`;
     }
 
     case "set_round": {

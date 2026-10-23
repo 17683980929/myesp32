@@ -50,6 +50,8 @@ export const DEFAULT_CONFIG = {
   },
   /** 板子显示哪一轮补课（1/2/3）。语音切换会改这里，重连时服务器再推给设备 */
   timetable: { round: 1 },
+  /** 语音设的闹钟（服务器持久化）：[{ id, at, text }] */
+  alarms: [],
   device: {
     name: "MyEsp32",
     /** 允许连接的设备 MAC 白名单，空数组 = 不限制 */
