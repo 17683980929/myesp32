@@ -186,6 +186,8 @@
     </div>
     <label>API Key</label>
     <input id="l_key" type="password" placeholder="sk-...">
+    <label>复杂需求模型<span class="hint"> 重写/多页/动画等复杂 Lua 修改用；留空 = 同主模型</span></label>
+    <input id="l_luaModel" placeholder="deepseek-chat（留空 = 同主模型）">
     <div class="row">
       <div>
         <label>最大 token</label>
@@ -260,15 +262,25 @@
       <div id="aiPerm" class="hint" style="color:var(--text);margin-top:4px"></div>
       <div id="aiWarn" class="msg warn" style="margin-top:6px"></div>
       <div id="aiErrors" class="msg err" style="margin-top:6px"></div>
-      <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
-      <pre id="aiDiff"></pre>
-      <details style="margin-top:8px">
-        <summary>查看 / 编辑完整脚本（<span id="aiLen"></span> 字符）</summary>
-        <textarea id="aiCode" rows="14" style="margin-top:6px"></textarea>
-      </details>
-      <div class="actions">
-        <button class="primary" id="aiApplyBtn" onclick="aiApply()">应用并下发</button>
-        <span class="msg" id="aiApplyMsg"></span>
+      <div id="aiClarify" style="display:none">
+        <label>需要补充<span class="hint"> 回答后继续生成</span></label>
+        <div id="aiQuestion" class="hint" style="color:var(--text)"></div>
+        <textarea id="aiAnswer" rows="2" placeholder="例如：改状态页，保留课表页"></textarea>
+        <div class="actions">
+          <button class="primary" onclick="aiAnswerSubmit()">带着回答继续生成</button>
+        </div>
+      </div>
+      <div id="aiResultBody">
+        <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
+        <pre id="aiDiff"></pre>
+        <details style="margin-top:8px">
+          <summary>查看 / 编辑完整脚本（<span id="aiLen"></span> 字符）</summary>
+          <textarea id="aiCode" rows="14" style="margin-top:6px"></textarea>
+        </details>
+        <div class="actions">
+          <button class="primary" id="aiApplyBtn" onclick="aiApply()">应用并下发</button>
+          <span class="msg" id="aiApplyMsg"></span>
+        </div>
       </div>
     </div>
     <div id="aiHistory" class="hint" style="margin-top:12px"></div>
@@ -421,6 +433,7 @@ async function loadConfig() {
 
   $("l_base").value = cfg.llm.baseUrl;
   $("l_model").value = cfg.llm.model;
+  $("l_luaModel").value = cfg.llm.luaModel || "";
   $("l_key").value = cfg.llm.apiKey;
   $("l_max").value = cfg.llm.maxTokens;
   $("l_temp").value = cfg.llm.temperature;
@@ -483,6 +496,7 @@ async function saveAll() {
     llm: {
       baseUrl: $("l_base").value,
       model: $("l_model").value,
+      luaModel: $("l_luaModel").value.trim(),
       apiKey: $("l_key").value,
       maxTokens: +$("l_max").value,
       temperature: +$("l_temp").value,
@@ -658,6 +672,25 @@ function aiShowResult(r, request, repairCount) {
   const ok = !!(r && r.ok);
   const attempts = (r && r.attempts) || 1;
   const repairs = repairCount || 0;
+
+  if (r && r.needsClarify) {
+    aiProposal = null;
+    $("aiOut").style.display = "block";
+    $("aiSummary").textContent = (r.summary || r.question || "需要补充信息");
+    $("aiPerm").textContent = "";
+    $("aiWarn").textContent = "";
+    $("aiErrors").textContent = "";
+    $("aiClarify").style.display = "block";
+    $("aiQuestion").textContent = (r.question || "").trim();
+    $("aiAnswer").value = "";
+    $("aiResultBody").style.display = "none";
+    $("aiApplyBtn").disabled = true;
+    setMsg($("aiMsg"), `需要补充信息${r.model ? `（${r.model}）` : ""}`, "warn");
+    return;
+  }
+
+  $("aiClarify").style.display = "none";
+  $("aiResultBody").style.display = "block";
   aiProposal = ok
     ? {
         summary: (r && r.summary) || "Lua 修改",
@@ -686,10 +719,20 @@ function aiShowResult(r, request, repairCount) {
   setMsg(
     $("aiMsg"),
     ok
-      ? `生成完成（${attempts} 次尝试${repairs ? `，设备报错修正第 ${repairs} 次` : ""}），检查差异后点“应用并下发”`
+      ? `生成完成（${attempts} 次尝试${repairs ? `，设备报错修正第 ${repairs} 次` : ""}）${r.model ? ` · ${r.model}` : ""}，检查差异后点“应用并下发”`
       : `生成未通过校验（尝试 ${attempts} 次${repairs ? `，设备报错修正 ${repairs} 次` : ""}），请调整需求后重试`,
     ok ? "ok" : "err"
   );
+}
+
+function aiAnswerSubmit() {
+  const answer = $("aiAnswer").value.trim();
+  if (!answer) { setMsg($("aiMsg"), "先写一下回答", "err"); return; }
+  const question = $("aiQuestion").textContent.trim();
+  const base = $("aiReq").value.trim();
+  $("aiReq").value =
+    base + (question ? `\n\n之前的问题：${question}` : "") + `\n补充回答：${answer}`;
+  aiGenerate();
 }
 
 function startAiPoll(jobId, request, repairCount) {
@@ -728,6 +771,7 @@ async function aiGenerate() {
 
   aiProposal = null;
   $("aiOut").style.display = "none";
+  $("aiClarify").style.display = "none";
   $("aiSteps").textContent = "";
   $("aiWarn").textContent = "";
   $("aiErrors").textContent = "";

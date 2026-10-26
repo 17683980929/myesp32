@@ -94,6 +94,8 @@ export const DEFAULT_CONFIG = {
     baseUrl: "https://api.deepseek.com",
     apiKey: "",
     model: "deepseek-flash",
+    /** 创造模式复杂 Lua 修改使用的模型；留空 = 与 model 相同 */
+    luaModel: "",
     maxTokens: 4096,
     temperature: 0.7,
     /** 允许模型调用工具（查天气/新闻/控制屏幕等）；个别网关不支持时自动降级 */

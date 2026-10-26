@@ -81,7 +81,11 @@ const SYSTEM_PROMPT = `你是「小鱼」桌面宠物的 Lua UI 工程师。你�
 SUMMARY: 一句中文摘要（≤80 字）
 \`\`\`lua
 <完整的新脚本，不能省略、不能给 diff、不能写“其余不变”>
-\`\`\``;
+\`\`\`
+
+如果需求缺少关键信息（改哪个页面/功能、是否保留原功能），不要猜；只输出一行：
+CLARIFY: 一句中文问题
+不要输出代码块。一次请求最多问一次；能合理推断的不要问。`;
 
 export function luaBaseHash(code) {
   return crypto.createHash("sha1").update(String(code || "")).digest("hex").slice(0, 16);
@@ -122,6 +126,10 @@ export function parseModelOutput(raw) {
   const sm = text.match(/^\s*SUMMARY\s*[:：]\s*(.+)$/im);
   if (sm) summary = sm[1].trim();
 
+  let clarify = "";
+  const cm = text.match(/^\s*(?:CLARIFY|问题|需要确认)\s*[:：]\s*(.+)$/im);
+  if (cm) clarify = cm[1].trim();
+
   const blocks = [...text.matchAll(/```(?:lua)?\s*\n?([\s\S]*?)```/gi)]
     .map((m) => m[1].trim())
     .filter(Boolean);
@@ -129,13 +137,22 @@ export function parseModelOutput(raw) {
   if (blocks.length) {
     code = blocks.sort((a, b) => b.length - a.length)[0];
   } else {
-    const cm = text.match(/(?:^|\n)\s*(?:CODE|LUA)\s*[:：]\s*\n([\s\S]*)$/i);
-    if (cm) code = cm[1].trim();
+    const cm2 = text.match(/(?:^|\n)\s*(?:CODE|LUA)\s*[:：]\s*\n([\s\S]*)$/i);
+    if (cm2) code = cm2[1].trim();
     else if (/^\s*(?:local|function|display|--)/m.test(text)) code = text.trim();
     if (summary) code = code.replace(/^\s*SUMMARY\s*[:：].*$/im, "").trim();
   }
   code = code.replace(/^\s*(?:CODE|LUA)\s*[:：]\s*/i, "").trim();
-  return { summary, code };
+  return { summary, code, clarify };
+}
+
+/** 简单需求用快模型，重写/多页/动画等复杂需求用可配置的 luaModel */
+function pickLuaModel(request, llm) {
+  const req = String(request || "");
+  const complex = req.length > 80 ||
+    /(重写|重新设计|新页面|多页|动画|布局|逻辑|交互|重构|整套|功能|倒计时|定时|状态页|课表页)/.test(req);
+  const model = complex && llm.luaModel ? llm.luaModel : llm.model;
+  return { model, complex };
 }
 
 /**
@@ -271,6 +288,9 @@ export async function generateLuaProposal({ request, current, llm, onStep, chat 
     try { onStep?.(text); } catch { /* 进度回调不应影响生成 */ }
   };
 
+  const picked = pickLuaModel(request, llm);
+  step(`使用模型 ${picked.model}（${picked.complex ? "复杂" : "简单"}需求）`);
+
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -293,7 +313,7 @@ export async function generateLuaProposal({ request, current, llm, onStep, chat 
       for await (const delta of chat({
         apiKey: llm.apiKey,
         baseUrl: llm.baseUrl,
-        model: llm.model,
+        model: picked.model,
         messages,
         maxTokens: 4096,
         temperature: 0.2,
@@ -312,6 +332,23 @@ export async function generateLuaProposal({ request, current, llm, onStep, chat 
 
     step("解析模型输出");
     const parsed = parseModelOutput(raw);
+
+    if (parsed.clarify && !parsed.code) {
+      const question = normalizeSummary(parsed.clarify, []);
+      step(`需要澄清：${question}`);
+      return {
+        ok: false,
+        needsClarify: true,
+        question,
+        summary: question,
+        code: "",
+        errors: [],
+        warnings: [],
+        attempts,
+        model: picked.model,
+      };
+    }
+
     const checked = validateLua(parsed.code, current);
     if (checked.ok && checked.code.trim() === String(current || "").trim()) {
       checked.ok = false;
@@ -328,6 +365,7 @@ export async function generateLuaProposal({ request, current, llm, onStep, chat 
         errors: checked.errors,
         warnings: checked.warnings,
         attempts,
+        model: picked.model,
       };
     }
 
@@ -341,6 +379,7 @@ export async function generateLuaProposal({ request, current, llm, onStep, chat 
         errors: checked.errors,
         warnings: checked.warnings,
         attempts,
+        model: picked.model,
       };
     }
 
