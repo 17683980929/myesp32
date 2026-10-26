@@ -44,6 +44,7 @@ const VERSION_FILE = path.join(ROOT, "VERSION");
 const luaJobs = new Map();
 let luaJobSeq = 0;
 let luaJobRunning = 0;
+const MAX_AUTO_REPAIR = 2;   /* 设备报错后最多自动重新生成 2 次 */
 
 function currentLuaScript() {
   const cfg = getConfig();
@@ -564,6 +565,8 @@ export async function handleHttp(req, res, ctx) {
         const body = JSON.parse(await readBody(req));
         const code = typeof body.code === "string" ? body.code : "";
         const summary = String(body.summary || "AI 修改").replace(/\s+/g, " ").trim().slice(0, 120) || "AI 修改";
+        const request = String(body.request || "").trim().slice(0, 500);
+        const repairCount = Math.max(0, Math.min(MAX_AUTO_REPAIR, Number(body.repairCount) || 0));
         const current = currentLuaScript();
         if (!current) return json(res, 500, { ok: false, msg: "没有当前 Lua 脚本" });
 
@@ -617,6 +620,32 @@ export async function handleHttp(req, res, ctx) {
           });
           const rid = (id + 1) % 100000;
           await Promise.all(list.map((d) => d.sendLua(rid, old, 8000))).catch(() => {});
+
+          const failed = results.find((r) => !r.ok);
+          const deviceError = String(
+            failed?.out || (failed?.timeout ? "回执超时" : "设备未返回错误信息")
+          ).slice(0, 600);
+          const cfg2 = getConfig();
+          if (repairCount < MAX_AUTO_REPAIR && request && luaJobRunning === 0 && cfg2.llm?.apiKey) {
+            const repairRequest =
+              `用户原始需求：${request}\n\n` +
+              `上一版脚本已通过静态校验，但设备加载失败：\n${deviceError}\n\n` +
+              `上一版脚本（供参考）：\n\`\`\`lua\n${checked.code}\n\`\`\`\n\n` +
+              `请基于当前脚本重新实现原需求，修复这个设备错误，输出完整脚本。`;
+            const job = startLuaJob({ request: repairRequest, current: old, llm: cfg2.llm });
+            log(`Lua AI 设备报错，自动修正任务 #${job.id} 开始：${deviceError.slice(0, 100)}`);
+            return json(res, 502, {
+              ok: false,
+              msg: "设备加载失败，已回滚；正在让模型根据设备错误自动修正",
+              rolledBack: true,
+              results,
+              repairJobId: job.id,
+              repairCount: repairCount + 1,
+              steps: job.steps,
+              warnings: checked.warnings,
+            });
+          }
+
           log(`Lua AI 下发失败，已回滚：${checked.code.length} 字符`);
           return json(res, 502, {
             ok: false,

@@ -653,11 +653,18 @@ function aiShowSteps(steps) {
     : "";
 }
 
-function aiShowResult(r) {
+function aiShowResult(r, request, repairCount) {
   const ok = !!(r && r.ok);
   const attempts = (r && r.attempts) || 1;
+  const repairs = repairCount || 0;
   aiProposal = ok
-    ? { summary: (r && r.summary) || "Lua 修改", code: (r && r.code) || "", baseHash: (r && r.baseHash) || "" }
+    ? {
+        summary: (r && r.summary) || "Lua 修改",
+        code: (r && r.code) || "",
+        baseHash: (r && r.baseHash) || "",
+        request: request || "",
+        repairCount: repairs,
+      }
     : null;
 
   $("aiOut").style.display = "block";
@@ -676,10 +683,39 @@ function aiShowResult(r) {
   setMsg(
     $("aiMsg"),
     ok
-      ? `生成完成（${attempts} 次尝试），检查差异后点“应用并下发”`
-      : `生成未通过校验（尝试 ${attempts} 次），已自动修正仍未通过，请调整需求后重试`,
+      ? `生成完成（${attempts} 次尝试${repairs ? `，设备报错修正第 ${repairs} 次` : ""}），检查差异后点“应用并下发”`
+      : `生成未通过校验（尝试 ${attempts} 次${repairs ? `，设备报错修正 ${repairs} 次` : ""}），请调整需求后重试`,
     ok ? "ok" : "err"
   );
+}
+
+function startAiPoll(jobId, request, repairCount) {
+  if (aiPollTimer) return;
+  const started = Date.now();
+  const genBtn = $("aiGenBtn");
+  genBtn.disabled = true;
+
+  aiPollTimer = setInterval(async () => {
+    try {
+      const sr = await fetch(`api/lua/ai/status?id=${jobId}`);
+      const sj = await sr.json();
+      if (!sj.ok) throw new Error(sj.msg || "状态读取失败");
+      aiShowSteps(sj.steps);
+      if (sj.status === "done") {
+        clearInterval(aiPollTimer); aiPollTimer = null; genBtn.disabled = false;
+        aiShowResult(sj.result, request, repairCount);
+      } else if (sj.status === "error") {
+        clearInterval(aiPollTimer); aiPollTimer = null; genBtn.disabled = false;
+        setMsg($("aiMsg"), `生成失败：${sj.error || "未知错误"}`, "err");
+      } else if (Date.now() - started > 240000) {
+        clearInterval(aiPollTimer); aiPollTimer = null; genBtn.disabled = false;
+        setMsg($("aiMsg"), "等待超时，请重试", "err");
+      }
+    } catch (e) {
+      clearInterval(aiPollTimer); aiPollTimer = null; genBtn.disabled = false;
+      setMsg($("aiMsg"), "状态读取失败", "err");
+    }
+  }, 1500);
 }
 
 async function aiGenerate() {
@@ -716,28 +752,7 @@ async function aiGenerate() {
     }
 
     aiShowSteps(j.steps);
-    const started = Date.now();
-    aiPollTimer = setInterval(async () => {
-      try {
-        const sr = await fetch(`api/lua/ai/status?id=${j.jobId}`);
-        const sj = await sr.json();
-        if (!sj.ok) throw new Error(sj.msg || "状态读取失败");
-        aiShowSteps(sj.steps);
-        if (sj.status === "done") {
-          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
-          aiShowResult(sj.result);
-        } else if (sj.status === "error") {
-          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
-          setMsg($("aiMsg"), `生成失败：${sj.error || "未知错误"}`, "err");
-        } else if (Date.now() - started > 240000) {
-          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
-          setMsg($("aiMsg"), "等待超时，请重试", "err");
-        }
-      } catch (e) {
-        clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
-        setMsg($("aiMsg"), "状态读取失败", "err");
-      }
-    }, 1500);
+    startAiPoll(j.jobId, request, 0);
   } catch (e) {
     btn.disabled = false;
     setMsg($("aiMsg"), "请求失败", "err");
@@ -748,24 +763,42 @@ async function aiApply() {
   if (!aiProposal) return;
   const code = $("aiCode").value;
   if (!code.trim()) { setMsg($("aiApplyMsg"), "脚本为空", "err"); return; }
-  if (!confirm("把新脚本下发给在线设备？设备加载失败会自动回滚。")) return;
+  if (!confirm("把新脚本下发给在线设备？设备加载失败会自动回滚并重新生成。")) return;
 
+  const request = aiProposal.request || $("aiReq").value.trim();
+  const repairCount = aiProposal.repairCount || 0;
   setMsg($("aiApplyMsg"), "下发中…", "warn");
   try {
     const r = await fetch("api/lua/apply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, summary: aiProposal.summary, baseHash: aiProposal.baseHash }),
+      body: JSON.stringify({
+        code,
+        summary: aiProposal.summary,
+        baseHash: aiProposal.baseHash,
+        request,
+        repairCount,
+      }),
     });
     const j = await r.json();
     if (!j.ok) {
-      setMsg($("aiApplyMsg"), j.msg || "应用失败", "err");
-      if (j.errors && j.errors.length) $("aiErrors").textContent = "校验未通过：" + j.errors.join("；");
-      if (j.rolledBack) {
+      if (j.repairJobId) {
+        setMsg($("aiApplyMsg"), j.msg || "设备加载失败，已回滚；正在根据设备错误自动修正…", "warn");
         aiProposal = null;
         $("aiApplyBtn").disabled = true;
+        $("aiOut").style.display = "none";
+        $("aiErrors").textContent = "";
         await loadConfig();
+        aiCurrent = (cfg.lua && cfg.lua.activeScript) || "";
+        aiShowSteps(j.steps);
+        startAiPoll(j.repairJobId, request, j.repairCount != null ? j.repairCount : repairCount + 1);
+        return;
       }
+      setMsg($("aiApplyMsg"), j.msg || "应用失败", "err");
+      if (j.errors && j.errors.length) $("aiErrors").textContent = "校验未通过：" + j.errors.join("；");
+      aiProposal = null;
+      $("aiApplyBtn").disabled = true;
+      if (j.rolledBack) await loadConfig();
       return;
     }
     const ok = (j.results || []).filter((x) => x.ok).length;
