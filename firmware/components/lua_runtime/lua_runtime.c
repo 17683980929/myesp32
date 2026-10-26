@@ -6,7 +6,8 @@
  *   - 每次执行（部署/开机脚本/定时器回调）都设 2 秒墙钟超时（debug hook
  *     每 2 万条指令查一次；sys.delay 的等待时间不计入）。
  *   - 自定义分配器，整个状态内存上限 128KB（超限返回 NULL，Lua 报内存错误）。
- *   - 白名单 API：display / pet / sensor / sys / timer；
+ *   - 白名单 API：display / pet / sensor / sys / timer；扩展能力 gpio /
+ *     audio / rtc / wifi / ble / sys.reboot 需脚本第一行 `-- @perm` 声明；
  *     io / os / package / debug 标准库不加载，dofile / loadfile 摘掉。
  *   - 每次部署先关旧状态再建新状态：脚本互不污染、旧定时器自然清空。
  *   - 持久化：执行成功才写 /fatfs/scripts/active.lua（写失败只告警）；
@@ -40,6 +41,11 @@
 #include "sensors.h"
 #include "pcf85063.h"
 #include "ui.h"
+#include "audio.h"
+#include "wifi_sta.h"
+#include "ble.h"
+#include "driver/gpio.h"
+#include "esp_system.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -77,6 +83,74 @@ static int             s_mem_used;         /* 分配器统计 */
 static int64_t         s_exec_start_us;    /* 本次执行墙钟起点 */
 static int64_t         s_paused_us;        /* sys.delay 累计暂停时间 */
 static int             s_hook_active;      /* 只在执行脚本主体时计时 */
+
+/* ── 能力权限 ──────────────────────────────────────────────────────────
+ * 脚本第一行的 `-- @perm gpio,audio,...` 决定能调用哪些扩展 API。
+ * 旧的 display/sensor/timer/sys 基础 API 不需要声明；扩展 API 默认拒绝。 */
+#define PERM_GPIO      (1u << 0)
+#define PERM_GPIO_ALL  (1u << 1)
+#define PERM_AUDIO     (1u << 2)
+#define PERM_RTC       (1u << 3)
+#define PERM_WIFI      (1u << 4)
+#define PERM_BLE       (1u << 5)
+#define PERM_SYS       (1u << 6)
+
+static uint32_t s_perms;
+
+static void parse_perms(const char *code)
+{
+    s_perms = 0;
+    if (!code) return;
+
+    const char *p = code;
+    for (int line = 0; line < 12 && p && *p; line++) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        const char *at = NULL;
+        for (size_t i = 0; i + 5 <= len; i++) {
+            if (!strncmp(p + i, "@perm", 5)) {
+                at = p + i + 5;
+                break;
+            }
+        }
+        if (at) {
+            char buf[160];
+            size_t n = 0;
+            while (at < p + len && n < sizeof(buf) - 1) buf[n++] = *at++;
+            buf[n] = 0;
+
+            char *s = buf;
+            while (*s) {
+                while (*s == ',' || *s == ' ' || *s == '\t' || *s == '\r') s++;
+                char *tok = s;
+                while (*s && *s != ',' && *s != ' ' && *s != '\t' && *s != '\r') s++;
+                if (s == tok) continue;
+                char saved = *s;
+                *s = 0;
+                if (!strcmp(tok, "gpio")) s_perms |= PERM_GPIO;
+                else if (!strcmp(tok, "gpio:all")) s_perms |= PERM_GPIO | PERM_GPIO_ALL;
+                else if (!strcmp(tok, "audio")) s_perms |= PERM_AUDIO;
+                else if (!strcmp(tok, "rtc")) s_perms |= PERM_RTC;
+                else if (!strcmp(tok, "wifi")) s_perms |= PERM_WIFI;
+                else if (!strcmp(tok, "ble")) s_perms |= PERM_BLE;
+                else if (!strcmp(tok, "sys")) s_perms |= PERM_SYS;
+                /* display/sensor/timer 是默认能力，写了也不影响 */
+                if (!saved) break;
+                *s = saved;
+                s++;
+            }
+            break;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
+static int need_perm(lua_State *L, uint32_t bit, const char *name)
+{
+    if (s_perms & bit) return 0;
+    return luaL_error(L, "权限不足：%s（脚本第一行加 -- @perm %s）", name, name);
+}
 
 /* 以下三块都放 PSRAM：合计 ~10KB 内部 RAM 让给 BLE 主机/控制器 */
 static char            *s_out;             /* 回执输出（print/sys.log/返回值） */
@@ -346,6 +420,168 @@ static int l_sys_on(lua_State *L)
     return luaL_error(L, "不支持的事件：%s（可用：%s）", name, list);
 }
 
+/* ── 扩展能力：GPIO / 音频 / RTC / 状态 / 重启 ─────────────────────── */
+
+static int gpio_pin_ok(lua_State *L, int pin)
+{
+    if (pin < 0 || pin > 48) return luaL_error(L, "GPIO 引脚范围 0~48");
+    if ((pin >= 26 && pin <= 37) || pin == 19 || pin == 20)
+        return luaL_error(L, "GPIO%d 保留给 USB/Flash/PSRAM，不开放", pin);
+    if (!(s_perms & PERM_GPIO_ALL)) {
+        if (pin != 1 && pin != 2 && pin != 3 && pin != 43 && pin != 44)
+            return luaL_error(L, "GPIO%d 需要 gpio:all 权限", pin);
+    }
+    return 0;
+}
+
+static int l_gpio_mode(lua_State *L)
+{
+    need_perm(L, PERM_GPIO, "gpio");
+    int pin = (int)luaL_checkinteger(L, 1);
+    gpio_pin_ok(L, pin);
+    const char *mode = luaL_checkstring(L, 2);
+
+    gpio_config_t io = { 0 };
+    io.pin_bit_mask = 1ULL << pin;
+    io.intr_type = GPIO_INTR_DISABLE;
+    if (!strcmp(mode, "in")) {
+        io.mode = GPIO_MODE_INPUT;
+    } else if (!strcmp(mode, "in_pullup")) {
+        io.mode = GPIO_MODE_INPUT;
+        io.pull_up_en = GPIO_PULLUP_ENABLE;
+    } else if (!strcmp(mode, "in_pulldown")) {
+        io.mode = GPIO_MODE_INPUT;
+        io.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    } else if (!strcmp(mode, "out")) {
+        io.mode = GPIO_MODE_OUTPUT;
+    } else {
+        return luaL_error(L, "mode 只能是 in/out/in_pullup/in_pulldown");
+    }
+
+    lua_pushboolean(L, gpio_config(&io) == ESP_OK);
+    return 1;
+}
+
+static int l_gpio_write(lua_State *L)
+{
+    need_perm(L, PERM_GPIO, "gpio");
+    int pin = (int)luaL_checkinteger(L, 1);
+    gpio_pin_ok(L, pin);
+    int level = lua_toboolean(L, 2) ? 1 : 0;
+    gpio_set_level(pin, level);
+    lua_pushinteger(L, level);
+    return 1;
+}
+
+static int l_gpio_read(lua_State *L)
+{
+    need_perm(L, PERM_GPIO, "gpio");
+    int pin = (int)luaL_checkinteger(L, 1);
+    gpio_pin_ok(L, pin);
+    lua_pushinteger(L, gpio_get_level(pin));
+    return 1;
+}
+
+static int l_gpio_toggle(lua_State *L)
+{
+    need_perm(L, PERM_GPIO, "gpio");
+    int pin = (int)luaL_checkinteger(L, 1);
+    gpio_pin_ok(L, pin);
+    int level = !gpio_get_level(pin);
+    gpio_set_level(pin, level);
+    lua_pushinteger(L, level);
+    return 1;
+}
+
+/* audio.* */
+static int l_audio_volume(lua_State *L)
+{
+    need_perm(L, PERM_AUDIO, "audio");
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        int vol = (int)luaL_checkinteger(L, 1);
+        if (vol < 0) vol = 0;
+        if (vol > 100) vol = 100;
+        audio_volume_set(vol);
+    }
+    lua_pushinteger(L, audio_volume_get());
+    return 1;
+}
+
+static int l_audio_chime(lua_State *L) { need_perm(L, PERM_AUDIO, "audio"); audio_play_wake_chime(); return 0; }
+static int l_audio_alarm(lua_State *L) { need_perm(L, PERM_AUDIO, "audio"); audio_play_alarm(); return 0; }
+
+/* rtc.* */
+static int l_rtc_get(lua_State *L)
+{
+    need_perm(L, PERM_RTC, "rtc");
+    int y = 0, mo = 0, d = 0, wd = 0, h = 0, mi = 0, s = 0;
+    if (pcf85063_get(&y, &mo, &d, &wd, &h, &mi, &s) != 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 7);
+    lua_pushinteger(L, y);  lua_setfield(L, -2, "year");
+    lua_pushinteger(L, mo); lua_setfield(L, -2, "mon");
+    lua_pushinteger(L, d);  lua_setfield(L, -2, "day");
+    lua_pushinteger(L, wd); lua_setfield(L, -2, "wday");
+    lua_pushinteger(L, h);  lua_setfield(L, -2, "hour");
+    lua_pushinteger(L, mi); lua_setfield(L, -2, "min");
+    lua_pushinteger(L, s);  lua_setfield(L, -2, "sec");
+    return 1;
+}
+
+static int l_rtc_set(lua_State *L)
+{
+    need_perm(L, PERM_RTC, "rtc");
+    int y  = (int)luaL_checkinteger(L, 1);
+    int mo = (int)luaL_checkinteger(L, 2);
+    int d  = (int)luaL_checkinteger(L, 3);
+    int h  = (int)luaL_checkinteger(L, 4);
+    int mi = (int)luaL_checkinteger(L, 5);
+    int s  = (int)luaL_checkinteger(L, 6);
+    lua_pushboolean(L, pcf85063_set(y, mo, d, h, mi, s) == 0);
+    return 1;
+}
+
+/* wifi.status() / ble.status()：只读 */
+static int l_wifi_status(lua_State *L)
+{
+    need_perm(L, PERM_WIFI, "wifi");
+    char ip[24] = { 0 }, ssid[40] = { 0 };
+    wifi_sta_ip(ip, sizeof(ip));
+    wifi_sta_ssid(ssid, sizeof(ssid));
+
+    lua_createtable(L, 0, 4);
+    lua_pushboolean(L, wifi_sta_connected());
+    lua_setfield(L, -2, "connected");
+    lua_pushstring(L, ip);
+    lua_setfield(L, -2, "ip");
+    lua_pushstring(L, ssid);
+    lua_setfield(L, -2, "ssid");
+    lua_pushinteger(L, wifi_sta_rssi());
+    lua_setfield(L, -2, "rssi");
+    return 1;
+}
+
+static int l_ble_status(lua_State *L)
+{
+    need_perm(L, PERM_BLE, "ble");
+    lua_createtable(L, 0, 2);
+    lua_pushstring(L, ble_state_str());
+    lua_setfield(L, -2, "state");
+    lua_pushstring(L, ble_name());
+    lua_setfield(L, -2, "name");
+    return 1;
+}
+
+static int l_sys_reboot(lua_State *L)
+{
+    need_perm(L, PERM_SYS, "sys");
+    ESP_LOGW(TAG, "Lua 脚本请求重启");
+    esp_restart();
+    return 0;
+}
+
 /* ── 注册与沙箱 ────────────────────────────────────────────────────── */
 
 static void register_apis(lua_State *L)
@@ -368,10 +604,32 @@ static void register_apis(lua_State *L)
         { "millis", l_sys_millis }, { "delay", l_sys_delay }, { "log", l_sys_log },
         { "clock", l_sys_clock },
         { "on", l_sys_on },
+        { "reboot", l_sys_reboot },
         { NULL, NULL }
     };
     static const luaL_Reg f_timer[] = {
         { "after", l_timer_after }, { "every", l_timer_every },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_gpio[] = {
+        { "mode", l_gpio_mode }, { "read", l_gpio_read },
+        { "write", l_gpio_write }, { "toggle", l_gpio_toggle },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_audio[] = {
+        { "volume", l_audio_volume }, { "chime", l_audio_chime }, { "alarm", l_audio_alarm },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_rtc[] = {
+        { "get", l_rtc_get }, { "set", l_rtc_set },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_wifi[] = {
+        { "status", l_wifi_status },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_ble[] = {
+        { "status", l_ble_status },
         { NULL, NULL }
     };
 
@@ -380,6 +638,11 @@ static void register_apis(lua_State *L)
     luaL_newlib(L, f_sensor);  lua_setglobal(L, "sensor");
     luaL_newlib(L, f_sys);     lua_setglobal(L, "sys");
     luaL_newlib(L, f_timer);   lua_setglobal(L, "timer");
+    luaL_newlib(L, f_gpio);    lua_setglobal(L, "gpio");
+    luaL_newlib(L, f_audio);   lua_setglobal(L, "audio");
+    luaL_newlib(L, f_rtc);     lua_setglobal(L, "rtc");
+    luaL_newlib(L, f_wifi);    lua_setglobal(L, "wifi");
+    luaL_newlib(L, f_ble);     lua_setglobal(L, "ble");
 }
 
 static void open_sandbox(lua_State *L)
@@ -484,6 +747,7 @@ static int run_code(const char *code, int persist)
     }
     s_mem_used = 0;
     timers_clear();
+    parse_perms(code);
     for (int i = 0; i < EVT_COUNT; i++) {
         s_evt_ref[i] = LUA_NOREF;              /* 引用随旧状态销毁 */
         s_evt_min_stamp[i] = 0;

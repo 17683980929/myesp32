@@ -19,9 +19,19 @@ const ALLOWED_API = {
   display: new Set(["clear", "text", "rect", "flush", "close"]),
   pet: new Set(["state"]),
   sensor: new Set(["temp", "hum", "battery", "voltage"]),
-  sys: new Set(["millis", "delay", "log", "clock", "on"]),
+  sys: new Set(["millis", "delay", "log", "clock", "on", "reboot"]),
   timer: new Set(["after", "every"]),
+  gpio: new Set(["mode", "read", "write", "toggle"]),
+  audio: new Set(["volume", "chime", "alarm"]),
+  rtc: new Set(["get", "set"]),
+  wifi: new Set(["status"]),
+  ble: new Set(["status"]),
 };
+
+const KNOWN_PERMS = new Set([
+  "display", "sensor", "timer", "sys",
+  "gpio", "gpio:all", "audio", "rtc", "wifi", "ble",
+]);
 
 const EVENTS = new Set([
   "key_click", "key_double",
@@ -47,11 +57,20 @@ const SYSTEM_PROMPT = `你是「小鱼」桌面宠物的 Lua UI 工程师。你�
   sys.millis() sys.delay(ms) sys.log(...) sys.clock() sys.on(name, fn)
   timer.after(ms, fn) timer.every(ms, fn)
   标准库：base / coroutine / math / string / table / utf8；没有 io / os / package / debug，也没有 require / dofile / loadfile。
+
+扩展能力（用到才在脚本第一行声明 -- @perm ...，没声明就调用会报“权限不足”；没用到不要声明）：
+  gpio.mode(pin, "in"/"out"/"in_pullup"/"in_pulldown")  gpio.read(pin)  gpio.write(pin, 0/1)  gpio.toggle(pin)
+    权限 gpio 默认只能 1,2,3,43,44；gpio:all 可操作除 USB(19,20)、Flash/PSRAM(26~37) 外的全部脚（可能影响屏幕/音频，慎用）
+  audio.volume([0..100])  audio.chime()  audio.alarm()                         权限 audio
+  rtc.get() -> {year,mon,day,wday,hour,min,sec}  rtc.set(year,mon,day,hour,min,sec)  权限 rtc
+  wifi.status() -> {connected,ip,ssid,rssi}                                      权限 wifi
+  ble.status() -> {state,name}                                                   权限 ble
+  sys.reboot()                                                                   权限 sys
+  示例：-- @perm gpio,audio
 - sys.on 只支持：key_click, key_double, open_timetable, open_env, canvas_close, canvas_next, round_1, round_2, round_3。未知事件会报错；可选事件用 pcall 包住。
 - 如果当前脚本包含 \`-- >>>DATA ... -- <<<DATA\` 段，必须原样保留（课表数据由服务器管理）；如果没有，不要新增。
 - 保留现有脚本的页面和功能，除非用户明确要求删除；保留错误处理和防重入。
 - 如果需求需要固件能力（新传感器 / 网络 / 新事件），不要编造 API；SUMMARY 里说明“Lua 做不到，需要固件支持”，不要输出代码块。
-
 输出格式（严格）：
 SUMMARY: 一句中文摘要（≤80 字）
 \`\`\`lua
@@ -128,6 +147,18 @@ export function validateLua(rawCode, current) {
   if (fence) code = fence[1].trim();
   if (!code) return { ok: false, code: "", errors: ["模型没有给出脚本"], warnings };
 
+  const permMatch = code.match(/^[ \t]*--[ \t]*@perm[ \t]+(.+)$/m);
+  const permTokens = permMatch
+    ? [...new Set(permMatch[1].split(/[,\s]+/).filter(Boolean))]
+    : [];
+  for (const p of permTokens) {
+    if (!KNOWN_PERMS.has(p)) errors.push(`不支持的权限：${p}`);
+  }
+  const hasPerm = (p) => permTokens.includes(p);
+  const gpioPerm = hasPerm("gpio") || hasPerm("gpio:all");
+  const permLine = permTokens.length ? `-- @perm ${permTokens.join(",")}\n` : "";
+  code = code.replace(/^[ \t]*--[ \t]*@perm[^\n]*\n?/gm, "").trim();
+
   const currentBlock = extractDataBlock(current);
   const hasBlock = DATA_RE.test(code);
   const suppliedBlock = extractDataBlock(code);
@@ -153,6 +184,7 @@ export function validateLua(rawCode, current) {
     if (hasBlock) warnings.push("当前脚本没有课表 DATA 段，已忽略模型生成的 DATA 段");
     code = body.trim() + "\n";
   }
+  code = permLine + code;
   if (code.length > CODE_LIMIT) {
     errors.push(`脚本 ${code.length} 字符，超过上限 ${CODE_LIMIT}`);
   }
@@ -169,7 +201,7 @@ export function validateLua(rawCode, current) {
   ];
   for (const [re, msg] of forbidden) if (re.test(plain)) errors.push(msg);
 
-  const apiRe = /\b(display|pet|sensor|sys|timer)\s*\.\s*([A-Za-z_]\w*)/g;
+  const apiRe = /\b(display|pet|sensor|sys|timer|gpio|audio|rtc|wifi|ble)\s*\.\s*([A-Za-z_]\w*)/g;
   const seen = new Set();
   let m;
   while ((m = apiRe.exec(plain))) {
@@ -179,6 +211,24 @@ export function validateLua(rawCode, current) {
       seen.add(key);
       errors.push(`不支持的 API：${key}`);
     }
+  }
+
+  const permChecks = [
+    [/\bgpio\s*\./, gpioPerm, "gpio"],
+    [/\baudio\s*\./, hasPerm("audio"), "audio"],
+    [/\brtc\s*\./, hasPerm("rtc"), "rtc"],
+    [/\bwifi\s*\./, hasPerm("wifi"), "wifi"],
+    [/\bble\s*\./, hasPerm("ble"), "ble"],
+    [/\bsys\s*\.\s*reboot\s*\(/, hasPerm("sys"), "sys"],
+  ];
+  for (const [re, ok, name] of permChecks) {
+    if (re.test(plain) && !ok) errors.push(`使用 ${name} 需要在第一行声明 -- @perm ${name}`);
+  }
+  if (permTokens.includes("gpio:all")) {
+    warnings.push("gpio:all 可改屏幕/音频等占用脚，可能导致设备显示或声音异常");
+  }
+  if (/\bsys\s*\.\s*reboot\s*\(/.test(plain)) {
+    warnings.push("脚本会重启设备");
   }
 
   const evRe = /sys\s*\.\s*on\s*\(\s*["']([^"']+)["']/g;
@@ -193,7 +243,7 @@ export function validateLua(rawCode, current) {
     warnings.push("脚本包含 while true，依赖运行时 2 秒超时兜底");
   }
 
-  return { ok: errors.length === 0, code, errors, warnings };
+  return { ok: errors.length === 0, code, errors, warnings, permissions: permTokens };
 }
 
 /**

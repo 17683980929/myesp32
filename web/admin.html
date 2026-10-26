@@ -244,7 +244,7 @@
   <!-- 创造模式：Lua AI -->
   <div class="card">
     <h2>创造模式 <span class="tag">Lua AI · 预览后下发</span></h2>
-    <p class="hint">描述想改的功能，模型只改当前 Lua 脚本；生成后先看摘要和差异，点“应用并下发”才生效。设备加载失败会自动回滚。</p>
+    <p class="hint">描述想改的功能，模型只改当前 Lua 脚本；生成后先看摘要、权限和差异，点“应用并下发”才生效。设备加载失败会自动回滚并重新生成；扩展能力需要固件 0.1.37+。</p>
     <div id="aiBaseWarn" class="msg warn"></div>
     <label>需求</label>
     <textarea id="aiReq" rows="3" placeholder="例如：把状态页的“电量”两个字改成“电池”，字号再大一点；或者在状态页底部加一行今天的日期。"></textarea>
@@ -257,6 +257,7 @@
     <div id="aiOut" style="display:none">
       <label>修改摘要</label>
       <div id="aiSummary"></div>
+      <div id="aiPerm" class="hint" style="color:var(--text);margin-top:4px"></div>
       <div id="aiWarn" class="msg warn" style="margin-top:6px"></div>
       <div id="aiErrors" class="msg err" style="margin-top:6px"></div>
       <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
@@ -669,6 +670,8 @@ function aiShowResult(r, request, repairCount) {
 
   $("aiOut").style.display = "block";
   $("aiSummary").textContent = (r && r.summary) || "(无摘要)";
+  const pm = String((r && r.code) || "").match(/^\s*--\s*@perm\s+(.+)$/m);
+  $("aiPerm").textContent = pm ? `申请权限：${pm[1].trim()}` : "";
   $("aiWarn").textContent = ((r && r.warnings) || []).join("；");
   $("aiErrors").textContent = ((r && r.errors) || []).length
     ? "校验未通过：" + r.errors.join("；")
@@ -763,7 +766,9 @@ async function aiApply() {
   if (!aiProposal) return;
   const code = $("aiCode").value;
   if (!code.trim()) { setMsg($("aiApplyMsg"), "脚本为空", "err"); return; }
-  if (!confirm("把新脚本下发给在线设备？设备加载失败会自动回滚并重新生成。")) return;
+  const pm = code.match(/^\s*--\s*@perm\s+(.+)$/m);
+  const permNote = pm ? `本次脚本申请权限：${pm[1].trim()}\n` : "";
+  if (!confirm(`${permNote}把新脚本下发给在线设备？设备加载失败会自动回滚并重新生成。`)) return;
 
   const request = aiProposal.request || $("aiReq").value.trim();
   const repairCount = aiProposal.repairCount || 0;
