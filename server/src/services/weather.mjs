@@ -63,9 +63,30 @@ export function toChinese(desc) {
   return desc.trim();
 }
 
+/** 单日预报：天气现象取中午 12 点，降雨概率取全天最高。 */
+function forecastDay(d) {
+  const hourly = Array.isArray(d.hourly) ? d.hourly : [];
+  const noon = hourly.find((x) => parseInt(x.time, 10) === 1200) || hourly[Math.floor(hourly.length / 2)];
+
+  let rain = 0;
+  for (const h of hourly) {
+    const v = parseInt(h.chanceofrain, 10);
+    if (Number.isFinite(v) && v > rain) rain = v;
+  }
+
+  return {
+    date: d.date,
+    text: toChinese(noon?.weatherDesc?.[0]?.value ?? ""),
+    min: parseInt(d.mintempC, 10),
+    max: parseInt(d.maxtempC, 10),
+    rainChance: rain,
+  };
+}
+
 /**
- * 拉一次当前天气。
- * @returns {Promise<{text:string, temp:number, humidity:number, city:string, at:number}>}
+ * 拉一次天气（当前 + 3 天预报）。
+ * @returns {Promise<{text:string, temp:number, humidity:number, city:string, at:number,
+ *   forecast:Array<{date:string, text:string, min:number, max:number, rainChance:number}>}>}
  */
 export async function fetchWeather(cfg) {
   const city = (cfg.city || "北京").trim();
@@ -94,12 +115,15 @@ export async function fetchWeather(cfg) {
 
   const descRaw = cur.weatherDesc?.[0]?.value ?? "";
 
+  const forecast = (Array.isArray(j.weather) ? j.weather : []).slice(0, 3).map(forecastDay);
+
   return {
     text: toChinese(descRaw),
     temp: parseInt(cur.temp_C ?? "0", 10),
     humidity: parseInt(cur.humidity ?? "0", 10),
     city,
     at: Date.now(),
+    forecast,
   };
 }
 
