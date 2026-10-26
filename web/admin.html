@@ -249,6 +249,18 @@
     </div>
   </div>
 
+  <!-- 课表编排 -->
+  <div class="card">
+    <h2>课表编排 <span class="tag">三轮补课</span></h2>
+    <div class="actions" id="ttRounds"></div>
+    <div id="ttGrid" style="overflow:auto;margin:6px 0"></div>
+    <div class="actions">
+      <button class="primary" onclick="saveTt()">保存并下发</button>
+      <span class="msg" id="ttMsg"></span>
+    </div>
+    <p class="hint">点格子循环切换：空 → 1班 → 18班 → 20班 → 24班 → 空。保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
+  </div>
+
   <!-- 服务端更新 -->
   <div class="card">
     <h2>服务端更新 <span class="tag">CI 打包</span></h2>
@@ -491,6 +503,65 @@ async function deployLua() {
   }
 }
 
+/* ── 课表编排 ─────────────────────────────────────────────── */
+let TTR = null, TTSEL = 1;
+const TTMAP = { A: "1班", B: "18班", C: "20班", D: "24班" };
+const TTCYCLE = { "-": "A", A: "B", B: "C", C: "D", D: "-" };
+
+async function loadTt() {
+  try {
+    const r = await fetch("api/timetable");
+    TTR = await r.json();
+    TTSEL = TTR.round || 1;
+    drawTt();
+  } catch { $("ttMsg").textContent = "读取课表失败"; }
+}
+
+function drawTt() {
+  if (!TTR) return;
+  const P = TTR.periods || [], rows = TTR.rounds[TTSEL - 1] || [];
+  let h = '<table style="border-collapse:collapse;font-size:12px">';
+  h += '<tr><th></th>' + (TTR.days || []).map((d) => '<th style="padding:2px 6px">' + d + "</th>").join("") + "</tr>";
+  for (let r = 0; r < 13; r++) {
+    h += '<tr><th style="padding:2px 6px;white-space:nowrap;text-align:right">' +
+      (P[r] ? P[r].label : "") + '<br><span style="color:#888;font-weight:400">' + (P[r] ? P[r].time : "") + "</span></th>";
+    for (let c = 0; c < 7; c++) {
+      const ch = (rows[r] || "-------")[c];
+      const on = ch !== "-";
+      h += '<td style="padding:1px"><button onclick="ttClick(' + r + "," + c + ')" style="width:62px;padding:4px 0;' +
+        (on ? "background:#2f6f4f;color:#fff;border-color:#2f6f4f" : "") + '">' +
+        (on ? TTMAP[ch] : "·") + "</button></td>";
+    }
+    h += "</tr>";
+  }
+  $("ttGrid").innerHTML = h + "</table>";
+  $("ttRounds").innerHTML = [1, 2, 3].map((n) =>
+    '<button onclick="ttSel(' + n + ')" class="' + (n === TTSEL ? "primary" : "") + '">第' + n + "轮</button>").join("");
+}
+
+function ttSel(n) { TTSEL = n; drawTt(); }
+
+function ttClick(r, c) {
+  const row = TTR.rounds[TTSEL - 1][r];
+  TTR.rounds[TTSEL - 1][r] = row.slice(0, c) + TTCYCLE[row[c]] + row.slice(c + 1);
+  drawTt();
+}
+
+async function saveTt() {
+  setMsg($("ttMsg"), "保存中…", "");
+  try {
+    const r = await fetch("api/timetable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rounds: TTR.rounds }),
+    });
+    const j = await r.json();
+    if (!j.ok) { setMsg($("ttMsg"), j.msg || "保存失败", "err"); return; }
+    const okCount = (j.results || []).filter((x) => x && x.ok).length;
+    setMsg($("ttMsg"), j.sent ? `已保存并下发（${okCount}/${j.sent} 台回执正常）` : "已保存，但当前没有在线设备", j.sent ? "ok" : "warn");
+  } catch { setMsg($("ttMsg"), "请求失败", "err"); }
+}
+
 async function refreshUpd() {
   try {
     const r = await fetch("api/server-update");
@@ -592,6 +663,7 @@ setInterval(refreshOta, 3000);
 refreshSkills();
 refreshUpd();
 setInterval(refreshUpd, 10000);
+loadTt();
 </script>
 </body>
 </html>

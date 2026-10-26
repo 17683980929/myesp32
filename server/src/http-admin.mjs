@@ -360,6 +360,50 @@ export async function handleHttp(req, res, ctx) {
         return;
       }
 
+      /* 课表：读 / 存（存完同时改 timetable.json 和 Lua 里的三轮表并下发） */
+      if (p === "/api/timetable" && req.method === "GET") {
+        const tt = JSON.parse(readFileSync(path.join(ROOT, "data/timetable.json"), "utf8"));
+        return json(res, 200, { days: tt.days, periods: tt.periods, rounds: tt.rounds, round: getConfig().timetable?.round || 1 });
+      }
+
+      if (p === "/api/timetable" && req.method === "POST") {
+        const { rounds } = JSON.parse(await readBody(req));
+        if (!Array.isArray(rounds) || rounds.length !== 3)
+          return json(res, 400, { ok: false, msg: "need 3 rounds" });
+        for (const r of rounds) {
+          if (!Array.isArray(r) || r.length !== 13 ||
+              r.some((x) => typeof x !== "string" || !/^[-ABCD]{7}$/.test(x)))
+            return json(res, 400, { ok: false, msg: "each round: 13 rows x 7 chars" });
+        }
+
+        const ttPath = path.join(ROOT, "data/timetable.json");
+        const tt = JSON.parse(readFileSync(ttPath, "utf8"));
+        tt.rounds = rounds;
+        writeFileSync(ttPath, JSON.stringify(tt, null, 2) + "\n");
+
+        const cfg = getConfig();
+        const block = "local RS={\n" + rounds.map((r) => '{"' + r.join('","') + '"},').join("\n") + "\n}\n";
+        const re = /local RS=\{[\s\S]*?\n}\n/;
+        let code = String(cfg.lua?.activeScript || "");
+        if (!re.test(code)) {
+          const tpl = path.join(ROOT, "data/framework.lua");
+          if (!existsSync(tpl))
+            return json(res, 500, { ok: false, msg: "script has no RS block; deploy new framework.lua first" });
+          code = readFileSync(tpl, "utf8");
+        }
+        if (!re.test(code)) return json(res, 500, { ok: false, msg: "no RS block in template" });
+        code = code.replace(re, block);
+        if (code.length > 6000)
+          return json(res, 400, { ok: false, msg: "generated script too long: " + code.length });
+
+        saveConfig({ lua: { prevScript: cfg.lua?.activeScript || "", activeScript: code } });
+        const id = Date.now() % 100000;
+        const list = [...ctx.devices];
+        const results = list.length ? await Promise.all(list.map((d) => d.sendLua(id, code, 8000))) : [];
+        log("timetable saved+deployed to " + list.length + " device(s), lua " + code.length + " chars");
+        return json(res, 200, { ok: true, sent: list.length, codeLen: code.length, results });
+      }
+
       if (p === "/api/lua" && req.method === "GET") {
         return json(res, 200, getConfig().lua);
       }

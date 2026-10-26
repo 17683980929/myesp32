@@ -28,7 +28,7 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           zip -qr /tmp/server.zip server/src server/skills server/data web \
-            -x 'server/data/life-guide/*'
+            -x 'server/data/life-guide/*' 'server/data/timetable.json'
           ls -lh /tmp/server.zip
           code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 90 \
             -X POST "https://0929.site/pet/api/server-bundle" \
