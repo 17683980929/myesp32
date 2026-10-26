@@ -182,6 +182,7 @@ static timer_slot_t    s_timers[TIMER_MAX];
 typedef struct {
     int      id;                           /* ≥0：部署请求；-1：事件消息 */
     int      evt;                          /* 事件序号（id=-1 时有效） */
+    int      check;                        /* 1 = dry-run，不持久化/不生效 */
     uint32_t stamp;                        /* 事件入队时刻（丢弃过期事件用） */
     char *code;                            /* 部署代码（堆上；任务里释放） */
 } deploy_msg_t;
@@ -933,9 +934,37 @@ static void reply(int id, int ok, const char *out)
     if (id >= 0 && s_result_cb) s_result_cb(id, ok != 0, out ? out : "");
 }
 
+/** dry-run 的 Lua mock：只替换硬件/界面副作用，脚本的语法和顶层逻辑照常执行 */
+static const char MOCK_LUA[] =
+    "local function _noop() end\n"
+    "display={clear=_noop,text=_noop,rect=_noop,flush=_noop,close=_noop}\n"
+    "pet={state=function() return true end}\n"
+    "sensor={temp=function() return 25 end,hum=function() return 50 end,"
+    "battery=function() return 80 end,voltage=function() return 4000 end}\n"
+    "timer={after=function() return 0 end,every=function() return 0 end}\n"
+    "gpio={mode=function() return true end,read=function() return 0 end,"
+    "write=function() return 0 end,toggle=function() return 0 end}\n"
+    "audio={volume=function(v) return v or 50 end,chime=_noop,alarm=_noop}\n"
+    "rtc={get=function() return {year=2026,mon=1,day=1,wday=0,hour=0,min=0,sec=0} end,"
+    "set=function() return true end}\n"
+    "wifi={status=function() return {connected=false,ip=\"\",ssid=\"\",rssi=-127} end}\n"
+    "ble={status=function() return {state=\"mock\",name=\"\"} end}\n"
+    "fs={write=function() return true end,read=function() return \"mock\" end,"
+    "list=function() return \"\" end,remove=function() return true end}\n"
+    "net={get=function() return {status=200,body=\"\",error=\"mock\"} end,"
+    "post=function() return {status=200,body=\"\",error=\"mock\"} end}\n"
+    "sys.millis=function() return 0 end\n"
+    "sys.delay=_noop\n"
+    "sys.log=_noop\n"
+    "sys.clock=function() return 0,0 end\n"
+    "sys.on=_noop\n"
+    "sys.reboot=_noop\n"
+    "print=_noop\n";
+
 /** 执行一段脚本：关旧状态 → 全新状态 → pcall。
+ *  dry=1：先加载 Lua mock 覆盖硬件 API，只检查语法/顶层逻辑，不持久化。
  *  @return 1 成功 / 0 失败（错误文本在 s_err） */
-static int run_code(const char *code, int persist)
+static int run_code(const char *code, int persist, int dry)
 {
     if (s_L) {
         lua_close(s_L);
@@ -958,12 +987,34 @@ static int run_code(const char *code, int persist)
     register_apis(s_L);
 
     out_reset();
-    s_capture = 1;
+    s_capture = dry ? 0 : 1;
     s_err[0] = 0;
 
     s_exec_start_us = esp_timer_get_time();
     s_paused_us = 0;
     s_hook_active = 1;
+
+    if (dry) {
+        int r = luaL_dostring(s_L, MOCK_LUA);
+        if (r == LUA_OK) r = luaL_loadbuffer(s_L, code, strlen(code), "=script");
+        if (r == LUA_OK) r = lua_pcall(s_L, 0, 1, 0);
+
+        int ok = (r == LUA_OK);
+        if (!ok) {
+            const char *err = lua_tostring(s_L, -1);
+            snprintf(s_err, OUT_CAP, "%s", err ? err : "未知错误");
+            lua_settop(s_L, 0);
+        }
+        s_hook_active = 0;
+        lua_close(s_L);
+        s_L = NULL;
+        timers_clear();
+        for (int i = 0; i < EVT_COUNT; i++) {
+            s_evt_ref[i] = LUA_NOREF;
+            s_evt_min_stamp[i] = 0;
+        }
+        return ok;
+    }
 
     int r = luaL_loadbuffer(s_L, code, strlen(code), "=script");
     if (r == LUA_OK) r = lua_pcall(s_L, 0, 1, 0);
@@ -992,21 +1043,22 @@ static int run_code(const char *code, int persist)
 
 static void handle_deploy(const deploy_msg_t *m)
 {
-    ESP_LOGI(TAG, "Lua#%d 下发（%d 字节）", m->id, (int)strlen(m->code));
-    int ok = run_code(m->code, 1);
+    ESP_LOGI(TAG, "Lua#%d 下发（%d 字节%s）", m->id, (int)strlen(m->code),
+             m->check ? "，dry-run" : "");
+    int ok = run_code(m->code, m->check ? 0 : 1, m->check);
     if (ok) {
-        ESP_LOGI(TAG, "Lua#%d 执行成功", m->id);
+        ESP_LOGI(TAG, "Lua#%d %s", m->id, m->check ? "dry-run 通过" : "执行成功");
     } else {
-        ESP_LOGW(TAG, "Lua#%d 执行失败：%s", m->id, s_err);
+        ESP_LOGW(TAG, "Lua#%d %s：%s", m->id, m->check ? "dry-run 失败" : "执行失败", s_err);
     }
-    reply(m->id, ok, ok ? s_out : s_err);
+    reply(m->id, ok, ok ? (m->check ? "dry-run 通过" : s_out) : s_err);
 
-    if (!ok) {
+    if (!m->check && !ok) {
         /* 回滚：重新跑持久化的上一版（active.lua 只在执行成功时才被覆盖，
          * 所以它就是上一版好脚本；首次部署失败则不存在，跳过） */
         if (s_fs_ok && fio_read(ACTIVE_PATH, s_code_buf, CODE_MAX) > 0) {
             ESP_LOGI(TAG, "回滚：重新执行上一版脚本");
-            run_code(s_code_buf, 0);
+            run_code(s_code_buf, 0, 0);
         }
     }
 }
@@ -1225,7 +1277,7 @@ static void lua_task(void *arg)
         int n = fio_read(ACTIVE_PATH, s_code_buf, CODE_MAX);
         if (n > 0) {
             ESP_LOGI(TAG, "开机脚本 active.lua（%d 字节）", n);
-            if (!run_code(s_code_buf, 0)) {
+            if (!run_code(s_code_buf, 0, 0)) {
                 ESP_LOGW(TAG, "开机脚本执行失败：%s → 改名不再重跑", s_err);
                 fio_call(FIO_RENAME, ACTIVE_PATH, BROKEN_PATH);
             }
@@ -1353,7 +1405,7 @@ void lua_runtime_start(void)
     if (!s_task) ESP_LOGE(TAG, "Lua 任务创建失败");
 }
 
-void lua_runtime_deploy(int id, const char *code)
+void lua_runtime_deploy(int id, const char *code, int check)
 {
     if (!code) {
         reply(id, 0, "脚本为空");
@@ -1370,6 +1422,7 @@ void lua_runtime_deploy(int id, const char *code)
     deploy_msg_t m;
     m.id = id;
     m.evt = -1;
+    m.check = check ? 1 : 0;
     m.stamp = 0;
     m.code = strdup(code);
     if (!m.code) {
@@ -1391,6 +1444,7 @@ void lua_runtime_event(const char *name)
         deploy_msg_t m;
         m.id = -1;
         m.evt = i;
+        m.check = 0;
         m.stamp = ms_now();
         m.code = NULL;
         if (xQueueSend(s_q, &m, 0) != pdTRUE)

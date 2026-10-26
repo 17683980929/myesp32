@@ -20,8 +20,9 @@ void lua_runtime_start(void);
 /** 注册结果回调（应在 start 前设置） */
 void lua_runtime_set_result_cb(lua_result_cb_t cb);
 
-/** 下发脚本（从 WS 事件里调用；内部复制 code，排队执行） */
-void lua_runtime_deploy(int id, const char *code);
+/** 下发脚本（从 WS 事件里调用；内部复制 code，排队执行）。
+ *  check=1：只做 dry-run（语法 + 顶层逻辑，硬件 API 用 Lua mock），不持久化。 */
+void lua_runtime_deploy(int id, const char *code, int check);
 
 /** 投递事件给脚本（sys.on 注册的处理器；没有处理器时静默忽略）。
  *  可用事件：key_click / key_double / open_timetable / open_env /

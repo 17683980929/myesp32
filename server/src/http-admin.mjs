@@ -53,6 +53,15 @@ function currentLuaScript() {
   return existsSync(tpl) ? readFileSync(tpl, "utf8") : "";
 }
 
+function makeLuaRepairRequest(request, code, error) {
+  return (
+    `用户原始需求：${request}\n\n` +
+    `上一版脚本已通过静态校验，但设备预检查/加载失败：\n${error}\n\n` +
+    `上一版脚本（供参考）：\n\`\`\`lua\n${code}\n\`\`\`\n\n` +
+    `请基于当前脚本重新实现原需求，修复这个错误，输出完整脚本。`
+  );
+}
+
 function startLuaJob({ request, current, llm }) {
   const id = ++luaJobSeq;
   const job = {
@@ -600,6 +609,48 @@ export async function handleHttp(req, res, ctx) {
           }
         }
 
+        const checkReady = list.every((d) => {
+          const m = String(d.fw || "").match(/^0\.1\.(\d+)/);
+          return m && Number(m[1]) >= 39;
+        });
+        if (checkReady) {
+          const cid = Date.now() % 100000;
+          const checks = await Promise.all(list.map((d) => d.sendLua(cid, checked.code, 10000, true)));
+          const failedCheck = checks.find((r) => !r.ok);
+          if (failedCheck) {
+            const checkError = String(
+              failedCheck.out || (failedCheck.timeout ? "预检查超时" : "设备预检查失败")
+            ).slice(0, 600);
+            const cfg0 = getConfig();
+            if (repairCount < MAX_AUTO_REPAIR && request && luaJobRunning === 0 && cfg0.llm?.apiKey) {
+              const job = startLuaJob({
+                request: makeLuaRepairRequest(request, checked.code, checkError),
+                current,
+                llm: cfg0.llm,
+              });
+              log(`Lua AI 预检查失败，自动修正任务 #${job.id} 开始：${checkError.slice(0, 100)}`);
+              return json(res, 502, {
+                ok: false,
+                msg: "设备预检查失败，未下发；正在让模型自动修正",
+                precheckFailed: true,
+                results: checks,
+                repairJobId: job.id,
+                repairCount: repairCount + 1,
+                steps: job.steps,
+                warnings: checked.warnings,
+              });
+            }
+            return json(res, 502, {
+              ok: false,
+              msg: "设备预检查失败，未下发",
+              precheckFailed: true,
+              results: checks,
+              errors: [checkError],
+              warnings: checked.warnings,
+            });
+          }
+        }
+
         const cfg = getConfig();
         const old = current;
         const oldPrev = cfg.lua?.prevScript || "";
@@ -645,11 +696,7 @@ export async function handleHttp(req, res, ctx) {
           ).slice(0, 600);
           const cfg2 = getConfig();
           if (repairCount < MAX_AUTO_REPAIR && request && luaJobRunning === 0 && cfg2.llm?.apiKey) {
-            const repairRequest =
-              `用户原始需求：${request}\n\n` +
-              `上一版脚本已通过静态校验，但设备加载失败：\n${deviceError}\n\n` +
-              `上一版脚本（供参考）：\n\`\`\`lua\n${checked.code}\n\`\`\`\n\n` +
-              `请基于当前脚本重新实现原需求，修复这个设备错误，输出完整脚本。`;
+            const repairRequest = makeLuaRepairRequest(request, checked.code, deviceError);
             const job = startLuaJob({ request: repairRequest, current: old, llm: cfg2.llm });
             log(`Lua AI 设备报错，自动修正任务 #${job.id} 开始：${deviceError.slice(0, 100)}`);
             return json(res, 502, {

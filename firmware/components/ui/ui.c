@@ -758,6 +758,86 @@ static void draw_bt_overlay(int state)
     draw_cjk(x + (w - cjk_text_w(s, 2)) / 2, y + 38, s, 2, 1);
 }
 
+/* ── 创造模式 overlay ──────────────────────────────────────────────── */
+
+static int s_creation_mode;
+static char s_creation_l1[80], s_creation_l2[80], s_creation_l3[80];
+
+static void copy_fit(char *dst, size_t cap, const char *src)
+{
+    if (!dst || cap == 0) return;
+    dst[0] = 0;
+    if (!src) return;
+    size_t n = 0;
+    while (*src && n + 4 < cap) {
+        unsigned char c = (unsigned char)*src;
+        int len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+        if (n + (size_t)len + 1 >= cap) break;
+        memcpy(dst + n, src, (size_t)len);
+        n += (size_t)len;
+        src += len;
+        if (n >= 64) break;              /* 16px 下约 21 个汉字，够显示一步 */
+    }
+    dst[n] = 0;
+}
+
+static void draw_mixed(int x, int y, const char *s, int big)
+{
+    if (!s || !*s) return;
+    if (has_cjk(s)) draw_cjk(x, y, s, big ? 2 : 1, 1);
+    else            draw_text(x, y, s, big ? 3 : 2, 1);
+}
+
+static void draw_creation_overlay(void)
+{
+    lcd_clear(0);
+    draw_cjk(20, 16, "AI 模式", 2, 1);
+    lcd_hline(20, 58, LCD_W - 40, 1);
+    draw_mixed(24, 82, s_creation_l1, 0);
+    draw_mixed(24, 114, s_creation_l2, 0);
+    draw_mixed(24, 146, s_creation_l3, 0);
+    draw_cjk(24, LCD_H - 34, "说「退出创造模式」可结束", 1, 1);
+}
+
+static void draw_creation_banner(void)
+{
+    int y = LCD_H - 46;
+    lcd_fill(0, y, LCD_W, 46, 0);
+    lcd_hline(0, y, LCD_W, 1);
+    draw_mixed(8, y + 6, s_creation_l1, 0);
+    draw_cjk(8, y + 24, "说确认保存 / 撤销", 1, 1);
+}
+
+void ui_creation_show(int mode, const char *line1, const char *line2, const char *line3)
+{
+    s_creation_mode = mode;
+    copy_fit(s_creation_l1, sizeof(s_creation_l1), line1);
+    copy_fit(s_creation_l2, sizeof(s_creation_l2), line2);
+    copy_fit(s_creation_l3, sizeof(s_creation_l3), line3);
+
+    if (mode == 1) {
+        ui_render();
+    } else if (mode == 2) {
+        if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+        draw_creation_banner();
+        lcd_flush();
+        if (s_fb_lock) xSemaphoreGive(s_fb_lock);
+    }
+}
+
+void ui_creation_end(void)
+{
+    if (!s_creation_mode) return;
+    s_creation_mode = 0;
+    ui_lua_release();
+    ui_render();
+}
+
+int ui_creation_active(void)
+{
+    return s_creation_mode != 0;
+}
+
 static void render_frame(void)
 {
     if (s_page == UI_PAGE_PORTAL) {
@@ -770,6 +850,12 @@ static void render_frame(void)
         const char *t3 = "浏览器打开";
         draw_cjk((LCD_W - cjk_text_w(t3, 1)) / 2, 176, t3, 1, 1);
         draw_text((LCD_W - text_w("192.168.4.1", 3)) / 2, 200, "192.168.4.1", 3, 1);
+        lcd_flush();
+        return;
+    }
+
+    if (s_creation_mode == 1) {
+        draw_creation_overlay();
         lcd_flush();
         return;
     }
@@ -789,6 +875,7 @@ static void render_frame(void)
     render_panel();
     if (s_vol_overlay >= 0) draw_volume_overlay(s_vol_overlay);
     if (s_bt_overlay >= 0) draw_bt_overlay(s_bt_overlay);
+    if (s_creation_mode == 2) draw_creation_banner();
     lcd_flush();
 }
 
@@ -841,6 +928,7 @@ uint32_t ui_lua_release_seq(void)
 void ui_lua_clear(void)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
+    if (s_creation_mode == 1) return;           /* 创造模式进度页优先 */
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     lcd_clear(0);
@@ -850,6 +938,7 @@ void ui_lua_clear(void)
 void ui_lua_text(int x, int y, const char *s, int size)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
+    if (s_creation_mode == 1) return;
     lua_keepalive();
     if (!s || !*s) return;
 
@@ -873,6 +962,7 @@ void ui_lua_text(int x, int y, const char *s, int size)
 void ui_lua_rect(int x, int y, int w, int h, int filled)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
+    if (s_creation_mode == 1) return;
     lua_keepalive();
     if (w <= 0 || h <= 0) return;
     if (x >= LCD_W || y >= LCD_H) return;
@@ -891,8 +981,10 @@ void ui_lua_rect(int x, int y, int w, int h, int filled)
 void ui_lua_flush(void)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
+    if (s_creation_mode == 1) return;
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
+    if (s_creation_mode == 2) draw_creation_banner();
     lcd_flush();
     if (s_fb_lock) xSemaphoreGive(s_fb_lock);
 }

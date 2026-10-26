@@ -148,6 +148,8 @@ static void on_data(char *data, int len)
         ev.kind = WS_EVT_LUA;
         cJSON *v = cJSON_GetObjectItem(root, "id");
         ev.lua_id = v ? v->valueint : 0;
+        cJSON *chk = cJSON_GetObjectItem(root, "check");
+        ev.lua_check = (chk && cJSON_IsNumber(chk)) ? chk->valueint : 0;
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(root, "code"));
         if (code && strlen(code) < RX_TEXT_CAP) {
             ev.lua_code = code;              /* 指向组装缓冲，仅本次回调期间有效 */

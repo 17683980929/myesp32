@@ -390,7 +390,7 @@ static void on_ws_event(const ws_event_t *ev)
                      "\"out\":\"脚本缺失或过长（上限 6KB）\"}", ev->lua_id);
             ws_send_json(m);
         } else {
-            lua_runtime_deploy(ev->lua_id, ev->lua_code);
+            lua_runtime_deploy(ev->lua_id, ev->lua_code, ev->lua_check);
         }
         break;
     case WS_EVT_OTA: {
@@ -449,6 +449,21 @@ static void on_ws_event(const ws_event_t *ev)
         if (!strcmp(ev->name, "water_reminder")) {
             ui_lua_release();               /* 提醒优先：脚本画布让位 */
             ui_water_reminder(0);           /* 0 = 常驻，等 KEY 确认 */
+            s_dirty = 1;
+            break;
+        }
+
+        /* 创造模式：固件层 overlay（不依赖 Lua；脚本坏了也能显示/回滚） */
+        if (!strcmp(ev->name, "create_step")) {
+            ui_creation_show(1, ev->text, "", "");
+            break;
+        }
+        if (!strcmp(ev->name, "create_preview")) {
+            ui_creation_show(2, ev->text, "", "");
+            break;
+        }
+        if (!strcmp(ev->name, "create_end")) {
+            ui_creation_end();
             s_dirty = 1;
             break;
         }

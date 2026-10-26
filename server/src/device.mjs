@@ -97,6 +97,10 @@ export class DeviceSession {
     this.timers = [];
     this.lastStat = null;
     this.ota = null;               /* 最近一次 OTA 状态 {p, at, msg} */
+    this.createMode = 0;           /* 0=关 1=等需求 2=生成中 3=预览 5=等澄清回答 */
+    this.createOriginal = "";
+    this.createQuestion = "";
+    this.createPreviewTimer = null;
     this.luaWaiters = new Map();   /* id → resolve(fn)：等下发的 Lua 执行回执 */
     this.lastLua = null;           /* 最近一次 Lua 执行结果（诊断用） */
   }
@@ -111,8 +115,9 @@ export class DeviceSession {
     if (this.ws.readyState === 1) this.ws.send(buf, { binary: true });
   }
 
-  /** 下发 Lua 并等设备回执（超时按失败返回），由 /api/lua 使用 */
-  sendLua(id, code, timeoutMs) {
+  /** 下发 Lua 并等设备回执（超时按失败返回），由 /api/lua 使用。
+   *  check=1：设备只做 dry-run 检查，不持久化/不生效。 */
+  sendLua(id, code, timeoutMs, check = false) {
     return new Promise((resolve) => {
       let done = false;
       const finish = (r) => {
@@ -122,7 +127,7 @@ export class DeviceSession {
         resolve(r);
       };
       this.luaWaiters.set(id, finish);
-      this.send({ t: "lua", id, code });
+      this.send({ t: "lua", id, code, ...(check ? { check: 1 } : {}) });
       /* 回执丢失时不能断言设备没执行：脚本在发送前已保存，设备可能已执行完 */
       setTimeout(() => finish({
         ok: false,
@@ -182,6 +187,8 @@ export class DeviceSession {
   close() {
     this.aborted = true;
     this.turn++;                        /* 作废正在跑的回合（发送/生成循环立即退出） */
+    this.clearPreviewTimer();
+    this.createMode = 0;
     this.timers.forEach(clearInterval);
     this.timers = [];
     for (const w of this.luaWaiters.values()) w({ ok: false, out: "设备断开" });
@@ -351,6 +358,7 @@ export class DeviceSession {
       }
 
       this.send(build.stt(text));
+      if (await this.handleCreationText(text, myTurn)) return;
       /* 清掉历史上没等到回答就被打断的提问：旧请求若留在上下文里，
        * 新问题容易被"接上"旧任务（前后串） */
       while (this.history.length && this.history[this.history.length - 1].role === "user")
@@ -397,6 +405,233 @@ export class DeviceSession {
         this.aborted = false;
       }
     }
+  }
+
+  async handleCreationText(text, myTurn) {
+    const t = String(text || "").trim();
+    if (!t) return false;
+
+    if (this.createMode === 0) {
+      if (/进入创造模式|开启创造模式/.test(t)) {
+        this.createMode = 1;
+        this.createOriginal = "";
+        this.createQuestion = "";
+        this.send(build.evt("create_step", undefined, "创造模式：说出你想改的功能"));
+        await this.speakOne("创造模式已开启，告诉我你想改什么。说退出创造模式可以结束。", myTurn);
+        return true;
+      }
+      return false;
+    }
+
+    if (/退出创造模式|退出创造|结束创造/.test(t)) {
+      await this.exitCreation(myTurn);
+      return true;
+    }
+
+    if (this.createMode === 2) {
+      await this.speakOne("还在生成，稍等一下。", myTurn);
+      return true;
+    }
+
+    if (this.createMode === 3) {
+      if (/确认|保存/.test(t)) {
+        this.clearPreviewTimer();
+        this.createMode = 0;
+        this.send(build.evt("create_end"));
+        await this.speakOne("已保存这次修改。", myTurn);
+        return true;
+      }
+      if (/撤销|取消|恢复/.test(t)) {
+        await this.undoCreation(myTurn);
+        return true;
+      }
+      await this.speakOne("先说确认保存，或者撤销。", myTurn);
+      return true;
+    }
+
+    if (this.createMode === 5) {
+      const request = `${this.createOriginal}\n\n之前的问题：${this.createQuestion}\n补充回答：${t}`;
+      this.createMode = 1;
+      this.createQuestion = "";
+      await this.runCreation(request, myTurn, 0);
+      return true;
+    }
+
+    if (this.createMode === 1) {
+      this.createOriginal = t;
+      this.createQuestion = "";
+      await this.runCreation(t, myTurn, 0);
+      return true;
+    }
+    return true;
+  }
+
+  clearPreviewTimer() {
+    if (this.createPreviewTimer) {
+      clearTimeout(this.createPreviewTimer);
+      this.createPreviewTimer = null;
+    }
+  }
+
+  async exitCreation(myTurn) {
+    this.clearPreviewTimer();
+    if (this.createMode === 3) {
+      try { await this.adminJson("/api/lua/rollback", {}); } catch { /* 允许失败后手动撤销 */ }
+    }
+    this.createMode = 0;
+    this.createOriginal = "";
+    this.createQuestion = "";
+    this.send(build.evt("create_end"));
+    await this.speakOne("已退出创造模式。", myTurn);
+  }
+
+  async undoCreation(myTurn) {
+    this.clearPreviewTimer();
+    this.send(build.evt("create_step", undefined, "正在恢复上一版"));
+    try {
+      await this.adminJson("/api/lua/rollback", {});
+      this.createMode = 0;
+      this.createOriginal = "";
+      this.createQuestion = "";
+      this.send(build.evt("create_end"));
+      await this.speakOne("已恢复上一版。", myTurn);
+    } catch (e) {
+      this.createMode = 3;
+      this.send(build.evt("create_preview", undefined, "撤销失败｜说确认保存 / 撤销"));
+      await this.speakOne("撤销失败，可以再说一次。", myTurn);
+    }
+  }
+
+  async adminJson(path, body, method = "POST") {
+    const cfg = this.ctx.config;
+    const host = !cfg.server.host || cfg.server.host === "0.0.0.0" ? "127.0.0.1" : cfg.server.host;
+    const headers = {};
+    if (method !== "GET") headers["Content-Type"] = "application/json";
+    const pw = cfg.server.adminPassword;
+    if (pw) headers.Authorization = "Basic " + Buffer.from("admin:" + pw).toString("base64");
+
+    const res = await fetch(`http://${host}:${cfg.server.port}${path}`, {
+      method,
+      headers,
+      body: method === "GET" ? undefined : JSON.stringify(body || {}),
+    });
+    const txt = await res.text();
+    let j = null;
+    try { j = JSON.parse(txt); } catch { /* 非 JSON */ }
+    if (!res.ok || !j) throw new Error(`本地接口 ${path} HTTP ${res.status}: ${txt.slice(0, 120)}`);
+    return j;
+  }
+
+  async waitCreationJob(jobId, myTurn) {
+    const started = Date.now();
+    let last = "";
+    while (Date.now() - started < 150000) {
+      if (this.stale(myTurn)) return null;
+      const s = await this.adminJson(`/api/lua/ai/status?id=${jobId}`, null, "GET");
+      const step = (s.steps || []).slice(-1)[0]?.text || "";
+      if (step && step !== last) {
+        last = step;
+        this.send(build.evt("create_step", undefined, step));
+      }
+      if (s.status === "done") return s.result;
+      if (s.status === "error") throw new Error(s.error || "生成失败");
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    throw new Error("生成超时");
+  }
+
+  async runCreation(request, myTurn, repairCount) {
+    this.createMode = 2;
+    this.createOriginal = request;
+    this.send(build.evt("create_step", undefined, "正在生成修改"));
+    try {
+      const ai = await this.adminJson("/api/lua/ai", { request });
+      if (!ai.ok) throw new Error(ai.msg || "启动失败");
+      await this.speakOne("正在生成，请稍等。", myTurn);
+      const result = await this.waitCreationJob(ai.jobId, myTurn);
+      if (!result) return;
+
+      if (result.needsClarify) {
+        this.createMode = 5;
+        this.createQuestion = result.question || "";
+        this.send(build.evt("create_step", undefined, `需要补充：${this.createQuestion}`));
+        await this.speakOne(this.createQuestion || "需要补充一点信息。", myTurn);
+        return;
+      }
+
+      if (!result.ok) {
+        this.createMode = 1;
+        const why = (result.errors || []).join("；").slice(0, 80);
+        this.send(build.evt("create_step", undefined, `生成未通过：${why}`));
+        await this.speakOne("生成没通过检查，换个说法再试试。", myTurn);
+        return;
+      }
+
+      await this.applyCreationPreview(result, request, repairCount, myTurn);
+    } catch (e) {
+      if (this.stale(myTurn)) return;
+      log(`[${this.sid}] 创造模式失败: ${e.message}`);
+      this.createMode = 1;
+      this.send(build.evt("create_step", undefined, `创造模式失败：${e.message.slice(0, 60)}`));
+      await this.speakOne("创造模式出了点问题，再说一次需求。", myTurn);
+    }
+  }
+
+  async applyCreationPreview(result, request, repairCount, myTurn) {
+    if (this.stale(myTurn)) return;
+    this.send(build.evt("create_step", undefined, "生成完成，正在下发预览"));
+    const ap = await this.adminJson("/api/lua/apply", {
+      code: result.code,
+      summary: result.summary,
+      baseHash: result.baseHash,
+      request,
+      repairCount,
+    });
+
+    if (ap.ok) {
+      const pm = String(result.code).match(/^\s*--\s*@perm\s+(.+)$/m);
+      const perms = pm ? pm[1].trim() : "无扩展权限";
+      this.createMode = 3;
+      this.send(build.evt("create_preview", undefined, `${result.summary || "修改预览"}｜${perms}`));
+      this.clearPreviewTimer();
+      this.createPreviewTimer = setTimeout(async () => {
+        if (this.createMode !== 3) return;
+        try { await this.adminJson("/api/lua/rollback", {}); } catch { /* ignore */ }
+        this.createMode = 0;
+        this.send(build.evt("create_end"));
+        try { await this.speakOne("预览超时，已恢复上一版。"); } catch { /* ignore */ }
+      }, 120000);
+      await this.speakOne("改好了，说确认保存，或者撤销。", myTurn);
+      return;
+    }
+
+    if (ap.repairJobId) {
+      this.send(build.evt("create_step", undefined, "设备检查失败，正在自动修正"));
+      await this.speakOne("设备检查失败，正在自动修正。", myTurn);
+      const repaired = await this.waitCreationJob(ap.repairJobId, myTurn);
+      if (!repaired) return;
+      if (repaired.ok) {
+        await this.applyCreationPreview(
+          repaired,
+          request,
+          ap.repairCount != null ? ap.repairCount : repairCount + 1,
+          myTurn
+        );
+      } else if (repaired.needsClarify) {
+        this.createMode = 5;
+        this.createQuestion = repaired.question || "";
+        this.send(build.evt("create_step", undefined, `需要补充：${this.createQuestion}`));
+        await this.speakOne(this.createQuestion || "需要补充一点信息。", myTurn);
+      } else {
+        this.createMode = 1;
+        await this.speakOne("自动修正也没通过，换个说法再试试。", myTurn);
+      }
+      return;
+    }
+
+    this.createMode = 1;
+    this.send(build.evt("create_step", undefined, `设备检查失败：${String(ap.msg || "").slice(0, 60)}`));
+    await this.speakOne("设备没通过检查，换个需求再试试。", myTurn);
   }
 
   async streamAnswer(userText, myTurn, localNote = null) {

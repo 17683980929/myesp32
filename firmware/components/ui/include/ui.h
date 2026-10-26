@@ -60,6 +60,12 @@ void ui_water_reminder(int secs);
 int  ui_water_active(void);
 void ui_water_clear(void);
 
+/* ── 创造模式 overlay（独立于 Lua，脚本写坏也能显示）──────────────── */
+/** mode: 1=全屏进度，2=底部预览确认条；line1/2/3 可传 NULL */
+void ui_creation_show(int mode, const char *line1, const char *line2, const char *line3);
+void ui_creation_end(void);
+int  ui_creation_active(void);
+
 /* ── Lua 画布（脚本接管屏幕，M5）────────────────────────────────────── */
 
 /** 脚本绘制原语（内部带帧缓冲互斥 + 30 秒"保鲜"：保鲜期内主循环

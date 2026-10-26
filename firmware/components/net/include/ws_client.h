@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #ifndef MYESP32_FW
-#define MYESP32_FW "0.1.38"
+#define MYESP32_FW "0.1.39"
 #endif
 
 /** 信息栏数据（服务器下发的 + 板子本地读的） */
@@ -46,6 +46,7 @@ typedef struct {
     char text[512];
     char name[16];
     int  lua_id;
+    int  lua_check;      /* lua 专有：1=只做 dry-run 检查，不持久化/不生效 */
     int  frames;         /* sub 专有：该句音频总帧数（0=未知，不翻页） */
     int  followup;       /* tts_stop 专有：1=回答以问句收尾，播完自动聆听 */
     int  value;          /* evt 专有：音量等数值参数 */
