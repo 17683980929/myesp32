@@ -15,8 +15,8 @@ i2c_master_bus_handle_t sensors_i2c_bus(void);
 /** SHTC3 读温湿度。失败返回非 0，值不变 */
 esp_err_t sensors_read_th(float *temp_c, float *hum);
 
-/** 电池百分比 0-100（ADC 读 10 次平均后按厂家公式换算） */
+/** 电池百分比 0-100（5s 缓存 + 中位数/EMA + 迟滞，避免 99/100 抖动） */
 int sensors_battery_pct(void);
 
-/** 电池电压 mV */
+/** 电池电压 mV（5s 缓存 + 中位数/EMA 滤波后的值） */
 int sensors_battery_mv(void);

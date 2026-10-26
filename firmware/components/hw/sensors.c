@@ -4,19 +4,21 @@
  * SHTC3：I2C 0x70，命令字连续半字节流（16 位大端）。
  *   唤醒 0x3517 / 睡眠 0xB098 / 软复位 0x805D / 测量(T 在前, 正常模式) 0x7CA2
  *   读回 6 字节：T_MSB T_LSB T_CRC RH_MSB RH_LSB RH_CRC，CRC-8 多项式 0x31
- * 电池：ADC1_CH3，读 10 次平均 ×3，电压线性映射（3.0V=0%，4.1V+=100%）。
+ * 电池：ADC1_CH3，5s 缓存 + 15 点中位数 + EMA；百分比带迟滞
+ *       （4.10V 进 100%，跌到 4.03V 才退出，其余每档 ±10mV 死区）。
  */
 
 #include "sensors.h"
+#include <stdbool.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/i2c_master.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "hw_config.h"
@@ -27,6 +29,18 @@ static i2c_master_bus_handle_t s_bus = NULL;
 static i2c_master_dev_handle_t s_shtc3 = NULL;
 static adc_oneshot_unit_handle_t s_adc = NULL;
 static adc_cali_handle_t s_cali = NULL;
+static SemaphoreHandle_t s_bat_lock = NULL;
+
+/* 电池缓存：UI 约 14fps 询一次，不能每次都读 ADC */
+static int s_bat_mv = -1;
+static int s_bat_pct = -1;
+static int64_t s_bat_at_us = 0;
+
+#define BAT_EMPTY_MV      3000
+#define BAT_FULL_MV       4100
+#define BAT_FULL_EXIT_MV  4030
+#define BAT_STEP_DEAD_MV  10
+#define BAT_CACHE_US      (5 * 1000 * 1000LL)
 
 i2c_master_bus_handle_t sensors_i2c_bus(void) { return s_bus; }
 
@@ -84,6 +98,9 @@ void sensors_init(void)
         s_cali = NULL;
         ESP_LOGW(TAG, "ADC 校准不可用，用原始值");
     }
+
+    s_bat_lock = xSemaphoreCreateMutex();
+    if (!s_bat_lock) ESP_LOGW(TAG, "电池采样锁创建失败");
 
     ESP_LOGI(TAG, "I2C + ADC 就绪");
 }
@@ -156,42 +173,98 @@ esp_err_t sensors_read_th(float *temp_c, float *hum)
 
 /* ── 电池 ──────────────────────────────────────────────────────────── */
 
-static int battery_mv(void)
+/* 电压 → 百分比：3.0V=0%，1% = 11mV，4.10V 及以上=100% */
+static int bat_pct_from_mv(int mv)
 {
-    int raw = 0, mv = 0;
-    adc_oneshot_read(s_adc, BAT_ADC_CH, &raw);
-    if (s_cali) adc_cali_raw_to_voltage(s_cali, raw, &mv);
-    else mv = raw * 3300 / 4095;
+    if (mv >= BAT_FULL_MV) return 100;
+    if (mv <= BAT_EMPTY_MV) return 0;
+    return (mv - BAT_EMPTY_MV) * 100 / 1100;
+}
 
-    /* 分压比 ×3（厂家原样） */
-    int voltage = mv * 3;
+/* 百分比对应的下限电压，用于迟滞判断 */
+static int bat_pct_boundary(int pct)
+{
+    return BAT_EMPTY_MV + pct * 1100 / 100;
+}
 
-    /* 10 次平均降噪 */
-    int sum = 0;
-    for (int i = 0; i < 10; i++) {
-        adc_oneshot_read(s_adc, BAT_ADC_CH, &raw);
-        if (s_cali) adc_cali_raw_to_voltage(s_cali, raw, &mv);
-        else mv = raw * 3300 / 4095;
-        sum += mv * 3;
+/* 采 15 个点取中位数，再和上次值做 EMA。返回 false = 有效点太少 */
+static bool battery_sample_mv(int *out)
+{
+    int vals[15];
+    int n = 0;
+
+    for (int i = 0; i < 15; i++) {
+        int raw = 0, mv = 0;
+        if (adc_oneshot_read(s_adc, BAT_ADC_CH, &raw) != ESP_OK) continue;
+        if (s_cali) {
+            if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) continue;
+        } else {
+            mv = raw * 3300 / 4095;
+        }
+        vals[n++] = mv * 3;             /* 分压比 ×3 */
     }
-    (void)voltage;
-    return sum / 10;
+    if (n < 7) return false;
+
+    /* 插入排序，15 个点足够快 */
+    for (int i = 1; i < n; i++) {
+        int x = vals[i], j = i - 1;
+        while (j >= 0 && vals[j] > x) {
+            vals[j + 1] = vals[j];
+            j--;
+        }
+        vals[j + 1] = x;
+    }
+
+    int med = vals[n / 2];
+    if (s_bat_mv <= 0) s_bat_mv = med;
+    else s_bat_mv = (s_bat_mv * 3 + med + 2) / 4;
+
+    *out = s_bat_mv;
+    return true;
+}
+
+/* 调用时必须持有 s_bat_lock */
+static void battery_refresh(int64_t now_us)
+{
+    int mv = 0;
+    if (!battery_sample_mv(&mv)) {
+        s_bat_at_us = now_us;           /* 失败也歇 5s，别在 UI 循环里狂读 */
+        return;
+    }
+
+    int raw = bat_pct_from_mv(mv);
+    if (s_bat_pct < 0) {
+        s_bat_pct = raw;
+    } else if (raw > s_bat_pct) {
+        if (mv >= bat_pct_boundary(s_bat_pct + 1)) s_bat_pct++;
+    } else if (raw < s_bat_pct) {
+        int down = (s_bat_pct == 100) ? BAT_FULL_EXIT_MV
+                                      : bat_pct_boundary(s_bat_pct) - BAT_STEP_DEAD_MV;
+        if (mv <= down) s_bat_pct--;
+    }
+
+    s_bat_at_us = now_us;
+    ESP_LOGD(TAG, "电池 %d mV -> %d%%", mv, s_bat_pct);
+}
+
+static int battery_cached(bool want_pct)
+{
+    if (!s_adc) return -1;
+
+    if (s_bat_lock) xSemaphoreTake(s_bat_lock, portMAX_DELAY);
+    int64_t now = esp_timer_get_time();
+    if (s_bat_at_us == 0 || now - s_bat_at_us >= BAT_CACHE_US) battery_refresh(now);
+    int v = want_pct ? s_bat_pct : s_bat_mv;
+    if (s_bat_lock) xSemaphoreGive(s_bat_lock);
+    return v;
 }
 
 int sensors_battery_pct(void)
 {
-    int v = battery_mv();
-
-    /* 电压 → 电量（锂电近似）：3.0V = 0%，4.10V 及以上 = 100%。
-     * 说明：4.1V 已接近满电。插着 USB 时充电芯片充满即停充，板子自身
-     * 耗电会让电压在 ~4.05–4.2V 之间循环，所以阈值取 4.10V 才能在插电
-     * 稳定后显示 100%（原厂 03_ADC_Test 用的是 4.12V 线性映射）。 */
-    if (v >= 4100) return 100;
-    if (v <= 3000) return 0;
-    return (v - 3000) * 100 / 1100;
+    return battery_cached(true);
 }
 
 int sensors_battery_mv(void)
 {
-    return battery_mv();
+    return battery_cached(false);
 }
