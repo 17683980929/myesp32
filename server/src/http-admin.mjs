@@ -583,17 +583,18 @@ export async function handleHttp(req, res, ctx) {
           return json(res, 409, { ok: false, msg: "当前没有在线设备；为避免服务器和设备脚本不一致，请等设备上线后再应用" });
 
         const privileged = (checked.permissions || []).filter((p) =>
-          ["gpio", "gpio:all", "audio", "rtc", "wifi", "ble", "sys"].includes(p)
+          ["gpio", "gpio:all", "audio", "rtc", "wifi", "ble", "sys", "fs", "net"].includes(p)
         );
         if (privileged.length) {
+          const needFw = privileged.some((p) => p === "fs" || p === "net") ? 38 : 37;
           const fwOk = list.every((d) => {
             const m = String(d.fw || "").match(/^0\.1\.(\d+)/);
-            return m && Number(m[1]) >= 37;
+            return m && Number(m[1]) >= needFw;
           });
           if (!fwOk) {
             return json(res, 409, {
               ok: false,
-              msg: "脚本申请了扩展权限，设备固件需 ≥ 0.1.37；请先 OTA 再应用",
+              msg: `脚本申请了扩展权限，设备固件需 ≥ 0.1.${needFw}；请先 OTA 再应用`,
               errors: ["设备固件过低，无法加载扩展 Lua API"],
             });
           }

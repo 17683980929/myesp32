@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -46,6 +47,9 @@
 #include "ble.h"
 #include "driver/gpio.h"
 #include "esp_system.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include <dirent.h>
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -66,9 +70,12 @@ static const char *TAG = "lua";
 
 #define MOUNT_POINT       "/fatfs"
 #define SCRIPT_DIR        MOUNT_POINT "/scripts"
+#define USER_DIR          MOUNT_POINT "/user"
 #define ACTIVE_PATH       SCRIPT_DIR "/active.lua"
 #define TMP_PATH          SCRIPT_DIR "/tmp.lua"
 #define BROKEN_PATH       SCRIPT_DIR "/active.broken.lua"
+#define FS_FILE_MAX       8192
+#define NET_BODY_MAX      16384
 
 /* ── 运行时状态 ────────────────────────────────────────────────────── */
 
@@ -94,6 +101,8 @@ static int             s_hook_active;      /* 只在执行脚本主体时计时 
 #define PERM_WIFI      (1u << 4)
 #define PERM_BLE       (1u << 5)
 #define PERM_SYS       (1u << 6)
+#define PERM_FS        (1u << 7)
+#define PERM_NET       (1u << 8)
 
 static uint32_t s_perms;
 
@@ -134,6 +143,8 @@ static void parse_perms(const char *code)
                 else if (!strcmp(tok, "wifi")) s_perms |= PERM_WIFI;
                 else if (!strcmp(tok, "ble")) s_perms |= PERM_BLE;
                 else if (!strcmp(tok, "sys")) s_perms |= PERM_SYS;
+                else if (!strcmp(tok, "fs")) s_perms |= PERM_FS;
+                else if (!strcmp(tok, "net")) s_perms |= PERM_NET;
                 /* display/sensor/timer 是默认能力，写了也不影响 */
                 if (!saved) break;
                 *s = saved;
@@ -582,6 +593,180 @@ static int l_sys_reboot(lua_State *L)
     return 0;
 }
 
+/* ── 文件沙箱：/fatfs/user（通过 flash 代理读写）───────────────────── */
+
+static int fs_user_write(const char *name, const char *data);
+static int fs_user_read(const char *name, char *buf, int cap);
+static int fs_user_list(char *buf, int cap);
+static int fs_user_remove(const char *name);
+
+static bool fs_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    if (n == 0 || n > 32) return false;
+    if (!strcmp(name, ".") || !strcmp(name, "..")) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!isalnum(c) && c != '_' && c != '-' && c != '.') return false;
+    }
+    return true;
+}
+
+static int l_fs_write(lua_State *L)
+{
+    need_perm(L, PERM_FS, "fs");
+    const char *name = luaL_checkstring(L, 1);
+    if (!fs_name_ok(name)) return luaL_error(L, "文件名只能 1~32 位字母/数字/._-，不能带路径");
+    const char *data = luaL_checkstring(L, 2);
+    if (strlen(data) > FS_FILE_MAX) return luaL_error(L, "文件内容最多 %d 字节", FS_FILE_MAX);
+
+    int64_t t0 = esp_timer_get_time();
+    int rc = fs_user_write(name, data);
+    s_paused_us += esp_timer_get_time() - t0;
+    lua_pushboolean(L, rc == 0);
+    return 1;
+}
+
+static int l_fs_read(lua_State *L)
+{
+    need_perm(L, PERM_FS, "fs");
+    const char *name = luaL_checkstring(L, 1);
+    if (!fs_name_ok(name)) return luaL_error(L, "文件名不合法");
+
+    char *buf = heap_caps_malloc(FS_FILE_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!buf) return luaL_error(L, "内存不足");
+    int64_t t0 = esp_timer_get_time();
+    int n = fs_user_read(name, buf, FS_FILE_MAX);
+    s_paused_us += esp_timer_get_time() - t0;
+    if (n < 0) lua_pushnil(L);
+    else lua_pushlstring(L, buf, (size_t)n);
+    free(buf);
+    return 1;
+}
+
+static int l_fs_list(lua_State *L)
+{
+    need_perm(L, PERM_FS, "fs");
+    char *buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    if (!buf) return luaL_error(L, "内存不足");
+    int64_t t0 = esp_timer_get_time();
+    int n = fs_user_list(buf, 4095);
+    s_paused_us += esp_timer_get_time() - t0;
+    if (n < 0) lua_pushnil(L);
+    else lua_pushlstring(L, buf, (size_t)n);
+    free(buf);
+    return 1;
+}
+
+static int l_fs_remove(lua_State *L)
+{
+    need_perm(L, PERM_FS, "fs");
+    const char *name = luaL_checkstring(L, 1);
+    if (!fs_name_ok(name)) return luaL_error(L, "文件名不合法");
+
+    int64_t t0 = esp_timer_get_time();
+    int rc = fs_user_remove(name);
+    s_paused_us += esp_timer_get_time() - t0;
+    lua_pushboolean(L, rc == 0);
+    return 1;
+}
+
+/* ── 网络：net.get / net.post（同步，最长 15 秒；HTTPS 用证书包）───── */
+
+static int net_result(lua_State *L, int status, const char *body, size_t len, const char *err)
+{
+    lua_createtable(L, 0, 3);
+    lua_pushinteger(L, status);
+    lua_setfield(L, -2, "status");
+    lua_pushlstring(L, body ? body : "", len);
+    lua_setfield(L, -2, "body");
+    lua_pushstring(L, err ? err : "");
+    lua_setfield(L, -2, "error");
+    return 1;
+}
+
+static int net_request(lua_State *L, int post)
+{
+    need_perm(L, PERM_NET, "net");
+    const char *url = luaL_checkstring(L, 1);
+    size_t url_len = strlen(url);
+    if (url_len < 8 || url_len > 500)
+        return net_result(L, 0, NULL, 0, "URL 长度不合法");
+    if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8))
+        return net_result(L, 0, NULL, 0, "只支持 http:// 或 https://");
+
+    const char *body = NULL;
+    size_t body_len = 0;
+    int arg = 2;
+    if (post) {
+        body = luaL_checklstring(L, 2, &body_len);
+        if (body_len > 8192)
+            return net_result(L, 0, NULL, 0, "请求体最多 8192 字节");
+        arg = 3;
+    }
+    int timeout = (int)luaL_optinteger(L, arg, 8000);
+    if (timeout < 2000) timeout = 2000;
+    if (timeout > 15000) timeout = 15000;
+
+    if (!wifi_sta_connected())
+        return net_result(L, 0, NULL, 0, "WiFi 未连接");
+
+    char *out = heap_caps_malloc(NET_BODY_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!out) return net_result(L, 0, NULL, 0, "内存不足");
+    out[0] = 0;
+
+    int status = 0, out_len = 0;
+    char errbuf[96] = "";
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = timeout,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) {
+        free(out);
+        return net_result(L, 0, NULL, 0, "HTTP 初始化失败");
+    }
+
+    if (post) {
+        esp_http_client_set_method(c, HTTP_METHOD_POST);
+        esp_http_client_set_header(c, "Content-Type", "application/json");
+    }
+
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t e = esp_http_client_open(c, post ? (int)body_len : 0);
+    if (e == ESP_OK && post && body_len) {
+        int w = esp_http_client_write(c, body, body_len);
+        if (w != (int)body_len) e = ESP_FAIL;
+    }
+    if (e == ESP_OK) {
+        int64_t content_len = esp_http_client_fetch_headers(c);
+        if (content_len < 0) e = ESP_FAIL;
+    }
+    if (e == ESP_OK) {
+        status = esp_http_client_get_status_code(c);
+        int n;
+        while (out_len < NET_BODY_MAX) {
+            n = esp_http_client_read(c, out + out_len, NET_BODY_MAX - out_len);
+            if (n <= 0) break;
+            out_len += n;
+        }
+        out[out_len] = 0;
+    }
+    s_paused_us += esp_timer_get_time() - t0;
+
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    if (e != ESP_OK && !errbuf[0]) snprintf(errbuf, sizeof(errbuf), "%s", esp_err_to_name(e));
+
+    int r = net_result(L, status, out, (size_t)out_len, errbuf);
+    free(out);
+    return r;
+}
+
+static int l_net_get(lua_State *L)  { return net_request(L, 0); }
+static int l_net_post(lua_State *L) { return net_request(L, 1); }
+
 /* ── 注册与沙箱 ────────────────────────────────────────────────────── */
 
 static void register_apis(lua_State *L)
@@ -632,6 +817,15 @@ static void register_apis(lua_State *L)
         { "status", l_ble_status },
         { NULL, NULL }
     };
+    static const luaL_Reg f_fs[] = {
+        { "write", l_fs_write }, { "read", l_fs_read },
+        { "list", l_fs_list }, { "remove", l_fs_remove },
+        { NULL, NULL }
+    };
+    static const luaL_Reg f_net[] = {
+        { "get", l_net_get }, { "post", l_net_post },
+        { NULL, NULL }
+    };
 
     luaL_newlib(L, f_display); lua_setglobal(L, "display");
     luaL_newlib(L, f_pet);     lua_setglobal(L, "pet");
@@ -643,6 +837,8 @@ static void register_apis(lua_State *L)
     luaL_newlib(L, f_rtc);     lua_setglobal(L, "rtc");
     luaL_newlib(L, f_wifi);    lua_setglobal(L, "wifi");
     luaL_newlib(L, f_ble);     lua_setglobal(L, "ble");
+    luaL_newlib(L, f_fs);      lua_setglobal(L, "fs");
+    luaL_newlib(L, f_net);     lua_setglobal(L, "net");
 }
 
 static void open_sandbox(lua_State *L)
@@ -687,7 +883,7 @@ static int read_file(const char *path, char *buf, int cap)
  * PSRAM 不可访问 —— 所有写文件的调用都必须换到内部栈的任务上执行。
  * 读文件走 cache 映射，可以在 Lua 任务里做。 */
 
-typedef enum { FIO_MOUNT = 0, FIO_SAVE, FIO_RENAME, FIO_READ } fio_op_t;
+typedef enum { FIO_MOUNT = 0, FIO_SAVE, FIO_RENAME, FIO_READ, FIO_WRITE, FIO_REMOVE, FIO_LIST } fio_op_t;
 
 typedef struct {
     fio_op_t    op;
@@ -862,9 +1058,40 @@ static int mount_fs_impl(void)
         return -1;
     }
     mkdir(SCRIPT_DIR, 0777);                  /* 已存在则忽略 */
+    mkdir(USER_DIR, 0777);                    /* Lua 文件沙箱 */
     s_fs_ok = 1;
     ESP_LOGI(TAG, "fatfs 就绪（%s）", MOUNT_POINT);
     return 0;
+}
+
+static int write_user_file(const char *path, const char *data)
+{
+    if (!path || !data) return -1;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t len = strlen(data);
+    size_t w = fwrite(data, 1, len, f);
+    fclose(f);
+    return w == len ? 0 : -1;
+}
+
+static int list_dir_impl(const char *path, char *buf, int cap)
+{
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        int l = (int)strlen(e->d_name);
+        if (n + l + 2 >= cap) break;
+        memcpy(buf + n, e->d_name, (size_t)l);
+        n += l;
+        buf[n++] = '\n';
+    }
+    closedir(d);
+    if (cap > 0) buf[n < cap ? n : cap - 1] = 0;
+    return n;
 }
 
 static void fio_task(void *arg)
@@ -890,6 +1117,15 @@ static void fio_task(void *arg)
             break;
         case FIO_READ:
             rc = read_file(r.a, r.out, r.out_cap);
+            break;
+        case FIO_WRITE:
+            rc = write_user_file(r.a, r.b);
+            break;
+        case FIO_REMOVE:
+            rc = r.a ? remove(r.a) : -1;
+            break;
+        case FIO_LIST:
+            rc = list_dir_impl(r.a, r.out, r.out_cap);
             break;
         }
         int done = rc;
@@ -928,6 +1164,51 @@ static int fio_read(const char *path, char *buf, int cap)
         return -1;
     }
     return n;
+}
+
+static int fio_list(const char *path, char *buf, int cap)
+{
+    if (!s_fio_q || !s_fio_done) return -1;
+    fio_req_t r = { .op = FIO_LIST, .a = path, .b = NULL, .out = buf, .out_cap = cap };
+    if (xQueueSend(s_fio_q, &r, pdMS_TO_TICKS(2000)) != pdTRUE) return -1;
+    int n = -1;
+    if (xQueueReceive(s_fio_done, &n, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGW(TAG, "列目录 %s 超时", path);
+        return -1;
+    }
+    return n;
+}
+
+static int fs_user_path(const char *name, char *path, size_t cap)
+{
+    int n = snprintf(path, cap, "%s/%s", USER_DIR, name);
+    return (n > 0 && (size_t)n < cap) ? 0 : -1;
+}
+
+static int fs_user_write(const char *name, const char *data)
+{
+    char path[64];
+    if (fs_user_path(name, path, sizeof(path)) != 0) return -1;
+    return fio_call(FIO_WRITE, path, data);
+}
+
+static int fs_user_read(const char *name, char *buf, int cap)
+{
+    char path[64];
+    if (fs_user_path(name, path, sizeof(path)) != 0) return -1;
+    return fio_read(path, buf, cap);
+}
+
+static int fs_user_list(char *buf, int cap)
+{
+    return fio_list(USER_DIR, buf, cap);
+}
+
+static int fs_user_remove(const char *name)
+{
+    char path[64];
+    if (fs_user_path(name, path, sizeof(path)) != 0) return -1;
+    return fio_call(FIO_REMOVE, path, NULL);
 }
 
 static void lua_task(void *arg)

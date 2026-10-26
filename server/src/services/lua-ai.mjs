@@ -26,11 +26,13 @@ const ALLOWED_API = {
   rtc: new Set(["get", "set"]),
   wifi: new Set(["status"]),
   ble: new Set(["status"]),
+  fs: new Set(["write", "read", "list", "remove"]),
+  net: new Set(["get", "post"]),
 };
 
 const KNOWN_PERMS = new Set([
   "display", "sensor", "timer", "sys",
-  "gpio", "gpio:all", "audio", "rtc", "wifi", "ble",
+  "gpio", "gpio:all", "audio", "rtc", "wifi", "ble", "fs", "net",
 ]);
 
 const EVENTS = new Set([
@@ -65,8 +67,12 @@ const SYSTEM_PROMPT = `你是「小鱼」桌面宠物的 Lua UI 工程师。你�
   rtc.get() -> {year,mon,day,wday,hour,min,sec}  rtc.set(year,mon,day,hour,min,sec)  权限 rtc
   wifi.status() -> {connected,ip,ssid,rssi}                                      权限 wifi
   ble.status() -> {state,name}                                                   权限 ble
+  net.get(url[,timeout_ms]) -> {status,body,error}  net.post(url,body[,timeout_ms]) -> {status,body,error}  权限 net
+    支持 http/https；请求体 ≤8KB，响应最多 16KB，timeout 2~15 秒；POST 默认 Content-Type: application/json
+  fs.write(name,text)  fs.read(name)  fs.list()  fs.remove(name)                 权限 fs
+    沙箱 /fatfs/user；文件名 1~32 位字母/数字/._-；单文件 ≤8KB；不能访问脚本或系统文件
   sys.reboot()                                                                   权限 sys
-  示例：-- @perm gpio,audio
+  示例：-- @perm gpio,audio,net
 - sys.on 只支持：key_click, key_double, open_timetable, open_env, canvas_close, canvas_next, round_1, round_2, round_3。未知事件会报错；可选事件用 pcall 包住。
 - 如果当前脚本包含 \`-- >>>DATA ... -- <<<DATA\` 段，必须原样保留（课表数据由服务器管理）；如果没有，不要新增。
 - 保留现有脚本的页面和功能，除非用户明确要求删除；保留错误处理和防重入。
@@ -201,7 +207,7 @@ export function validateLua(rawCode, current) {
   ];
   for (const [re, msg] of forbidden) if (re.test(plain)) errors.push(msg);
 
-  const apiRe = /\b(display|pet|sensor|sys|timer|gpio|audio|rtc|wifi|ble)\s*\.\s*([A-Za-z_]\w*)/g;
+  const apiRe = /\b(display|pet|sensor|sys|timer|gpio|audio|rtc|wifi|ble|fs|net)\s*\.\s*([A-Za-z_]\w*)/g;
   const seen = new Set();
   let m;
   while ((m = apiRe.exec(plain))) {
@@ -219,6 +225,8 @@ export function validateLua(rawCode, current) {
     [/\brtc\s*\./, hasPerm("rtc"), "rtc"],
     [/\bwifi\s*\./, hasPerm("wifi"), "wifi"],
     [/\bble\s*\./, hasPerm("ble"), "ble"],
+    [/\bfs\s*\./, hasPerm("fs"), "fs"],
+    [/\bnet\s*\./, hasPerm("net"), "net"],
     [/\bsys\s*\.\s*reboot\s*\(/, hasPerm("sys"), "sys"],
   ];
   for (const [re, ok, name] of permChecks) {
@@ -229,6 +237,12 @@ export function validateLua(rawCode, current) {
   }
   if (/\bsys\s*\.\s*reboot\s*\(/.test(plain)) {
     warnings.push("脚本会重启设备");
+  }
+  if (hasPerm("net")) {
+    warnings.push("net 可访问任意 URL，注意隐私和流量");
+  }
+  if (hasPerm("fs")) {
+    warnings.push("fs 仅限 /fatfs/user 沙箱，单文件 ≤8KB");
   }
 
   const evRe = /sys\s*\.\s*on\s*\(\s*["']([^"']+)["']/g;
