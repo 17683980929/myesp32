@@ -25,6 +25,7 @@ import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
+import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
@@ -36,6 +37,60 @@ const UPD_DIR = path.join(ROOT, ".update");
 const UPD_ZIP = path.join(UPD_DIR, "server.zip");
 const UPD_META = path.join(UPD_DIR, "pending.json");
 const VERSION_FILE = path.join(ROOT, "VERSION");
+
+/* ── 创造模式：Lua AI 后台任务 ───────────────────────────────────────
+ * 模型生成可能跑 30~90 秒，不能挂在 HTTP 请求上（nginx 会 504）。
+ * POST /api/lua/ai 只启动任务，管理页轮询 /api/lua/ai/status 拿步骤和结果。 */
+const luaJobs = new Map();
+let luaJobSeq = 0;
+let luaJobRunning = 0;
+
+function currentLuaScript() {
+  const cfg = getConfig();
+  if (cfg.lua?.activeScript) return cfg.lua.activeScript;
+  const tpl = path.join(ROOT, "data/framework.lua");
+  return existsSync(tpl) ? readFileSync(tpl, "utf8") : "";
+}
+
+function startLuaJob({ request, current, llm }) {
+  const id = ++luaJobSeq;
+  const job = {
+    id,
+    status: "running",
+    startedAt: Date.now(),
+    steps: [{ at: Date.now(), text: "已读取当前脚本" }],
+    result: null,
+    error: null,
+  };
+  luaJobs.set(id, job);
+  luaJobRunning++;
+
+  const step = (text) => {
+    job.steps.push({ at: Date.now(), text });
+    if (job.steps.length > 20) job.steps.shift();
+  };
+
+  (async () => {
+    try {
+      const result = await generateLuaProposal({ request, current, llm, onStep: step });
+      job.result = {
+        ...result,
+        baseHash: luaBaseHash(current),
+        currentLen: current.length,
+      };
+      job.status = "done";
+    } catch (e) {
+      job.error = e.message || String(e);
+      job.status = "error";
+    } finally {
+      luaJobRunning--;
+      const t = setTimeout(() => luaJobs.delete(id), 10 * 60 * 1000);
+      t.unref?.();
+    }
+  })();
+
+  return job;
+}
 
 /** 读 ESP 镜像里的 app 描述符（0x20 起）：版本号 + 构建日期 */
 function appDesc(file = OTA_APP) {
@@ -468,6 +523,165 @@ export async function handleHttp(req, res, ctx) {
         const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
         log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
         return json(res, 200, { ok: true, sent: list.length, id, results });
+      }
+
+      /* ── 创造模式：Lua AI ───────────────────────────────────────── */
+      if (p === "/api/lua/ai" && req.method === "POST") {
+        if (luaJobRunning > 0)
+          return json(res, 429, { ok: false, msg: "上一条生成还没结束，请稍等" });
+        const body = JSON.parse(await readBody(req));
+        const request = String(body.request || "").trim();
+        if (!request) return json(res, 400, { ok: false, msg: "请先写需求" });
+        if (request.length > 500)
+          return json(res, 400, { ok: false, msg: "需求太长（上限 500 字）" });
+        const cfg = getConfig();
+        if (!cfg.llm?.apiKey)
+          return json(res, 400, { ok: false, msg: "未配置大模型 API Key" });
+        const current = currentLuaScript();
+        if (!current)
+          return json(res, 500, { ok: false, msg: "没有当前 Lua 脚本" });
+        const job = startLuaJob({ request, current, llm: cfg.llm });
+        log(`Lua AI 任务 #${job.id} 开始：${request.slice(0, 80)}`);
+        return json(res, 200, { ok: true, jobId: job.id, steps: job.steps });
+      }
+
+      if (p === "/api/lua/ai/status" && req.method === "GET") {
+        const u = new URL(req.url, "http://localhost");
+        const id = Number(u.searchParams.get("id"));
+        const job = luaJobs.get(id);
+        if (!job) return json(res, 404, { ok: false, msg: "任务不存在或已过期" });
+        return json(res, 200, {
+          ok: true,
+          status: job.status,
+          steps: job.steps,
+          result: job.result,
+          error: job.error,
+          elapsedMs: Date.now() - job.startedAt,
+        });
+      }
+
+      if (p === "/api/lua/apply" && req.method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const code = typeof body.code === "string" ? body.code : "";
+        const summary = String(body.summary || "AI 修改").replace(/\s+/g, " ").trim().slice(0, 120) || "AI 修改";
+        const current = currentLuaScript();
+        if (!current) return json(res, 500, { ok: false, msg: "没有当前 Lua 脚本" });
+
+        const checked = validateLua(code, current);
+        if (!checked.ok)
+          return json(res, 400, { ok: false, msg: "脚本没有通过校验", errors: checked.errors, warnings: checked.warnings });
+        if (body.baseHash && body.baseHash !== luaBaseHash(current))
+          return json(res, 409, { ok: false, msg: "当前脚本已变化（课表或手动下发），请重新生成" });
+        if (checked.code.trim() === current.trim())
+          return json(res, 400, { ok: false, msg: "脚本没有变化" });
+
+        const list = [...ctx.devices];
+        if (!list.length)
+          return json(res, 409, { ok: false, msg: "当前没有在线设备；为避免服务器和设备脚本不一致，请等设备上线后再应用" });
+
+        const cfg = getConfig();
+        const old = current;
+        const oldPrev = cfg.lua?.prevScript || "";
+        const oldAiPrevScript = cfg.lua?.aiPrevScript || "";
+        const oldAiPrevSummary = cfg.lua?.aiPrevSummary || "";
+        const oldAiPrevAt = cfg.lua?.aiPrevAt || "";
+        const oldHistory = Array.isArray(cfg.lua?.history) ? cfg.lua.history : [];
+        const at = new Date().toISOString();
+        const entry = { at, summary, len: checked.code.length };
+
+        saveConfig({
+          lua: {
+            prevScript: old,
+            activeScript: checked.code,
+            aiPrevScript: old,
+            aiPrevSummary: summary,
+            aiPrevAt: at,
+            history: [...oldHistory, entry].slice(-10),
+          },
+        });
+
+        const id = Date.now() % 100000;
+        const results = await Promise.all(list.map((d) => d.sendLua(id, checked.code, 8000)));
+        const okCount = results.filter((r) => r.ok).length;
+
+        if (okCount === 0) {
+          saveConfig({
+            lua: {
+              prevScript: oldPrev,
+              activeScript: old,
+              aiPrevScript: oldAiPrevScript,
+              aiPrevSummary: oldAiPrevSummary,
+              aiPrevAt: oldAiPrevAt,
+              history: oldHistory,
+            },
+          });
+          const rid = (id + 1) % 100000;
+          await Promise.all(list.map((d) => d.sendLua(rid, old, 8000))).catch(() => {});
+          log(`Lua AI 下发失败，已回滚：${checked.code.length} 字符`);
+          return json(res, 502, {
+            ok: false,
+            msg: "设备加载失败，已回滚上一版",
+            rolledBack: true,
+            results,
+            warnings: checked.warnings,
+          });
+        }
+
+        log(`Lua AI applied: ${checked.code.length} 字符，${okCount}/${list.length} 台成功，${summary}`);
+        return json(res, 200, {
+          ok: true,
+          sent: list.length,
+          results,
+          codeLen: checked.code.length,
+          warnings: checked.warnings,
+        });
+      }
+
+      if (p === "/api/lua/rollback" && req.method === "POST") {
+        const cfg = getConfig();
+        const aiPrev = cfg.lua?.aiPrevScript || "";
+        if (!aiPrev)
+          return json(res, 400, { ok: false, msg: "没有可撤销的 AI 修改" });
+
+        const old = currentLuaScript();
+        const oldPrev = cfg.lua?.prevScript || "";
+        const aiPrevSummary = cfg.lua?.aiPrevSummary || "AI 修改";
+        const oldHistory = Array.isArray(cfg.lua?.history) ? cfg.lua.history : [];
+        const checked = validateLua(aiPrev, old);
+        if (!checked.ok)
+          return json(res, 400, { ok: false, msg: "上一版脚本不合法，无法撤销", errors: checked.errors });
+        if (checked.code.trim() === old.trim())
+          return json(res, 400, { ok: false, msg: "脚本没有变化" });
+
+        const list = [...ctx.devices];
+        if (!list.length)
+          return json(res, 409, { ok: false, msg: "当前没有在线设备，未撤销" });
+
+        const id = Date.now() % 100000;
+        const results = await Promise.all(list.map((d) => d.sendLua(id, checked.code, 8000)));
+        const okCount = results.filter((r) => r.ok).length;
+        if (okCount === 0)
+          return json(res, 502, { ok: false, msg: "撤销下发失败，保留当前脚本", results });
+
+        const at = new Date().toISOString();
+        saveConfig({
+          lua: {
+            prevScript: old,
+            activeScript: checked.code,
+            aiPrevScript: "",
+            aiPrevSummary: "",
+            aiPrevAt: "",
+            history: [...oldHistory, { at, summary: `撤销：${aiPrevSummary}`, len: checked.code.length }].slice(-10),
+          },
+        });
+        log(`Lua AI 撤销成功：${checked.code.length} 字符，${okCount}/${list.length} 台`);
+        return json(res, 200, {
+          ok: true,
+          sent: list.length,
+          results,
+          codeLen: checked.code.length,
+          msg: `已撤销：${aiPrevSummary}`,
+        });
       }
 
       if (p === "/api/evt" && req.method === "POST") {

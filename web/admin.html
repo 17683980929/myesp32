@@ -53,6 +53,16 @@
   .kv span:first-child{color:var(--muted)}
   code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
   .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  #aiSteps{font-size:12px;color:var(--muted);margin:8px 0 0;min-height:18px}
+  #aiDiff{background:var(--bg);border:1px solid var(--line);border-radius:6px;
+          padding:10px;max-height:320px;overflow:auto;margin-top:6px;
+          font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  #aiDiff .add{background:#e6ffec;color:#116329}
+  #aiDiff .del{background:#ffebe9;color:#82071e}
+  #aiDiff .ctx{color:var(--muted)}
+  #aiDiff .gap{color:var(--muted);}
+  #aiSummary{font-size:13px;color:var(--text);margin-top:4px}
+  #aiErrors:empty,#aiWarn:empty{display:none}
   .banner{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
           padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
   .modal-mask{display:none;position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.45);
@@ -231,6 +241,38 @@
     <p class="hint">音色按类别分组，✓ 表示已用当前账号实测可用；超自然/大模型音色分别消耗对应资源包，腾讯调用失败时自动回退百度。密钥与语音识别可共用同一腾讯账号。</p>
   </div>
 
+  <!-- 创造模式：Lua AI -->
+  <div class="card">
+    <h2>创造模式 <span class="tag">Lua AI · 预览后下发</span></h2>
+    <p class="hint">描述想改的功能，模型只改当前 Lua 脚本；生成后先看摘要和差异，点“应用并下发”才生效。设备加载失败会自动回滚。</p>
+    <div id="aiBaseWarn" class="msg warn"></div>
+    <label>需求</label>
+    <textarea id="aiReq" rows="3" placeholder="例如：把状态页的“电量”两个字改成“电池”，字号再大一点；或者在状态页底部加一行今天的日期。"></textarea>
+    <div class="actions">
+      <button class="primary" id="aiGenBtn" onclick="aiGenerate()">生成修改</button>
+      <button id="aiRollbackBtn" onclick="aiRollback()">撤销上次 AI 修改</button>
+      <span class="msg" id="aiMsg"></span>
+    </div>
+    <div id="aiSteps"></div>
+    <div id="aiOut" style="display:none">
+      <label>修改摘要</label>
+      <div id="aiSummary"></div>
+      <div id="aiWarn" class="msg warn" style="margin-top:6px"></div>
+      <div id="aiErrors" class="msg err" style="margin-top:6px"></div>
+      <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
+      <pre id="aiDiff"></pre>
+      <details style="margin-top:8px">
+        <summary>查看 / 编辑完整脚本（<span id="aiLen"></span> 字符）</summary>
+        <textarea id="aiCode" rows="14" style="margin-top:6px"></textarea>
+      </details>
+      <div class="actions">
+        <button class="primary" id="aiApplyBtn" onclick="aiApply()">应用并下发</button>
+        <span class="msg" id="aiApplyMsg"></span>
+      </div>
+    </div>
+    <div id="aiHistory" class="hint" style="margin-top:12px"></div>
+  </div>
+
   <!-- Lua -->
   <div class="card">
     <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
@@ -325,6 +367,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let cfg = null;
+let aiProposal = null, aiPollTimer = null, aiCurrent = "";
 
 function setMsg(el, text, kind) {
   el.textContent = text;
@@ -404,6 +447,12 @@ async function loadConfig() {
   $("t_tspeed").value = cfg.tts.tencent?.speed ?? 0;
 
   $("lua_code").value = cfg.lua.activeScript || "";
+  renderAiHistory();
+  $("aiRollbackBtn").disabled = !(cfg.lua && cfg.lua.aiPrevScript);
+  aiCurrent = (cfg.lua && cfg.lua.activeScript) || "";
+  $("aiBaseWarn").textContent = aiCurrent && !aiCurrent.includes("-- >>>DATA")
+    ? "当前脚本没有课表 DATA 段（可能是旧版）。如果设备在跑新版 framework，请先在课表编排里保存一次，否则 AI 会以旧版为底稿。"
+    : "";
 
   // 安全提示
   const warns = [];
@@ -513,6 +562,234 @@ async function refreshWeather() {
     refreshStatus();
   } catch (e) {
     setMsg($("weatherMsg"), "请求失败", "err");
+  }
+}
+
+/* ── 创造模式：Lua AI ───────────────────────────────────────── */
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function stripDataForDiff(code) {
+  return String(code || "").replace(/-- >>>DATA[\s\S]*?-- <<<DATA\n?/g, "").trim();
+}
+
+function lineDiff(A, B) {
+  const n = A.length, m = B.length;
+  if (n * m > 250000) return null;
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = A[i] === B[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { ops.push({ t: "ctx", s: A[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) ops.push({ t: "del", s: A[i++] });
+    else ops.push({ t: "add", s: B[j++] });
+  }
+  while (i < n) ops.push({ t: "del", s: A[i++] });
+  while (j < m) ops.push({ t: "add", s: B[j++] });
+  return ops;
+}
+
+function compactDiff(ops, ctx = 2) {
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, i) => {
+    if (o.t === "ctx") return;
+    const lo = Math.max(0, i - ctx), hi = Math.min(ops.length - 1, i + ctx);
+    for (let k = lo; k <= hi; k++) keep[k] = true;
+  });
+  const out = [];
+  let gap = false;
+  ops.forEach((o, i) => {
+    if (keep[i]) { out.push(o); gap = false; }
+    else if (!gap) { out.push({ t: "gap", s: "…" }); gap = true; }
+  });
+  return out;
+}
+
+function renderDiff(cur, next) {
+  const A = stripDataForDiff(cur).split("\n");
+  const B = stripDataForDiff(next).split("\n");
+  const ops = lineDiff(A, B);
+  if (!ops) {
+    $("aiDiff").textContent = "差异太长，请展开下方完整脚本查看";
+    return;
+  }
+  if (!ops.some((o) => o.t !== "ctx")) {
+    $("aiDiff").textContent = "没有可见变化（可能只改了课表 DATA 段或空白）";
+    return;
+  }
+  $("aiDiff").innerHTML = compactDiff(ops).map((o) => {
+    const cls = o.t === "add" ? "add" : o.t === "del" ? "del" : o.t === "gap" ? "gap" : "ctx";
+    const pre = o.t === "add" ? "+ " : o.t === "del" ? "- " : "  ";
+    return `<span class="${cls}">${escHtml(pre + o.s)}</span>\n`;
+  }).join("");
+}
+
+function renderAiHistory() {
+  const h = cfg && cfg.lua && Array.isArray(cfg.lua.history) ? cfg.lua.history : [];
+  const el = $("aiHistory");
+  if (!h.length) {
+    el.textContent = "还没有 AI 修改记录。";
+    return;
+  }
+  el.innerHTML = "最近版本：" + h.slice(-5).reverse().map((x) => {
+    const t = x.at ? new Date(x.at).toLocaleString() : "";
+    return `${escHtml(t)} · ${escHtml(x.summary || "Lua 修改")}（${x.len || "?"} 字符）`;
+  }).join("　｜　") + (cfg.lua.aiPrevSummary ? `<br>可撤销：${escHtml(cfg.lua.aiPrevSummary)}` : "");
+}
+
+function aiShowSteps(steps) {
+  $("aiSteps").textContent = steps && steps.length
+    ? "流程：" + steps.map((s) => s.text).join(" → ")
+    : "";
+}
+
+function aiShowResult(r) {
+  const ok = !!(r && r.ok);
+  aiProposal = ok
+    ? { summary: (r && r.summary) || "Lua 修改", code: (r && r.code) || "", baseHash: (r && r.baseHash) || "" }
+    : null;
+
+  $("aiOut").style.display = "block";
+  $("aiSummary").textContent = (r && r.summary) || "(无摘要)";
+  $("aiWarn").textContent = ((r && r.warnings) || []).join("；");
+  $("aiErrors").textContent = ((r && r.errors) || []).length
+    ? "校验未通过：" + r.errors.join("；")
+    : "";
+  $("aiCode").value = (r && r.code) || "";
+  $("aiLen").textContent = (r && r.code) ? r.code.length : 0;
+  $("aiApplyBtn").disabled = !ok;
+
+  if (r && r.code) renderDiff(aiCurrent || (cfg.lua && cfg.lua.activeScript) || "", r.code);
+  else $("aiDiff").textContent = "（没有生成脚本）";
+
+  setMsg($("aiMsg"), ok ? "生成完成，检查差异后点“应用并下发”" : "生成未通过校验，请调整需求后重试", ok ? "ok" : "err");
+}
+
+async function aiGenerate() {
+  const request = $("aiReq").value.trim();
+  if (!request) { setMsg($("aiMsg"), "先写一下想改什么", "err"); return; }
+  if (aiPollTimer) { setMsg($("aiMsg"), "正在生成，请稍等", "warn"); return; }
+
+  aiProposal = null;
+  $("aiOut").style.display = "none";
+  $("aiSteps").textContent = "";
+  $("aiWarn").textContent = "";
+  $("aiErrors").textContent = "";
+  const btn = $("aiGenBtn");
+  btn.disabled = true;
+  setMsg($("aiMsg"), "正在读取当前脚本并生成…", "warn");
+
+  try {
+    try {
+      const lr = await fetch("api/lua");
+      const lj = await lr.json();
+      if (lj && lj.activeScript) aiCurrent = lj.activeScript;
+    } catch { /* 用页面上已加载的脚本做差异 */ }
+
+    const r = await fetch("api/lua/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request }),
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      setMsg($("aiMsg"), j.msg || "启动失败", "err");
+      btn.disabled = false;
+      return;
+    }
+
+    aiShowSteps(j.steps);
+    const started = Date.now();
+    aiPollTimer = setInterval(async () => {
+      try {
+        const sr = await fetch(`api/lua/ai/status?id=${j.jobId}`);
+        const sj = await sr.json();
+        if (!sj.ok) throw new Error(sj.msg || "状态读取失败");
+        aiShowSteps(sj.steps);
+        if (sj.status === "done") {
+          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
+          aiShowResult(sj.result);
+        } else if (sj.status === "error") {
+          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
+          setMsg($("aiMsg"), `生成失败：${sj.error || "未知错误"}`, "err");
+        } else if (Date.now() - started > 150000) {
+          clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
+          setMsg($("aiMsg"), "等待超时，请重试", "err");
+        }
+      } catch (e) {
+        clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
+        setMsg($("aiMsg"), "状态读取失败", "err");
+      }
+    }, 1500);
+  } catch (e) {
+    btn.disabled = false;
+    setMsg($("aiMsg"), "请求失败", "err");
+  }
+}
+
+async function aiApply() {
+  if (!aiProposal) return;
+  const code = $("aiCode").value;
+  if (!code.trim()) { setMsg($("aiApplyMsg"), "脚本为空", "err"); return; }
+  if (!confirm("把新脚本下发给在线设备？设备加载失败会自动回滚。")) return;
+
+  setMsg($("aiApplyMsg"), "下发中…", "warn");
+  try {
+    const r = await fetch("api/lua/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, summary: aiProposal.summary, baseHash: aiProposal.baseHash }),
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      setMsg($("aiApplyMsg"), j.msg || "应用失败", "err");
+      if (j.errors && j.errors.length) $("aiErrors").textContent = "校验未通过：" + j.errors.join("；");
+      if (j.rolledBack) {
+        aiProposal = null;
+        $("aiApplyBtn").disabled = true;
+        await loadConfig();
+      }
+      return;
+    }
+    const ok = (j.results || []).filter((x) => x.ok).length;
+    setMsg($("aiApplyMsg"), `已下发：${ok}/${j.sent} 台成功`, ok === j.sent ? "ok" : "warn");
+    aiProposal = null;
+    $("aiApplyBtn").disabled = true;
+    $("aiOut").style.display = "none";
+    $("aiReq").value = "";
+    await loadConfig();
+  } catch (e) {
+    setMsg($("aiApplyMsg"), "请求失败", "err");
+  }
+}
+
+async function aiRollback() {
+  if (!confirm("撤销上一次 AI 修改，并恢复到设备？")) return;
+  setMsg($("aiMsg"), "撤销中…", "warn");
+  try {
+    const r = await fetch("api/lua/rollback", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) {
+      setMsg($("aiMsg"), j.msg || "撤销失败", "err");
+      return;
+    }
+    const ok = (j.results || []).filter((x) => x.ok).length;
+    setMsg($("aiMsg"), `已撤销（${ok}/${j.sent} 台成功）`, ok === j.sent ? "ok" : "warn");
+    aiProposal = null;
+    $("aiOut").style.display = "none";
+    await loadConfig();
+  } catch (e) {
+    setMsg($("aiMsg"), "请求失败", "err");
   }
 }
 

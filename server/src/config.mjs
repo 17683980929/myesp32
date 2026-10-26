@@ -154,6 +154,12 @@ export const DEFAULT_CONFIG = {
     activeScript: "",
     /** 上一版，用于回滚 */
     prevScript: "",
+    /** 创造模式：上一次 AI 修改前的脚本，用于“撤销上次 AI 修改” */
+    aiPrevScript: "",
+    aiPrevSummary: "",
+    aiPrevAt: "",
+    /** 最近几次 AI 应用/撤销的摘要（不含代码） */
+    history: [],
   },
 };
 
