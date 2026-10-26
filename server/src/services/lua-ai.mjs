@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 import { chatStream } from "./llm.mjs";
 
 const CODE_LIMIT = 6000;
+const MAX_LUA_ATTEMPTS = 3;
 const DATA_RE = /-- >>>DATA[\s\S]*?-- <<<DATA\n?/;
 
 const ALLOWED_API = {
@@ -196,17 +197,16 @@ export function validateLua(rawCode, current) {
 }
 
 /**
- * 让模型生成一次完整脚本。不做自动重试，失败时把校验错误交给前端决定。
- * @param {{request:string, current:string, llm:object, onStep?:(text:string)=>void}} o
+ * 生成完整脚本；静态校验失败时把错误和上一版代码交回模型自动修正，
+ * 最多 3 次尝试（含首次）。模型调用错误也会重试，最后一次仍失败则抛出。
+ * @param {{request:string, current:string, llm:object, onStep?:(text:string)=>void, chat?:Function}} o
  */
-export async function generateLuaProposal({ request, current, llm, onStep }) {
+export async function generateLuaProposal({ request, current, llm, onStep, chat = chatStream }) {
   if (!llm?.apiKey) throw new Error("未配置大模型 API Key");
   const step = (text) => {
     try { onStep?.(text); } catch { /* 进度回调不应影响生成 */ }
   };
 
-  step("请求模型生成完整脚本");
-  let raw = "";
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -216,34 +216,80 @@ export async function generateLuaProposal({ request, current, llm, onStep }) {
         `用户需求：${request}`,
     },
   ];
-  for await (const delta of chatStream({
-    apiKey: llm.apiKey,
-    baseUrl: llm.baseUrl,
-    model: llm.model,
-    messages,
-    maxTokens: 4096,
-    temperature: 0.2,
-    thinking: false,
-    timeoutMs: 90000,
-  })) {
-    raw += delta;
+
+  let attempts = 0;
+  let lastError = "";
+
+  for (let attempt = 1; attempt <= MAX_LUA_ATTEMPTS; attempt++) {
+    attempts = attempt;
+    step(attempt === 1 ? "请求模型生成完整脚本" : `请求模型修正（第 ${attempt} 次尝试）`);
+
+    let raw = "";
+    try {
+      for await (const delta of chat({
+        apiKey: llm.apiKey,
+        baseUrl: llm.baseUrl,
+        model: llm.model,
+        messages,
+        maxTokens: 4096,
+        temperature: 0.2,
+        thinking: false,
+        timeoutMs: 60000,
+      })) {
+        raw += delta;
+      }
+    } catch (e) {
+      lastError = e.message || String(e);
+      if (attempt >= MAX_LUA_ATTEMPTS) throw e;
+      step(`模型调用失败：${lastError}，重试`);
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+
+    step("解析模型输出");
+    const parsed = parseModelOutput(raw);
+    const checked = validateLua(parsed.code, current);
+    if (checked.ok && checked.code.trim() === String(current || "").trim()) {
+      checked.ok = false;
+      checked.errors.push("模型没有改变脚本");
+    }
+    const summary = normalizeSummary(parsed.summary, checked.warnings);
+
+    if (checked.ok) {
+      step(`第 ${attempt} 次静态校验通过`);
+      return {
+        ok: true,
+        summary,
+        code: checked.code,
+        errors: checked.errors,
+        warnings: checked.warnings,
+        attempts,
+      };
+    }
+
+    step(`第 ${attempt} 次校验未通过：${checked.errors.slice(0, 2).join("；").slice(0, 120)}`);
+    if (attempt >= MAX_LUA_ATTEMPTS) {
+      step(`重试 ${attempts} 次仍未通过`);
+      return {
+        ok: false,
+        summary,
+        code: checked.code,
+        errors: checked.errors,
+        warnings: checked.warnings,
+        attempts,
+      };
+    }
+
+    messages.push({ role: "assistant", content: raw });
+    messages.push({
+      role: "user",
+      content:
+        `上一版没有通过静态校验：\n${checked.errors.map((e) => `- ${e}`).join("\n")}\n\n` +
+        `请逐条修正这些问题，重新输出完整脚本。要求：完整替换、不要 diff/省略、` +
+        `保留课表 DATA 段（如果当前有）、只输出 SUMMARY + lua 代码块。`,
+    });
+    step("把校验错误交给模型修正");
   }
 
-  step("解析模型输出");
-  const parsed = parseModelOutput(raw);
-  const checked = validateLua(parsed.code, current);
-  if (checked.ok && checked.code.trim() === String(current || "").trim()) {
-    checked.ok = false;
-    checked.errors.push("模型没有改变脚本");
-  }
-  const summary = normalizeSummary(parsed.summary, checked.warnings);
-  step(checked.ok ? "静态校验通过" : "静态校验未通过");
-
-  return {
-    ok: checked.ok,
-    summary,
-    code: checked.code,
-    errors: checked.errors,
-    warnings: checked.warnings,
-  };
+  throw new Error(lastError || "模型生成失败");
 }

@@ -655,6 +655,7 @@ function aiShowSteps(steps) {
 
 function aiShowResult(r) {
   const ok = !!(r && r.ok);
+  const attempts = (r && r.attempts) || 1;
   aiProposal = ok
     ? { summary: (r && r.summary) || "Lua 修改", code: (r && r.code) || "", baseHash: (r && r.baseHash) || "" }
     : null;
@@ -672,7 +673,13 @@ function aiShowResult(r) {
   if (r && r.code) renderDiff(aiCurrent || (cfg.lua && cfg.lua.activeScript) || "", r.code);
   else $("aiDiff").textContent = "（没有生成脚本）";
 
-  setMsg($("aiMsg"), ok ? "生成完成，检查差异后点“应用并下发”" : "生成未通过校验，请调整需求后重试", ok ? "ok" : "err");
+  setMsg(
+    $("aiMsg"),
+    ok
+      ? `生成完成（${attempts} 次尝试），检查差异后点“应用并下发”`
+      : `生成未通过校验（尝试 ${attempts} 次），已自动修正仍未通过，请调整需求后重试`,
+    ok ? "ok" : "err"
+  );
 }
 
 async function aiGenerate() {
@@ -722,7 +729,7 @@ async function aiGenerate() {
         } else if (sj.status === "error") {
           clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
           setMsg($("aiMsg"), `生成失败：${sj.error || "未知错误"}`, "err");
-        } else if (Date.now() - started > 150000) {
+        } else if (Date.now() - started > 240000) {
           clearInterval(aiPollTimer); aiPollTimer = null; btn.disabled = false;
           setMsg($("aiMsg"), "等待超时，请重试", "err");
         }
