@@ -252,13 +252,17 @@
   <!-- 课表编排 -->
   <div class="card">
     <h2>课表编排 <span class="tag">三轮补课</span></h2>
+    <label>班级列表<span class="hint"> 逗号分隔，顺序对应 A/B/C…；最多 20 个，写「1」或「1班」都行</span></label>
+    <input id="ttClasses" placeholder="1,18,20,24" onchange="drawTt()">
+    <label>节次与时间<span class="hint"> 左列的时间可以改，保存后一起下发</span></label>
+    <div id="ttPeriods" style="overflow:auto;margin:4px 0 8px"></div>
     <div class="actions" id="ttRounds"></div>
     <div id="ttGrid" style="overflow:auto;margin:6px 0"></div>
     <div class="actions">
       <button class="primary" onclick="saveTt()">保存并下发</button>
       <span class="msg" id="ttMsg"></span>
     </div>
-    <p class="hint">点格子循环切换：空 → 1班 → 18班 → 20班 → 24班 → 空。保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
+    <p class="hint">格子里点开下拉选班级；保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
   </div>
 
   <!-- 服务端更新 -->
@@ -505,32 +509,61 @@ async function deployLua() {
 
 /* ── 课表编排 ─────────────────────────────────────────────── */
 let TTR = null, TTSEL = 1;
-const TTMAP = { A: "1班", B: "18班", C: "20班", D: "24班" };
-const TTCYCLE = { "-": "A", A: "B", B: "C", C: "D", D: "-" };
+const TTLET = "ABCDEFGHIJKLMNOPQRST";
+
+function ttClasses() {
+  return $("ttClasses").value.split(/[,，s]+/).map((x) => x.trim().replace(/班$/, "")).filter(Boolean).slice(0, 20);
+}
 
 async function loadTt() {
   try {
     const r = await fetch("api/timetable");
     TTR = await r.json();
     TTSEL = TTR.round || 1;
+    $("ttClasses").value = (TTR.classes || []).join(",");
+    drawPeriods();
     drawTt();
   } catch { $("ttMsg").textContent = "读取课表失败"; }
 }
 
+function drawPeriods() {
+  const P = TTR.periods || [];
+  let h = '<table style="border-collapse:collapse;font-size:12px"><tr><th style="padding:2px 4px">节次</th><th style="padding:2px 4px">开始</th><th style="padding:2px 4px">结束</th></tr>';
+  for (let r = 0; r < 13; r++) {
+    const p = P[r] || { label: "", time: "", end: "" };
+    h += "<tr>" +
+      '<td><input data-p="label" data-r="' + r + '" value="' + p.label + '" style="width:52px"></td>' +
+      '<td><input data-p="time" data-r="' + r + '" value="' + p.time + '" style="width:64px" placeholder="07:35"></td>' +
+      '<td><input data-p="end" data-r="' + r + '" value="' + p.end + '" style="width:64px" placeholder="08:15"></td>' +
+      "</tr>";
+  }
+  $("ttPeriods").innerHTML = h + "</table>";
+  $("ttPeriods").querySelectorAll("input").forEach((el) => {
+    el.addEventListener("input", () => {
+      const r = +el.dataset.r;
+      TTR.periods[r] = TTR.periods[r] || { label: "", time: "", end: "" };
+      TTR.periods[r][el.dataset.p] = el.value.trim();
+    });
+  });
+}
+
 function drawTt() {
   if (!TTR) return;
-  const P = TTR.periods || [], rows = TTR.rounds[TTSEL - 1] || [];
-  let h = '<table style="border-collapse:collapse;font-size:12px">';
-  h += '<tr><th></th>' + (TTR.days || []).map((d) => '<th style="padding:2px 6px">' + d + "</th>").join("") + "</tr>";
+  const cls = ttClasses();
+  const P = TTR.periods || [];
+  const rows = TTR.rounds[TTSEL - 1] || [];
+  let h = '<table style="border-collapse:collapse;font-size:12px"><tr><th></th>' +
+    (TTR.days || []).map((d) => '<th style="padding:2px 6px">' + d + "</th>").join("") + "</tr>";
   for (let r = 0; r < 13; r++) {
-    h += '<tr><th style="padding:2px 6px;white-space:nowrap;text-align:right">' +
-      (P[r] ? P[r].label : "") + '<br><span style="color:#888;font-weight:400">' + (P[r] ? P[r].time : "") + "</span></th>";
+    h += '<tr><th style="padding:2px 6px;white-space:nowrap;text-align:right">' + (P[r] ? P[r].label : "") +
+      '<br><span style="color:#888;font-weight:400">' + (P[r] ? P[r].time : "") + "</span></th>";
     for (let c = 0; c < 7; c++) {
       const ch = (rows[r] || "-------")[c];
-      const on = ch !== "-";
-      h += '<td style="padding:1px"><button onclick="ttClick(' + r + "," + c + ')" style="width:62px;padding:4px 0;' +
-        (on ? "background:#2f6f4f;color:#fff;border-color:#2f6f4f" : "") + '">' +
-        (on ? TTMAP[ch] : "·") + "</button></td>";
+      let o = '<option value="-">·</option>';
+      for (let i = 0; i < cls.length; i++) {
+        o += '<option value="' + TTLET[i] + '"' + (TTLET[i] === ch ? " selected" : "") + ">" + cls[i] + "班</option>";
+      }
+      h += '<td style="padding:1px"><select onchange="ttSet(' + r + "," + c + ',this.value)" style="width:72px">' + o + "</select></td>";
     }
     h += "</tr>";
   }
@@ -541,24 +574,27 @@ function drawTt() {
 
 function ttSel(n) { TTSEL = n; drawTt(); }
 
-function ttClick(r, c) {
+function ttSet(r, c, v) {
   const row = TTR.rounds[TTSEL - 1][r];
-  TTR.rounds[TTSEL - 1][r] = row.slice(0, c) + TTCYCLE[row[c]] + row.slice(c + 1);
-  drawTt();
+  TTR.rounds[TTSEL - 1][r] = row.slice(0, c) + v + row.slice(c + 1);
 }
 
 async function saveTt() {
+  const classes = ttClasses();
+  if (!classes.length) { setMsg($("ttMsg"), "班级列表不能为空", "err"); return; }
+  const keep = new Set(["-", ...TTLET.slice(0, classes.length).split("")]);
+  const rounds = TTR.rounds.map((r) => r.map((row) => [...row].map((ch) => (keep.has(ch) ? ch : "-")).join("")));
   setMsg($("ttMsg"), "保存中…", "");
   try {
     const r = await fetch("api/timetable", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rounds: TTR.rounds }),
+      body: JSON.stringify({ classes, periods: TTR.periods, rounds }),
     });
     const j = await r.json();
     if (!j.ok) { setMsg($("ttMsg"), j.msg || "保存失败", "err"); return; }
-    const okCount = (j.results || []).filter((x) => x && x.ok).length;
-    setMsg($("ttMsg"), j.sent ? `已保存并下发（${okCount}/${j.sent} 台回执正常）` : "已保存，但当前没有在线设备", j.sent ? "ok" : "warn");
+    const ok = (j.results || []).filter((x) => x && x.ok).length;
+    setMsg($("ttMsg"), j.sent ? `已保存并下发（${ok}/${j.sent} 台回执正常）` : "已保存，但当前没有在线设备", j.sent ? "ok" : "warn");
   } catch { setMsg($("ttMsg"), "请求失败", "err"); }
 }
 

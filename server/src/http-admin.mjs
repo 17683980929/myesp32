@@ -376,47 +376,72 @@ export async function handleHttp(req, res, ctx) {
         return;
       }
 
-      /* 课表：读 / 存（存完同时改 timetable.json 和 Lua 里的三轮表并下发） */
+      /* 课表：读 / 存（存完重写 Lua 的 DATA 段并下发） */
       if (p === "/api/timetable" && req.method === "GET") {
         const tt = JSON.parse(readFileSync(path.join(ROOT, "data/timetable.json"), "utf8"));
-        return json(res, 200, { days: tt.days, periods: tt.periods, rounds: tt.rounds, round: getConfig().timetable?.round || 1 });
+        return json(res, 200, {
+          days: tt.days, periods: tt.periods, classes: tt.classes,
+          rounds: tt.rounds, round: getConfig().timetable?.round || 1,
+        });
       }
 
       if (p === "/api/timetable" && req.method === "POST") {
-        const { rounds } = JSON.parse(await readBody(req));
-        if (!Array.isArray(rounds) || rounds.length !== 3)
-          return json(res, 400, { ok: false, msg: "need 3 rounds" });
-        for (const r of rounds) {
-          if (!Array.isArray(r) || r.length !== 13 ||
-              r.some((x) => typeof x !== "string" || !/^[-ABCD]{7}$/.test(x)))
-            return json(res, 400, { ok: false, msg: "each round: 13 rows x 7 chars" });
+        const body = JSON.parse(await readBody(req));
+        const classes = Array.isArray(body.classes) ? body.classes.map((x) => String(x).trim()).filter(Boolean) : [];
+        const periods = Array.isArray(body.periods) ? body.periods : [];
+        const rounds = Array.isArray(body.rounds) ? body.rounds : [];
+        if (!classes.length || classes.length > 20)
+          return json(res, 400, { ok: false, msg: "班级数量需在 1~20 之间" });
+        if (classes.some((c) => c.length > 8))
+          return json(res, 400, { ok: false, msg: "班级名最长 8 个字" });
+        if (periods.length !== 13)
+          return json(res, 400, { ok: false, msg: "节次必须是 13 行" });
+        for (const pd of periods) {
+          if (!pd || typeof pd.label !== "string" || pd.label.length > 6 ||
+              !/^\d{1,2}:\d{2}$/.test(pd.time || "") || !/^\d{1,2}:\d{2}$/.test(pd.end || ""))
+            return json(res, 400, { ok: false, msg: "节次名称或时间不合法（HH:MM）" });
         }
+        const LET = "ABCDEFGHIJKLMNOPQRST";
+        const valid = new Set(["-", ...LET.slice(0, classes.length).split("")]);
+        if (rounds.length !== 3 || rounds.some((r) => !Array.isArray(r) || r.length !== 13 ||
+            r.some((x) => typeof x !== "string" || x.length !== 7 || [...x].some((ch) => !valid.has(ch)))))
+          return json(res, 400, { ok: false, msg: "格子非法（可能有超出班级列表的字母）" });
 
         const ttPath = path.join(ROOT, "data/timetable.json");
         const tt = JSON.parse(readFileSync(ttPath, "utf8"));
+        tt.classes = classes;
+        tt.periods = periods;
         tt.rounds = rounds;
         writeFileSync(ttPath, JSON.stringify(tt, null, 2) + "\n");
 
+        const q = (arr) => "{" + arr.map((x) => '"' + x + '"').join(",") + "}";
+        const block =
+          "-- >>>DATA 由服务器按网页编排重写，勿手改\n" +
+          "local RS={\n" + rounds.map((r) => '{"' + r.join('","') + '"},').join("\n") + "\n}\n" +
+          "local CN={" + classes.map((c, i) => LET[i] + '="' + c + '"').join(",") + "}\n" +
+          "local GUT=" + q(periods.map((x) => x.label)) + "\n" +
+          "local PT=" + q(periods.map((x) => x.time)) + "\n" +
+          "local PE=" + q(periods.map((x) => x.end)) + "\n" +
+          "-- <<<DATA\n";
         const cfg = getConfig();
-        const block = "local RS={\n" + rounds.map((r) => '{"' + r.join('","') + '"},').join("\n") + "\n}\n";
-        const re = /local RS=\{[\s\S]*?\n}\n/;
+        const re = /-- >>>DATA[\s\S]*?-- <<<DATA\n/;
         let code = String(cfg.lua?.activeScript || "");
         if (!re.test(code)) {
           const tpl = path.join(ROOT, "data/framework.lua");
           if (!existsSync(tpl))
-            return json(res, 500, { ok: false, msg: "script has no RS block; deploy new framework.lua first" });
+            return json(res, 500, { ok: false, msg: "当前脚本里没有 DATA 段，先下发新版 framework.lua" });
           code = readFileSync(tpl, "utf8");
         }
-        if (!re.test(code)) return json(res, 500, { ok: false, msg: "no RS block in template" });
+        if (!re.test(code)) return json(res, 500, { ok: false, msg: "模板里也没有 DATA 段" });
         code = code.replace(re, block);
         if (code.length > 6000)
-          return json(res, 400, { ok: false, msg: "generated script too long: " + code.length });
+          return json(res, 400, { ok: false, msg: "生成后超过 6000 字符（" + code.length + "）" });
 
         saveConfig({ lua: { prevScript: cfg.lua?.activeScript || "", activeScript: code } });
         const id = Date.now() % 100000;
         const list = [...ctx.devices];
         const results = list.length ? await Promise.all(list.map((d) => d.sendLua(id, code, 8000))) : [];
-        log("timetable saved+deployed to " + list.length + " device(s), lua " + code.length + " chars");
+        log("timetable saved+deployed: " + list.length + " dev, lua " + code.length);
         return json(res, 200, { ok: true, sent: list.length, codeLen: code.length, results });
       }
 
