@@ -335,8 +335,24 @@ export async function handleHttp(req, res, ctx) {
           const from = path.join(stage, rel);
           const live = path.resolve(ROOT, "..", rel);
           if (!existsSync(from)) return;
-          if (existsSync(live)) renameSync(live, path.join(bak, rel.replace(/[\/]/g, "_")));
-          renameSync(from, live);
+          const dest = path.join(bak, rel.replace(/[\\/]/g, "_"));
+          if (existsSync(live)) {
+            try {
+              renameSync(live, dest);
+            } catch (e) {
+              /* 目录被别的进程占着（资源管理器/编辑器/杀软扫描）：重命名会 EPERM。
+                 退回覆盖复制，旧文件残留但代码都会被换掉，不影响运行。 */
+              cpSync(from, live, { recursive: true, force: true });
+              log("目录被占用，改为覆盖复制：" + rel + "（" + (e.code || e.message) + "）");
+              return;
+            }
+          }
+          try {
+            renameSync(from, live);
+          } catch (e) {
+            cpSync(from, live, { recursive: true, force: true });
+            log("替换失败，改为覆盖复制：" + rel + "（" + (e.code || e.message) + "）");
+          }
         };
         try {
           ["server/src", "server/skills", "web"].forEach(swapDir);
