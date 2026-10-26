@@ -55,6 +55,22 @@
   .hint{font-size:12px;color:var(--muted);margin-top:6px}
   .banner{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
           padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+  .modal-mask{display:none;position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.45);
+              align-items:center;justify-content:center;padding:18px}
+  .modal-mask.open{display:flex}
+  .modal-panel{background:var(--card);border-radius:12px;width:min(1180px,96vw);max-height:92vh;
+               display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.28)}
+  .modal-head{display:flex;align-items:center;gap:10px;padding:12px 18px;
+              border-bottom:1px solid var(--line)}
+  .modal-head h2{font-size:14px;margin:0;font-weight:600;display:flex;align-items:center;gap:8px}
+  .modal-head .tag{font-size:11px;font-weight:400;color:var(--muted);background:var(--bg);
+                   border:1px solid var(--line);padding:1px 7px;border-radius:20px}
+  .modal-head .spacer{flex:1}
+  .modal-body{padding:4px 18px 18px;overflow:auto}
+  .tt-cols{display:flex;gap:18px;align-items:flex-start;margin-top:4px}
+  .tt-periods{flex:0 0 230px}
+  .tt-grid-wrap{flex:1;min-width:0}
+  @media(max-width:900px){.tt-cols{display:block}.tt-periods{width:100%}}
 </style>
 </head>
 <body>
@@ -252,17 +268,9 @@
   <!-- 课表编排 -->
   <div class="card">
     <h2>课表编排 <span class="tag">三轮补课</span></h2>
-    <label>班级列表<span class="hint"> 逗号分隔，顺序对应 A/B/C…；最多 20 个，写「1」或「1班」都行</span></label>
-    <input id="ttClasses" placeholder="1,18,20,24" onchange="drawTt()">
-    <label>节次与时间<span class="hint"> 左列的时间可以改，保存后一起下发</span></label>
-    <div id="ttPeriods" style="overflow:auto;margin:4px 0 8px"></div>
-    <div class="actions" id="ttRounds"></div>
-    <div id="ttGrid" style="overflow:auto;margin:6px 0"></div>
     <div class="actions">
-      <button class="primary" onclick="saveTt()">保存并下发</button>
-      <span class="msg" id="ttMsg"></span>
+      <button class="primary" onclick="openTt()">打开课表编排</button>
     </div>
-    <p class="hint">格子里点开下拉选班级；保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
   </div>
 
   <!-- 服务端更新 -->
@@ -283,6 +291,36 @@
     <button class="primary" onclick="saveAll()">保存全部配置</button>
   </div>
 </main>
+
+<!-- 课表编排模态框 -->
+<div class="modal-mask" id="ttModal" onclick="if(event.target===this)closeTt()">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h2>课表编排 <span class="tag">三轮补课</span></h2>
+      <span class="spacer"></span>
+      <button onclick="closeTt()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <label>班级列表<span class="hint"> 逗号分隔，顺序对应 A/B/C…；最多 20 个，写「1」或「1班」都行</span></label>
+      <input id="ttClasses" placeholder="1,18,20,24" onchange="drawTt()">
+      <div class="tt-cols">
+        <div class="tt-periods">
+          <label>节次与时间<span class="hint"> 时间可改，保存后一起下发</span></label>
+          <div id="ttPeriods"></div>
+        </div>
+        <div class="tt-grid-wrap">
+          <div class="actions" id="ttRounds" style="margin-top:14px"></div>
+          <div id="ttGrid" style="overflow:auto;margin:8px 0 0"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" onclick="saveTt()">保存并下发</button>
+        <span class="msg" id="ttMsg"></span>
+      </div>
+      <p class="hint">格子里点开下拉选班级；保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -574,6 +612,17 @@ function drawTt() {
 
 function ttSel(n) { TTSEL = n; drawTt(); }
 
+function openTt() {
+  $("ttModal").classList.add("open");
+  document.body.style.overflow = "hidden";
+  if (TTR) drawTt(); else loadTt();
+}
+
+function closeTt() {
+  $("ttModal").classList.remove("open");
+  document.body.style.overflow = "";
+}
+
 function ttSet(r, c, v) {
   const row = TTR.rounds[TTSEL - 1][r];
   TTR.rounds[TTSEL - 1][r] = row.slice(0, c) + v + row.slice(c + 1);
@@ -699,7 +748,9 @@ setInterval(refreshOta, 3000);
 refreshSkills();
 refreshUpd();
 setInterval(refreshUpd, 10000);
-loadTt();
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeTt();
+});
 </script>
 </body>
 </html>
