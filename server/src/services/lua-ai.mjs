@@ -45,8 +45,7 @@ const SYSTEM_PROMPT = `你是「小鱼」桌面宠物的 Lua UI 工程师。你�
 
 设备约束：
 - 屏幕 400x300 单色 RLCD，只有 16px / 32px 两种字号；32px 一行约 12 个汉字。
-- 每次绘制后 30 秒内不要再次重绘（会打断自动返回主页）；不要用 timer.every 做秒级刷新。
-- 整份脚本必须 ≤ 6000 字符；当前脚本已接近上限，尽量小改。
+- 单次绘制后画面会保持 30 秒；动画可以用 timer.every，但画面会一直保持，需要提供 display.close 或按键退出；帧间隔 ≥100ms，单次回调 <2 秒。- 整份脚本必须 ≤ 6000 字符；当前脚本已接近上限，尽量小改。
 - 设备端一次执行最多 2 秒；不要写死循环。
 - 可用 API（只有这些）：
   display.clear()
@@ -76,6 +75,7 @@ const SYSTEM_PROMPT = `你是「小鱼」桌面宠物的 Lua UI 工程师。你�
 - sys.on 只支持：key_click, key_double, open_timetable, open_env, canvas_close, canvas_next, round_1, round_2, round_3。未知事件会报错；可选事件用 pcall 包住。
 - 如果当前脚本包含 \`-- >>>DATA ... -- <<<DATA\` 段，必须原样保留（课表数据由服务器管理）；如果没有，不要新增。
 - 保留现有脚本的页面和功能，除非用户明确要求删除；保留错误处理和防重入。
+- 页面/动画脚本在顶层必须立即绘制一次（或启动绘制 timer），不要只定义函数不调用；修改现有框架时，创建后自动切到新页面。
 - 如果需求需要固件能力（新传感器 / 网络 / 新事件），不要编造 API；SUMMARY 里说明“Lua 做不到，需要固件支持”，不要输出代码块。
 输出格式（严格）：
 SUMMARY: 一句中文摘要（≤80 字）
@@ -268,7 +268,10 @@ export function validateLua(rawCode, current) {
   }
 
   if (/\btimer\s*\.\s*every\s*\(/.test(plain)) {
-    warnings.push("使用了 timer.every：定时重绘可能影响 30 秒自动回首页");
+    warnings.push("使用了 timer.every：画面会持续保持，请提供 display.close 或按键退出");
+  }
+  if (!/\bdisplay\s*\./.test(plain)) {
+    warnings.push("脚本没有调用 display.*，可能不会在屏幕上显示");
   }
   if (/\bwhile\s+true\b/.test(plain)) {
     warnings.push("脚本包含 while true，依赖运行时 2 秒超时兜底");

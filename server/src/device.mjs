@@ -420,6 +420,20 @@ export class DeviceSession {
         await this.speakOne("创造模式已开启，告诉我你想改什么。说退出创造模式可以结束。", myTurn);
         return true;
       }
+
+      /* 没喊“进入创造模式”时，识别“写/做/加…页面/动画”这类明确要改屏幕的请求 */
+      const isQuestion = /怎么|如何|能不能|可以吗|会不会|为什么|是什么/.test(t);
+      const wantsCreate =
+        /(写|做|加|改|弄|设计|实现|来)(一个|个|一下|一版|套)?[^。！？?]{0,24}(页|页面|功能|动画|界面|效果|显示|小程序|游戏)|(屏幕|桌面)[^。！？?]{0,24}(显示|画|放|加|来)/.test(t);
+      if (!isQuestion && wantsCreate) {
+        this.createMode = 1;
+        this.createOriginal = t;
+        this.createQuestion = "";
+        this.send(build.evt("create_step", undefined, "创造模式：正在处理你的需求"));
+        await this.speakOne("我进入创造模式来做，生成时屏幕上会显示进度。", myTurn);
+        await this.runCreation(t, myTurn, 0);
+        return true;
+      }
       return false;
     }
 
