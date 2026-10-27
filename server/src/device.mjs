@@ -407,9 +407,26 @@ export class DeviceSession {
     }
   }
 
+  looksLikeCreate(t) {
+    if (/怎么|如何|能不能|可以吗|会不会|为什么|是什么/.test(t)) return false;
+    return /(写|做|加|改|删|删除|去掉|移除|删掉|换|改成|弄|设计|实现|重做|画|生成|来)(一个|个|一下|一版|套)?[^。！？?]{0,24}(页|页面|界面|功能|动画|动效|效果|显示|壁纸|背景|卡片|模块|小游戏|屏)|(屏幕|桌面|页面)[^。！？?]{0,24}(显示|画|放|加|来|去掉|删)/.test(t);
+  }
+
   async handleCreationText(text, myTurn) {
     const t = String(text || "").trim();
     if (!t) return false;
+
+    /* 撤销/回退：不管在不在创造模式，都能退掉上一次 AI 修改 */
+    if (this.createMode !== 2 && /撤销|回退|还原上一版|恢复上一版/.test(t)) {
+      const ok = await this.rollbackPreview();
+      if (this.createMode === 3) {
+        this.clearPreviewTimer();
+        this.createMode = 0;
+        this.send(build.evt("create_end"));
+      }
+      await this.speakOne(ok ? "已恢复到上一版。" : "没有可撤销的 AI 修改。", myTurn);
+      return true;
+    }
 
     if (this.createMode === 0) {
       if (/进入创造模式|开启创造模式/.test(t)) {
@@ -421,11 +438,8 @@ export class DeviceSession {
         return true;
       }
 
-      /* 没喊“进入创造模式”时，识别“写/做/加…页面/动画”这类明确要改屏幕的请求 */
-      const isQuestion = /怎么|如何|能不能|可以吗|会不会|为什么|是什么/.test(t);
-      const wantsCreate =
-        /(写|做|加|改|弄|设计|实现|来)(一个|个|一下|一版|套)?[^。！？?]{0,24}(页|页面|功能|动画|界面|效果|显示|小程序|游戏)|(屏幕|桌面)[^。！？?]{0,24}(显示|画|放|加|来)/.test(t);
-      if (!isQuestion && wantsCreate) {
+      /* 没喊“进入创造模式”时，识别“写/做/加/改/删…页面/动画”这类明确要改屏幕的请求 */
+      if (this.looksLikeCreate(t)) {
         this.createMode = 1;
         this.createOriginal = t;
         this.createQuestion = "";
@@ -457,6 +471,15 @@ export class DeviceSession {
       }
       if (/撤销|取消|恢复/.test(t)) {
         await this.undoCreation(myTurn);
+        return true;
+      }
+      /* 预览中又提新需求：先撤掉当前预览，再按新需求重做 */
+      if (this.looksLikeCreate(t)) {
+        await this.rollbackPreview();
+        this.createMode = 1;
+        this.createOriginal = t;
+        this.createQuestion = "";
+        await this.runCreation(t, myTurn, 0);
         return true;
       }
       await this.speakOne("先说确认保存，或者撤销。", myTurn);
@@ -499,17 +522,37 @@ export class DeviceSession {
     await this.speakOne("已退出创造模式。", myTurn);
   }
 
+  async rollbackPreview() {
+    try {
+      const r = await this.adminJson("/api/lua/rollback", {});
+      return !!r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 大模型调用 lua_edit 工具时从这里进创造模式（不阻塞当前这一轮回答） */
+  startCreationFromTool(request) {
+    const req = String(request || "").trim();
+    if (!req) return;
+    this.createMode = 2;
+    this.createOriginal = req;
+    this.createQuestion = "";
+    this.send(build.evt("create_step", undefined, "创造模式：正在处理你的需求"));
+    this.runCreation(req, this.turn, 0, true).catch(() => {});
+  }
+
   async undoCreation(myTurn) {
     this.clearPreviewTimer();
     this.send(build.evt("create_step", undefined, "正在恢复上一版"));
-    try {
-      await this.adminJson("/api/lua/rollback", {});
+    const ok = await this.rollbackPreview();
+    if (ok) {
       this.createMode = 0;
       this.createOriginal = "";
       this.createQuestion = "";
       this.send(build.evt("create_end"));
       await this.speakOne("已恢复上一版。", myTurn);
-    } catch (e) {
+    } else {
       this.createMode = 3;
       this.send(build.evt("create_preview", undefined, "撤销失败｜说确认保存 / 撤销"));
       await this.speakOne("撤销失败，可以再说一次。", myTurn);
@@ -540,7 +583,7 @@ export class DeviceSession {
     const started = Date.now();
     let last = "";
     while (Date.now() - started < 150000) {
-      if (this.stale(myTurn)) return null;
+      /* 用户在生成期间插话不算失败：任务继续跑完，最后照样出预览 */
       const s = await this.adminJson(`/api/lua/ai/status?id=${jobId}`, null, "GET");
       const step = (s.steps || []).slice(-1)[0]?.text || "";
       if (step && step !== last) {
@@ -554,14 +597,14 @@ export class DeviceSession {
     throw new Error("生成超时");
   }
 
-  async runCreation(request, myTurn, repairCount) {
+  async runCreation(request, myTurn, repairCount, quiet = false) {
     this.createMode = 2;
     this.createOriginal = request;
     this.send(build.evt("create_step", undefined, "正在生成修改"));
     try {
       const ai = await this.adminJson("/api/lua/ai", { request });
       if (!ai.ok) throw new Error(ai.msg || "启动失败");
-      await this.speakOne("正在生成，请稍等。", myTurn);
+      if (!quiet) await this.speakOne("正在生成，请稍等。", myTurn);
       const result = await this.waitCreationJob(ai.jobId, myTurn);
       if (!result) return;
 
@@ -592,7 +635,6 @@ export class DeviceSession {
   }
 
   async applyCreationPreview(result, request, repairCount, myTurn) {
-    if (this.stale(myTurn)) return;
     this.send(build.evt("create_step", undefined, "生成完成，正在下发预览"));
     const ap = await this.adminJson("/api/lua/apply", {
       code: result.code,

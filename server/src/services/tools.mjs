@@ -118,6 +118,20 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "lua_edit",
+      description: "修改设备屏幕上正在运行的 Lua 脚本（新增/修改/删除页面、动画、界面、效果）。用户说“写个页面”“把某个界面删掉”“改成…”“加个动画”时调用；调用后设备屏幕会显示生成进度，最后由用户语音确认或撤销。",
+      parameters: {
+        type: "object",
+        properties: {
+          request: { type: "string", description: "要改什么，写完整：改哪个页面/动画、保留什么、删掉什么" },
+        },
+        required: ["request"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_timetable",
       description: "查询用户的课表。用户问今天/明天/昨天有没有课、有几节课、某天什么课、课表怎么安排时调用。参数 day 可填 today / tomorrow / yesterday / 周一..周日，默认 today。回答时把节次、时间、班号都说清楚。",
       parameters: {
@@ -372,6 +386,15 @@ export async function executeTool(name, args = {}, ctx, session) {
       } catch (e) {
         return `搜索失败：${e.message}`;
       }
+    }
+
+    case "lua_edit": {
+      const req = String(args.request || "").trim();
+      if (!req) return "需要说明要改什么";
+      if (!session || typeof session.startCreationFromTool !== "function")
+        return "这个会话不支持创造模式，请到管理网页里操作";
+      session.startCreationFromTool(req);
+      return "已经在创造模式里生成，生成进度和确认提示会显示在屏幕上";
     }
 
     case "get_device_status": {
