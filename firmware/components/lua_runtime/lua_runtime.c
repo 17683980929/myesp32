@@ -941,7 +941,6 @@ static const char MOCK_LUA[] =
     "pet={state=function() return true end}\n"
     "sensor={temp=function() return 25 end,hum=function() return 50 end,"
     "battery=function() return 80 end,voltage=function() return 4000 end}\n"
-    "timer={after=function() return 0 end,every=function() return 0 end}\n"
     "gpio={mode=function() return true end,read=function() return 0 end,"
     "write=function() return 0 end,toggle=function() return 0 end}\n"
     "audio={volume=function(v) return v or 50 end,chime=_noop,alarm=_noop}\n"
@@ -953,13 +952,36 @@ static const char MOCK_LUA[] =
     "list=function() return \"\" end,remove=function() return true end}\n"
     "net={get=function() return {status=200,body=\"\",error=\"mock\"} end,"
     "post=function() return {status=200,body=\"\",error=\"mock\"} end}\n"
-    "sys.millis=function() return 0 end\n"
+    "local _mt=0\n"
+    "sys.millis=function() _mt=_mt+16 return _mt end\n"
     "sys.delay=_noop\n"
     "sys.log=_noop\n"
     "sys.clock=function() return 0,0 end\n"
     "sys.on=_noop\n"
     "sys.reboot=_noop\n"
     "print=_noop\n";
+
+/** dry-run：把已注册的定时器回调各跑一次。
+ *  动画脚本的错误在回调里（顶层只注册 timer），不跑一次就抓不到。 */
+static int dry_run_timers(void)
+{
+    int refs[TIMER_MAX];
+    for (int i = 0; i < TIMER_MAX; i++) refs[i] = s_timers[i].ref;
+
+    for (int i = 0; i < TIMER_MAX; i++) {
+        if (!refs[i]) continue;
+        lua_settop(s_L, 0);
+        lua_rawgeti(s_L, LUA_REGISTRYINDEX, refs[i]);
+        if (!lua_isfunction(s_L, -1)) continue;
+        if (lua_pcall(s_L, 0, 0, 0) != LUA_OK) {
+            const char *err = lua_tostring(s_L, -1);
+            snprintf(s_err, OUT_CAP, "定时器回调出错：%s", err ? err : "未知错误");
+            lua_settop(s_L, 0);
+            return -1;
+        }
+    }
+    return 0;
+}
 
 /** 执行一段脚本：关旧状态 → 全新状态 → pcall。
  *  dry=1：先加载 Lua mock 覆盖硬件 API，只检查语法/顶层逻辑，不持久化。
@@ -1004,6 +1026,8 @@ static int run_code(const char *code, int persist, int dry)
             const char *err = lua_tostring(s_L, -1);
             snprintf(s_err, OUT_CAP, "%s", err ? err : "未知错误");
             lua_settop(s_L, 0);
+        } else if (dry_run_timers() != 0) {
+            ok = 0;                      /* 定时器回调里出错，同样算检查失败 */
         }
         s_hook_active = 0;
         lua_close(s_L);

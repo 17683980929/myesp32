@@ -827,10 +827,18 @@ void ui_creation_show(int mode, const char *line1, const char *line2, const char
 
 void ui_creation_end(void)
 {
-    if (!s_creation_mode) return;
+    int mode = s_creation_mode;
+    if (!mode) return;
     s_creation_mode = 0;
-    ui_lua_release();
-    ui_render();
+    /* 预览条（mode 2）不要清画布保鲜期：脚本还在重绘，
+     * 清了之后主页每帧重绘、脚本动画也每帧重绘，两套画面互相盖 → 一直闪。
+     * 只有全屏进度页（mode 1）需要立刻画回主页。 */
+    if (mode == 1) {
+        ui_render();
+        return;
+    }
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if ((int32_t)(s_lua_hold_until - now) <= 0) ui_render();
 }
 
 int ui_creation_active(void)
@@ -929,6 +937,7 @@ void ui_lua_clear(void)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     if (s_creation_mode == 1) return;           /* 创造模式进度页优先 */
+    if (s_voice != UI_VOICE_NONE) { lua_keepalive(); return; }  /* 语音期间脚本不画，避免和语音界面互相盖 */
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     lcd_clear(0);
@@ -939,6 +948,7 @@ void ui_lua_text(int x, int y, const char *s, int size)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     if (s_creation_mode == 1) return;
+    if (s_voice != UI_VOICE_NONE) { lua_keepalive(); return; }
     lua_keepalive();
     if (!s || !*s) return;
 
@@ -963,6 +973,7 @@ void ui_lua_rect(int x, int y, int w, int h, int filled)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     if (s_creation_mode == 1) return;
+    if (s_voice != UI_VOICE_NONE) { lua_keepalive(); return; }
     lua_keepalive();
     if (w <= 0 || h <= 0) return;
     if (x >= LCD_W || y >= LCD_H) return;
@@ -982,6 +993,7 @@ void ui_lua_flush(void)
 {
     if (s_page == UI_PAGE_PORTAL) return;      /* 热点控制台页面不让位 */
     if (s_creation_mode == 1) return;
+    if (s_voice != UI_VOICE_NONE) { lua_keepalive(); return; }
     lua_keepalive();
     if (s_fb_lock) xSemaphoreTake(s_fb_lock, portMAX_DELAY);
     if (s_creation_mode == 2) draw_creation_banner();
