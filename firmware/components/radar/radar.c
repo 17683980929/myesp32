@@ -10,7 +10,7 @@
 
 static const char *TAG = "radar";
 
-#define RX_RING_SIZE    1024
+#define RX_RING_SIZE    512             /* 雷达每 165ms 一帧 23B，512B 足够 */
 #define PARSE_BUF_SIZE  256
 #define FRAME_MAX_DATA  64
 #define RADAR_STACK_WORDS 1024          /* 4KB，放 PSRAM，给 BLE 留内部 RAM */
