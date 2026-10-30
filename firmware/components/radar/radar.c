@@ -13,7 +13,7 @@ static const char *TAG = "radar";
 #define RX_RING_SIZE    512             /* 雷达每 165ms 一帧 23B，512B 足够 */
 #define PARSE_BUF_SIZE  256
 #define FRAME_MAX_DATA  64
-#define RADAR_STACK_WORDS 4096          /* 16KB，放 PSRAM；4KB 实测会栈溢出（USB 串口日志调用链很深） */
+#define RADAR_STACK_WORDS 6144          /* 24KB，放 PSRAM；16KB 时余量只剩 ~1.9KB，诊断日志再加一点，留足 */
 
 #define UART_FRESH_US   (3 * 1000 * 1000LL)
 #define PRESENT_HOLD_US (1200 * 1000LL)
@@ -32,6 +32,10 @@ static bool s_last_raw;
 static int64_t s_raw_since_us;
 static int64_t s_last_frame_us;
 static uint8_t s_target_state;
+static uint32_t s_rx_bytes;       /* UART 收到的原始字节数（诊断） */
+static uint32_t s_frames;         /* 有效目标帧数（诊断） */
+static uint8_t s_first[16];       /* 收到的前 16 字节（诊断） */
+static size_t s_first_len;
 
 /* 目标数据帧：FD FC FB FA | len(2) | 02 01 | state | move_dist(2) move_en |
  *              still_dist(2) still_en | detect_dist(2) | 55 00 | tail(4) */
@@ -39,6 +43,7 @@ static void handle_frame(const uint8_t *f, uint16_t dlen)
 {
     const uint8_t *d = f + 6;
     if (dlen != 13 || d[0] != 0x02 || d[1] != 0x01) return;
+    s_frames++;
 
     uint8_t st = d[2];
     uint16_t mdist = (uint16_t)(d[3] | ((uint16_t)d[4] << 8));
@@ -108,13 +113,24 @@ static void radar_task(void *arg)
     bool last_uart = false;
     int64_t next_log_us = 0;
     int64_t next_stack_log_us = 0;
+    int64_t next_uart_log_us = 0;
+    int64_t next_probe_us = 0;
 
     for (;;) {
         int64_t now = esp_timer_get_time();
 
         if (s_uart_ready) {
             int n = uart_read_bytes(RADAR_UART_PORT, chunk, sizeof(chunk), 0);
-            if (n > 0) feed(chunk, (size_t)n);
+            if (n > 0) {
+                s_rx_bytes += (uint32_t)n;
+                if (s_first_len < sizeof(s_first)) {
+                    size_t cp = (size_t)n;
+                    if (cp > sizeof(s_first) - s_first_len) cp = sizeof(s_first) - s_first_len;
+                    memcpy(s_first + s_first_len, chunk, cp);
+                    s_first_len += cp;
+                }
+                feed(chunk, (size_t)n);
+            }
         }
 
         bool uart_ok = s_last_frame_us != 0 && now - s_last_frame_us < UART_FRESH_US;
@@ -163,6 +179,27 @@ static void radar_task(void *arg)
             next_stack_log_us = now + 60 * 1000 * 1000LL;
             ESP_LOGI(TAG, "栈余量 %u 字节",
                      (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+        }
+
+        /* UART 诊断（没万用表时用）：
+         *   没有有效帧时每 10 秒报一次原始字节数 + 开头 16 字节；
+         *   完全没字节时每 2 秒发一个 0x55，方便把 GP2-GP3 短接做回环测试。
+         *   0 字节 = 线/模块 TX 没信号；有字节但无帧 = 波特率/帧格式问题。 */
+        if (!uart_ok && now >= next_uart_log_us) {
+            next_uart_log_us = now + 10 * 1000 * 1000LL;
+            char hex[3 * 16 + 1];
+            int hi = 0;
+            for (size_t i = 0; i < s_first_len; i++)
+                hi += snprintf(hex + hi, sizeof(hex) - (size_t)hi, "%02X ", s_first[i]);
+            hex[hi] = 0;
+            ESP_LOGI(TAG, "UART 诊断：原始 %u 字节 / 目标帧 %u%s%s",
+                     (unsigned)s_rx_bytes, (unsigned)s_frames,
+                     s_first_len ? " / 开头 " : "", hex);
+        }
+        if (!uart_ok && s_uart_ready && s_rx_bytes == 0 && now >= next_probe_us) {
+            next_probe_us = now + 2 * 1000 * 1000LL;
+            uint8_t probe = 0x55;
+            uart_write_bytes(RADAR_UART_PORT, &probe, 1);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
