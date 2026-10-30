@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -12,6 +13,7 @@ static const char *TAG = "radar";
 #define RX_RING_SIZE    1024
 #define PARSE_BUF_SIZE  256
 #define FRAME_MAX_DATA  64
+#define RADAR_STACK_WORDS 1024          /* 4KB，放 PSRAM，给 BLE 留内部 RAM */
 
 #define UART_FRESH_US   (3 * 1000 * 1000LL)
 #define PRESENT_HOLD_US (1200 * 1000LL)
@@ -19,6 +21,8 @@ static const char *TAG = "radar";
 
 static radar_state_t s_state;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+static StaticTask_t s_task_tcb;
+static StackType_t *s_task_stack;
 
 static bool s_started;
 static bool s_uart_ready;
@@ -195,7 +199,15 @@ void radar_start(void)
                  RADAR_UART_PORT, esp_err_to_name(err));
     }
 
-    if (xTaskCreate(radar_task, "radar", 3072, NULL, 3, NULL) != pdPASS) {
+    /* 栈放 PSRAM：雷达任务只碰 UART/GPIO/日志，不做 flash I/O，
+     * 把内部 RAM 留给 BLE 控制器那块 30KB 连续内存。 */
+    s_task_stack = heap_caps_malloc(RADAR_STACK_WORDS * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+    if (!s_task_stack) {
+        ESP_LOGE(TAG, "雷达任务栈分配失败（PSRAM 不足）");
+        return;
+    }
+    if (!xTaskCreateStaticPinnedToCore(radar_task, "radar", RADAR_STACK_WORDS, NULL, 3,
+                                       s_task_stack, &s_task_tcb, 0)) {
         ESP_LOGE(TAG, "雷达任务创建失败");
         return;
     }
