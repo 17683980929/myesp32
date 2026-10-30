@@ -849,16 +849,31 @@ static void main_loop(void)
             }
         }
 
-        /* 雷达有人/无人变化 → 立即补报一次 stat（服务器据此问候） */
+        /* 雷达三态 + 距离 → 桌宠睡/醒 + 立即上报（未知=没插 USB/串口没帧） */
         {
-            static int s_last_pres = -1;
-            int p = radar_present() ? 1 : 0;
-            if (s_last_pres < 0) s_last_pres = p;
-            else if (p != s_last_pres) {
+            static int s_last_known = -1, s_last_pres = -1, s_last_dm = -1;
+            radar_state_t rs;
+            radar_get(&rs);
+            int known = (rs.uart_ok || rs.present) ? 1 : 0;
+            int p = rs.present ? 1 : 0;
+            int dm = rs.detect_dist_cm / 10;          /* 0.1m 档，避免每帧重绘 */
+            if (known != s_last_known || p != s_last_pres || dm != s_last_dm) {
+                ui_set_presence(known, p, rs.detect_dist_cm);
+                bool pres_changed = (p != s_last_pres);
+                bool known_changed = (known != s_last_known);
+                if ((pres_changed || known_changed) && s_last_pres >= 0) {
+                    s_stat_at = 0;                    /* 立即补报 stat */
+                }
+                if (pres_changed && s_last_pres >= 0) {
+                    ESP_LOGI(TAG, "雷达状态变化 → 立即上报（%s）", p ? "有人" : "无人");
+                }
+                if (known_changed && s_last_known >= 0) {
+                    ESP_LOGI(TAG, "雷达%s", known ? "就绪" : "未就绪（未插 USB/无帧）");
+                }
+                s_last_known = known;
                 s_last_pres = p;
-                s_stat_at = 0;
+                s_last_dm = dm;
                 s_dirty = 1;
-                ESP_LOGI(TAG, "雷达状态变化 → 立即上报（%s）", p ? "有人" : "无人");
             }
         }
 

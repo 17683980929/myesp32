@@ -103,7 +103,7 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "get_device_status",
-      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、蓝牙状态、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面、雷达是否有人。用户问板子/设备的电量、温度、音量、蓝牙、网络、有人没人、状态时调用。",
+      description: "查询桌面宠物板子自身的状态：电量、室内温度、湿度、音量、蓝牙状态、WiFi 信号/IP、运行时长、固件版本、屏幕当前页面、雷达是否有人/在座多久/今天在办公室多久。用户问板子/设备的电量、温度、音量、蓝牙、网络、有人没人、坐了多久、状态时调用。",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -413,14 +413,24 @@ export async function executeTool(name, args = {}, ctx, session) {
       if (st && Number.isFinite(st.rssi) && st.rssi > -127) parts.push(`WiFi 信号 ${st.rssi}dBm`);
       if (st?.ip) parts.push(`IP ${st.ip}`);
       if (st && Number.isFinite(st.up)) parts.push(`已运行 ${Math.floor(st.up / 60)} 分钟`);
-      if (st && st.pres === 1) {
-        let r = "雷达检测到有人";
-        if (Number.isFinite(st.dist) && st.dist > 0) r += `（约 ${(st.dist / 100).toFixed(1)} 米）`;
-        if (st.moving) r += "，正在动";
-        else if (st.still) r += "，静止";
-        parts.push(r);
-      } else if (st && st.pres === 0) {
-        parts.push(st.uart ? "雷达当前无人" : "雷达当前无人（串口没出帧，可能没插 USB）");
+      const pr = session.presence?.snapshot?.();
+      if (pr) {
+        if (!pr.known) {
+          parts.push("雷达未就绪（可能没插 USB）");
+        } else if (pr.present) {
+          let r = "雷达检测到有人";
+          if (Number.isFinite(pr.dist) && pr.dist > 0) r += `（约 ${(pr.dist / 100).toFixed(1)} 米）`;
+          if (st?.moving) r += "，正在动";
+          else if (st?.still) r += "，静止";
+          parts.push(r);
+          if (pr.since) parts.push(`已连续在座 ${Math.max(1, Math.round((Date.now() - pr.since) / 60000))} 分钟`);
+          if (pr.todayMs >= 60000) parts.push(`今天在办公室约 ${Math.round(pr.todayMs / 60000)} 分钟`);
+          if (pr.todayFirst) parts.push(`今天第一次 ${pr.todayFirst}`);
+        } else {
+          parts.push("雷达当前无人");
+          if (pr.todayMs >= 60000) parts.push(`今天在办公室约 ${Math.round(pr.todayMs / 60000)} 分钟`);
+          if (pr.todayFirst) parts.push(`今天第一次 ${pr.todayFirst}，最后 ${pr.todayLast || "—"}`);
+        }
       }
       return `板子状态：${parts.join("；")}。`;
     }

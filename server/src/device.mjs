@@ -15,6 +15,7 @@ import { chatSentences } from "./services/llm.mjs";
 import { TOOLS, executeTool, matchLocalCommand } from "./services/tools.mjs";
 import { skillTools, runSkill, preSkillFor } from "./services/skills.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
+import { presenceFor } from "./services/presence.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[dev]", ...a);
@@ -97,8 +98,7 @@ export class DeviceSession {
     this.timers = [];
     this.lastStat = null;
     this.lastRxAt = Date.now();    /* 最近一次上行时刻：90 秒没有就清僵尸会话 */
-    this.absentAt = 0;             /* 雷达上次变“无人”的时刻 */
-    this.lastPresenceGreetAt = 0;  /* 上次“有人回来”问候的时刻 */
+    this.presence = null;          /* 雷达状态（按 MAC 跨会话共享，见 presence.mjs） */
     this.presenceGreetBusy = false;
     this.ota = null;               /* 最近一次 OTA 状态 {p, at, msg} */
     this.createMode = 0;           /* 0=关 1=等需求 2=生成中 3=预览 5=等澄清回答 */
@@ -245,9 +245,11 @@ export class DeviceSession {
         return this.onRecStop();
       case DEV.BTN:   return this.onBtn(m);
       case DEV.STAT: {
-        const prevPres = this.lastStat?.pres;
+        const now = Date.now();
         const pres = m.pres === 1 ? 1 : m.pres === 0 ? 0 : null;
-        if (pres === 0 && prevPres !== 0) this.absentAt = Date.now();
+        const uart = m.uart === 1;
+        if (!this.presence) this.presence = presenceFor(this.mac, this.sid);
+        const r = this.presence.update({ pres, uart, dist: m.dist, at: now });
         this.lastStat = {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
           up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, part: m.part,
@@ -255,19 +257,21 @@ export class DeviceSession {
           dist: Number.isFinite(m.dist) ? m.dist : null,
           moving: m.moving === 1,
           still: m.still === 1,
-          uart: m.uart === 1,
-          at: Date.now(),
+          uart,
+          at: now,
         };
-        if (pres !== null && pres !== prevPres) {
-          const d = Number.isFinite(m.dist) && m.dist > 0
-            ? `（${(m.dist / 100).toFixed(1)}m）` : "";
-          log(`[${this.sid}] 雷达：${pres ? "有人" : "无人"}${d}`);
+        if (r.knownChanged || r.presentChanged) {
+          if (!r.known) {
+            log(`[${this.sid}] 雷达：未就绪（没插 USB/串口没帧）`);
+          } else {
+            const d = Number.isFinite(m.dist) && m.dist > 0
+              ? `（${(m.dist / 100).toFixed(1)}m）` : "";
+            log(`[${this.sid}] 雷达：${r.present ? "有人" : "无人"}${d}`);
+          }
         }
-        if (pres === 1 && prevPres === 0) {
-          const awayMs = this.absentAt ? Date.now() - this.absentAt : 0;
-          this.absentAt = 0;
+        if (r.enteredPresent) {
           const awayMin = Math.max(0, this.ctx.config.presence?.awayMin ?? 1);
-          if (awayMs >= awayMin * 60_000) void this.greetPresence();
+          if (r.awayMs >= awayMin * 60_000) void this.greetPresence();
         }
         return;
       }
@@ -297,6 +301,7 @@ export class DeviceSession {
     this.mac = m.mac ?? "";
     this.fw = m.fw ?? "";
     this.caps = Array.isArray(m.caps) ? m.caps : [];
+    this.presence = presenceFor(this.mac, this.sid);
     log(`[${this.sid}] hello mac=${this.mac} fw=${this.fw} caps=${this.caps.join(",")}`);
 
     this.dropDuplicateSessions();
@@ -966,12 +971,14 @@ export class DeviceSession {
     const cfg = this.ctx.config.presence ?? {};
     if (cfg.greet === false) return;
     if (this.presenceGreetBusy) return;
+    if (!this.presence?.known || !this.presence.present) return;
     if (this.recording || this.busy || this.streaming) return;
     if (this.ws.readyState !== 1) return;
 
     const cooldownMs = Math.max(1, cfg.cooldownMin ?? 20) * 60_000;
-    if (Date.now() - this.lastPresenceGreetAt < cooldownMs) return;
-    this.lastPresenceGreetAt = Date.now();
+    const now = Date.now();
+    if (now - (this.presence.lastGreetAt || 0) < cooldownMs) return;
+    this.presence.lastGreetAt = now;
     this.presenceGreetBusy = true;
 
     const h = new Date().getHours();

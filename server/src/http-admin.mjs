@@ -358,6 +358,7 @@ export async function handleHttp(req, res, ctx) {
             busy: d.busy,
             recording: d.recording,
             stat: d.lastStat,
+            presence: d.presence?.snapshot?.() ?? null,
             ota: d.ota,
           })),
           weather: ctx.weather.data,
@@ -372,12 +373,18 @@ export async function handleHttp(req, res, ctx) {
       }
 
       if (p === "/api/say" && req.method === "POST") {
-        const { text } = JSON.parse(await readBody(req));
+        const { text, gate } = JSON.parse(await readBody(req));
         if (typeof text !== "string" || !text.trim())
           return json(res, 400, { ok: false, msg: "缺少 text" });
-        const list = [...ctx.devices];
+        let list = [...ctx.devices];
+        if (gate) {
+          /* 走和提醒一样的“有人才播”门控；雷达未知时回退为全部空闲设备 */
+          const known = list.filter((d) => d.presence?.known);
+          list = known.length ? known.filter((d) => d.presence.present) : list;
+          if (!list.length) return json(res, 200, { ok: true, sent: 0, msg: "现在判定无人，没有播报" });
+        }
         for (const d of list) d.speakOne(text.trim()).catch(() => {});
-        log(`让设备播报 → ${list.length} 台`);
+        log(`让设备播报 → ${list.length} 台${gate ? "（雷达门控）" : ""}`);
         return json(res, 200, { ok: true, sent: list.length });
       }
 

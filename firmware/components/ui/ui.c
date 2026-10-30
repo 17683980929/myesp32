@@ -276,6 +276,12 @@ static int s_frame_idx = 0;
 static int s_blink_phase = 0;
 static ui_voice_t s_voice = UI_VOICE_NONE;
 
+/* 雷达三态：-1=还没上报，0=未知（没插 USB/串口没帧），1=已知 */
+static int      s_pres_known = -1;
+static int      s_pres_present;
+static int      s_pres_dist = -1;
+static uint32_t s_pres_absent_at;       /* 连续无人起点（ms），0=没计时 */
+
 /* 空闲随机小动作：用现成的 15 帧表情（开心/爱心/疑惑/困/睡/敬礼/指路/巡逻/音符/充电），
  * 每 8~20 秒随机播一个 1.2~3 秒，个别动作带轻微上下位移。 */
 static int      s_act_frame = -1;      /* ≥0 = 正在播随机动作 */
@@ -350,6 +356,17 @@ static void pet_tick(uint32_t now)
         default: break;
         }
         return;
+    }
+
+    /* 雷达已知且连续无人 3 分钟 → 睡姿；回来由 ui_set_presence() 放敬礼动作 */
+    if (s_pres_known == 1 && !s_pres_present) {
+        if (s_pres_absent_at == 0) s_pres_absent_at = now;
+        if ((int32_t)(now - s_pres_absent_at) >= 180000) {
+            s_act_frame = -1;
+            s_act_dy = 0;
+            s_frame_idx = 9;             /* pet_sm_10_sleeping */
+            return;
+        }
     }
 
     /* 正在播随机动作 → 到点回 idle；需要动的动作按 150ms 抖一下 */
@@ -432,6 +449,33 @@ void ui_set_page(ui_page_t p) { s_page = p; }
 ui_page_t ui_get_page(void) { return s_page; }
 void ui_set_busy(int busy) { s_busy = busy; }
 void ui_set_voice(ui_voice_t v) { s_voice = v; }
+
+void ui_set_presence(int known, int present, int dist_cm)
+{
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_pres_dist = dist_cm;
+
+    if (!known) {                         /* 雷达未知（没插 USB/串口没帧）：不睡、不装有人 */
+        s_pres_known = 0;
+        s_pres_present = 0;
+        s_pres_absent_at = 0;
+        return;
+    }
+    if (present) {
+        if (s_pres_known == 1 && !s_pres_present) {
+            /* 从无人回来：敬礼 1.8 秒，再回普通 idle */
+            s_act_frame = 10;
+            s_act_bob = 1;
+            s_act_until = now + 1800;
+            s_act_next = now + 8000;
+        }
+        s_pres_absent_at = 0;
+    } else if (s_pres_known != 1 || s_pres_present) {
+        s_pres_absent_at = now;           /* 刚变无人：开始 3 分钟计时 */
+    }
+    s_pres_known = 1;
+    s_pres_present = present ? 1 : 0;
+}
 void ui_show_portal_mode(const char *ap_ssid, int reset)
 {
     strlcpy(s_portal_ap, ap_ssid ? ap_ssid : "", sizeof(s_portal_ap));
@@ -709,6 +753,20 @@ static void render_panel(void)
     status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
     status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
     status_row(262, "蓝牙", ble_state_str());
+
+    /* 雷达三态：未就绪（没插 USB/串口没帧）/ 有人 0.3m / 无人 */
+    char rv[24];
+    if (s_pres_known != 1) {
+        snprintf(rv, sizeof(rv), "未就绪");
+    } else if (s_pres_present) {
+        if (s_pres_dist >= 0)
+            snprintf(rv, sizeof(rv), "有人 %d.%dm", s_pres_dist / 100, (s_pres_dist % 100) / 10);
+        else
+            snprintf(rv, sizeof(rv), "有人");
+    } else {
+        snprintf(rv, sizeof(rv), "无人");
+    }
+    status_row(282, "雷达", rv);
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */

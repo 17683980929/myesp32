@@ -38,6 +38,12 @@ void ui_set_busy(int busy);
 /** 语音状态（录音/思考/说话；NONE 时回到普通状态机） */
 void ui_set_voice(ui_voice_t v);
 
+/** 雷达三态（主循环在状态变化时调用）：
+ *  known=0 → 未知（没插 USB/串口没帧），界面显示“未就绪”，桌宠不睡；
+ *  known=1,present=1 → 有人；known=1,present=0 → 无人（3 分钟后睡姿）。
+ *  dist_cm=-1 表示距离未知。 */
+void ui_set_presence(int known, int present, int dist_cm);
+
 /** 设置字幕（显示在信息栏底部） */
 void ui_set_sub(const char *text);
 

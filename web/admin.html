@@ -116,6 +116,27 @@
         <tbody id="devTable"><tr><td colspan="8" style="color:var(--muted)">暂无设备</td></tr></tbody>
       </table>
     </div>
+    <div id="radarCard" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px;display:none">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <b style="font-size:13px">雷达</b><span class="tag">有人/无人 · 不记身份</span>
+      </div>
+      <div class="grid" style="gap:6px 20px">
+        <div>
+          <div class="kv"><span>当前</span><span id="radarNow">—</span></div>
+          <div class="kv"><span>今日首次/最后</span><span id="radarDay">—</span></div>
+        </div>
+        <div>
+          <div class="kv"><span>今日在座</span><span id="radarToday">—</span></div>
+          <div class="kv"><span>最近进出</span><span id="radarLog">—</span></div>
+        </div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px"><input type="checkbox" id="pGate"> 定时提醒只在有人时播</label>
+        <button type="button" id="radarTestBtn">测试门控播报</button>
+        <span class="msg" id="radarMsg"></span>
+      </div>
+      <p class="hint">只统计有人/无人、距离和时间，不记身份；数据在服务器内存，重启清空。</p>
+    </div>
   </div>
 
   <div class="grid">
@@ -469,6 +490,8 @@ async function loadConfig() {
     ? "当前脚本没有课表 DATA 段（可能是旧版）。如果设备在跑新版 framework，请先在课表编排里保存一次，否则 AI 会以旧版为底稿。"
     : "";
 
+  $("pGate").checked = cfg.presence?.gateReminders !== false;
+
   // 安全提示
   const warns = [];
   if (!cfg.server.authToken) warns.push("设备鉴权未开启");
@@ -532,14 +555,13 @@ async function saveAll() {
 }
 
 function radarText(d) {
-  if (d.stat?.pres === 1) {
-    const dist = Number.isFinite(d.stat.dist) && d.stat.dist > 0
-      ? ` ${(d.stat.dist / 100).toFixed(1)}m`
-      : "";
-    return `有人${dist}`;
-  }
-  if (d.stat?.pres === 0) return d.stat.uart ? "无人" : "无人·无串口";
-  return "—";
+  const p = d.presence;
+  if (!p || !p.known) return "未就绪";
+  if (!p.present) return "无人";
+  const dist = Number.isFinite(p.dist) && p.dist > 0
+    ? ` ${(p.dist / 100).toFixed(1)}m`
+    : "";
+  return `有人${dist}`;
 }
 
 async function refreshStatus() {
@@ -573,6 +595,29 @@ async function refreshStatus() {
           <td>${d.stat?.bat != null ? d.stat.bat + "%" : "—"}</td>
           <td>${d.stat?.room ? d.stat.room.t.toFixed(1) + "℃ / " + d.stat.room.h + "%" : "—"}</td>
         </tr>`).join("");
+    }
+
+    const pr = s.devices[0]?.presence;
+    const rc = $("radarCard");
+    if (pr) {
+      rc.style.display = "";
+      $("radarNow").textContent = !pr.known
+        ? "未就绪（没插 USB/串口没帧）"
+        : pr.present
+          ? `有人${Number.isFinite(pr.dist) && pr.dist > 0 ? `（约 ${(pr.dist / 100).toFixed(1)}m）` : ""}`
+          : "无人";
+      $("radarDay").textContent = `${pr.todayFirst || "—"} / ${pr.todayLast || "—"}`;
+      const min = Math.round((pr.todayMs || 0) / 60000);
+      $("radarToday").textContent = min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min} 分钟`;
+      const logs = (pr.transitions || []).slice(-5).map((t) => {
+        const d = new Date(t.at);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const mm = String(d.getMinutes()).padStart(2, "0");
+        return `${hh}:${mm} ${t.lost ? "雷达断开" : t.present ? "有人" : "无人"}`;
+      }).join(" · ");
+      $("radarLog").textContent = logs || "—";
+    } else {
+      rc.style.display = "none";
     }
   } catch (e) {
     $("dot").className = "dot";
@@ -1133,6 +1178,33 @@ async function reloadSkills() {
     setMsg($("skillMsg"), "重载失败", "err");
   }
 }
+
+$("pGate").addEventListener("change", async () => {
+  const on = $("pGate").checked;
+  try {
+    const r = await fetch("api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presence: { gateReminders: on } }),
+    });
+    const j = await r.json();
+    setMsg($("radarMsg"), j.ok ? (on ? "已开启门控" : "已关闭门控") : "保存失败", j.ok ? "ok" : "err");
+  } catch { setMsg($("radarMsg"), "保存失败", "err"); }
+});
+
+$("radarTestBtn").addEventListener("click", async () => {
+  setMsg($("radarMsg"), "播报中…", "");
+  try {
+    const r = await fetch("api/say", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "雷达门控测试：听到这句，说明现在判定有人。", gate: true }),
+    });
+    const j = await r.json();
+    if (j.sent) setMsg($("radarMsg"), `已播报 ${j.sent} 台`, "ok");
+    else setMsg($("radarMsg"), j.msg || "现在判定无人，没有播报", "warn");
+  } catch { setMsg($("radarMsg"), "请求失败", "err"); }
+});
 
 loadConfig();
 refreshStatus();

@@ -83,19 +83,41 @@ export function startReminders(ctx) {
 
   setInterval(() => { try { checkAlarms(ctx); } catch (e) { log("闹钟检查异常：" + e.message); } }, 5000);
 
+  /* 只找“现在有人在”的设备；雷达未知（没插 USB）时不门控，回退旧行为 */
+  const targets = () => {
+    const devs = [...ctx.devices].filter((d) => !d.busy && !d.recording);
+    if (getConfig().presence?.gateReminders === false) return devs;
+    const known = devs.filter((d) => d.presence?.known);
+    if (!known.length) return devs;
+    return known.filter((d) => d.presence.present);
+  };
+
   const say = (text) => {
     const now = Date.now();
-    if (now < busyUntil) return;
-    const devs = [...ctx.devices].filter((d) => !d.busy && !d.recording);
-    if (!devs.length) return;
+    if (now < busyUntil) return false;
+    const devs = targets();
+    if (!devs.length) return false;
     busyUntil = now + 12000;
     log(text);
     for (const d of devs) d.speakOne(text).catch(() => {});
+    return true;
+  };
+
+  /* 不在时挂起的早间/课前提醒：回来后在有效期内补播 */
+  const pending = [];
+  const flushPending = () => {
+    const now = Date.now();
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (now > pending[i].until) { pending.splice(i, 1); continue; }
+      if (say(pending[i].text)) pending.splice(i, 1);
+    }
   };
 
   const tick = () => {
     const cfg = getConfig().reminders || {};
+    const pcfg = getConfig().presence || {};
     if (cfg.enabled === false) return;
+    flushPending();
 
     const b = beijing();
     if (fired.size > 400) fired.clear();
@@ -125,7 +147,15 @@ export function startReminders(ctx) {
           if (days === 0) ann = `今天是${a.label}。`;
           else if (days > 0) ann = `距离${a.label}还有 ${days} 天。`;
         }
-        say(`早上好。${wtxt}${line}${ann}路上小心。`);
+        const text = `早上好。${wtxt}${line}${ann}路上小心。`;
+        if (!say(text)) {
+          /* 不在/忙：挂到当天 09:00（可配），回来补播 */
+          const endMin = toMin(pcfg.morningHoldUntil || "09:00");
+          const until = endMin > b.minute
+            ? Date.now() + (endMin - b.minute) * 60000
+            : Date.now() + 3600000;
+          pending.push({ text, until });
+        }
       }
     }
 
@@ -143,7 +173,14 @@ export function startReminders(ctx) {
       if (start < 0) return;
       if (b.minute === start - lead) {
         const key = `${b.ymd}:lead${r}`;
-        if (!fired.has(key)) { fired.add(key); say(`还有 ${lead} 分钟上课，${p.time}，${cls} 班。`); }
+        if (!fired.has(key)) {
+          fired.add(key);
+          const text = `还有 ${lead} 分钟上课，${p.time}，${cls} 班。`;
+          if (!say(text)) {
+            const hold = Math.max(0, pcfg.classHoldMin ?? 3);
+            pending.push({ text, until: Date.now() + hold * 60000 });
+          }
+        }
       }
     });
 
@@ -161,10 +198,10 @@ export function startReminders(ctx) {
           const key = `${b.ymd}:water${r}`;
           if (!fired.has(key)) {
             fired.add(key);
-            /* 先让桌宠冒气泡（固件 0.1.29+ 才认识这个事件），再播报 */
-            for (const d of [...ctx.devices].filter((x) => !x.busy && !x.recording))
-              d.send(build.evt("water_reminder"));
-            say("下课啦，喝口水，歇一会儿。");
+            /* 只发给“现在有人在”的设备；雷达未知时回退为全部空闲设备 */
+            const devs = targets();
+            for (const d of devs) d.send(build.evt("water_reminder"));
+            if (devs.length) say("下课啦，喝口水，歇一会儿。");
           }
         }
       }
