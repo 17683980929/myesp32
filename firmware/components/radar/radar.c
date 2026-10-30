@@ -13,7 +13,7 @@ static const char *TAG = "radar";
 #define RX_RING_SIZE    512             /* 雷达每 165ms 一帧 23B，512B 足够 */
 #define PARSE_BUF_SIZE  256
 #define FRAME_MAX_DATA  64
-#define RADAR_STACK_WORDS 1024          /* 4KB，放 PSRAM，给 BLE 留内部 RAM */
+#define RADAR_STACK_WORDS 4096          /* 16KB，放 PSRAM；4KB 实测会栈溢出（USB 串口日志调用链很深） */
 
 #define UART_FRESH_US   (3 * 1000 * 1000LL)
 #define PRESENT_HOLD_US (1200 * 1000LL)
@@ -107,6 +107,7 @@ static void radar_task(void *arg)
     uint8_t chunk[128];
     bool last_uart = false;
     int64_t next_log_us = 0;
+    int64_t next_stack_log_us = 0;
 
     for (;;) {
         int64_t now = esp_timer_get_time();
@@ -155,6 +156,13 @@ static void radar_task(void *arg)
                      snap.moving ? "移动 " : "", snap.still ? "静止" : "无",
                      snap.detect_dist_cm, snap.move_dist_cm, snap.move_energy,
                      snap.still_dist_cm, snap.still_energy);
+        }
+
+        /* 栈余量：4KB 栈实测在 USB 串口日志处溢出，改成 16KB 后留一行观测 */
+        if (now >= next_stack_log_us) {
+            next_stack_log_us = now + 60 * 1000 * 1000LL;
+            ESP_LOGI(TAG, "栈余量 %u 字节",
+                     (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
