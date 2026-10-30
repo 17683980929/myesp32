@@ -37,12 +37,18 @@ static uint32_t s_frames;         /* 有效目标帧数（诊断） */
 static uint8_t s_first[16];       /* 收到的前 16 字节（诊断） */
 static size_t s_first_len;
 
-/* 目标数据帧：FD FC FB FA | len(2) | 02 01 | state | move_dist(2) move_en |
- *              still_dist(2) still_en | detect_dist(2) | 55 00 | tail(4) */
-static void handle_frame(const uint8_t *f, uint16_t dlen)
+/* 目标数据帧（旧协议）：FD FC FB FA | len(2) | 02 01 | state | move_dist(2) move_en |
+ *              still_dist(2) still_en | detect_dist(2) | 55 00 | tail(4)
+ * 目标数据帧（新协议，模块固件 V2.x）：F4 F3 F2 F1 | len(2) | 02 AA | 同样的数据布局 */
+static void handle_frame(const uint8_t *f, uint16_t dlen, bool new_proto)
 {
     const uint8_t *d = f + 6;
-    if (dlen != 13 || d[0] != 0x02 || d[1] != 0x01) return;
+    if (dlen != 13) return;
+    if (new_proto) {
+        if (d[0] != 0x02 || d[1] != 0xAA) return;
+    } else {
+        if (d[0] != 0x02 || d[1] != 0x01) return;
+    }
     s_frames++;
 
     uint8_t st = d[2];
@@ -81,7 +87,9 @@ static void feed(const uint8_t *data, size_t n)
     size_t pos = 0;
     while (s_buf_len - pos >= 6) {
         const uint8_t *p = s_buf + pos;
-        if (!(p[0] == 0xFD && p[1] == 0xFC && p[2] == 0xFB && p[3] == 0xFA)) {
+        bool old_hdr = p[0] == 0xFD && p[1] == 0xFC && p[2] == 0xFB && p[3] == 0xFA;
+        bool new_hdr = p[0] == 0xF4 && p[1] == 0xF3 && p[2] == 0xF2 && p[3] == 0xF1;
+        if (!old_hdr && !new_hdr) {
             pos++;
             continue;
         }
@@ -92,12 +100,18 @@ static void feed(const uint8_t *data, size_t n)
             continue;
         }
         if (s_buf_len - pos < total) break;
-        if (p[total - 4] == 0x04 && p[total - 3] == 0x03 &&
-            p[total - 2] == 0x02 && p[total - 1] == 0x01) {
-            handle_frame(p, dlen);
-            pos += total;
+        if (old_hdr) {
+            if (p[total - 4] == 0x04 && p[total - 3] == 0x03 &&
+                p[total - 2] == 0x02 && p[total - 1] == 0x01) {
+                handle_frame(p, dlen, false);
+                pos += total;
+            } else {
+                pos++;
+            }
         } else {
-            pos++;
+            /* 新协议帧尾还没确认，先按长度/命令放行；命令在 handle_frame 里校验 */
+            handle_frame(p, dlen, true);
+            pos += total;
         }
     }
     if (pos) {
