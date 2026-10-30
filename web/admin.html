@@ -39,6 +39,7 @@
   button{padding:8px 16px;border-radius:6px;border:1px solid var(--line);
          background:#fff;color:var(--text);font:inherit;cursor:pointer}
   button:hover{background:#f9fafb}
+  button:disabled{opacity:.45;cursor:not-allowed}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button.primary:hover{background:#1d4ed8}
   .actions{display:flex;gap:10px;align-items:center;margin-top:16px}
@@ -303,7 +304,7 @@
       <span class="msg" id="otaInfo">读取中…</span>
     </div>
     <div class="actions">
-      <button class="primary" onclick="pushOta()">推送到设备</button>
+      <button class="primary" id="otaPushBtn" onclick="pushOta()">推送到设备</button>
       <span class="msg" id="otaMsg"></span>
     </div>
   </div>
@@ -1056,11 +1057,21 @@ async function refreshOta() {
     const f = j.file;
     if (!f) {
       $("otaInfo").textContent = "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）";
+      const btnNoFile = $("otaPushBtn");
+      if (btnNoFile) { btnNoFile.disabled = true; btnNoFile.title = "服务器上没有固件"; }
       return;
     }
     const mb = (f.size / 1048576).toFixed(2);
     const built = f.builtMs ? new Date(f.builtMs).toLocaleString() : new Date(f.mtime).toLocaleString();
     const devs = j.devices || [];
+    const updatable = devs.filter((d) => d.updatable).length;
+    const btn = $("otaPushBtn");
+    if (btn) {
+      btn.disabled = updatable === 0;
+      btn.title = updatable === 0
+        ? (devs.length ? "设备已经是最新版本" : "没有在线设备")
+        : "";
+    }
     const dev = devs.map((d) => {
       if (d.ota) {
         const p = d.ota.p;
@@ -1083,6 +1094,11 @@ async function pushOta() {
     const r = await fetch("api/ota", { method: "POST" });
     const j = await r.json();
     if (!j.ok) { setMsg($("otaMsg"), j.msg || "推送失败", "err"); return; }
+    if (!j.sent) {
+      setMsg($("otaMsg"), j.msg || "设备已经是最新版本", "ok");
+      refreshOta();
+      return;
+    }
     setMsg($("otaMsg"), `已通知 ${j.sent} 台设备，开始下载…`, "");
     setTimeout(refreshOta, 1500);
   } catch (e) {

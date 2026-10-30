@@ -96,6 +96,7 @@ export class DeviceSession {
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.timers = [];
     this.lastStat = null;
+    this.lastRxAt = Date.now();    /* 最近一次上行时刻：90 秒没有就清僵尸会话 */
     this.absentAt = 0;             /* 雷达上次变“无人”的时刻 */
     this.lastPresenceGreetAt = 0;  /* 上次“有人回来”问候的时刻 */
     this.presenceGreetBusy = false;
@@ -177,8 +178,18 @@ export class DeviceSession {
   /* ── 生命周期 ─────────────────────────────────────────────────────── */
 
   start() {
-    /* 心跳：25 秒一次，防止中间设备/NAT 断连 */
-    this.timers.push(setInterval(() => this.send(build.ping()), 25000));
+    /* 心跳：25 秒一次，防止中间设备/NAT 断连。
+     * 设备每 30 秒至少有一条 stat；90 秒完全没有上行就是半开连接，直接 terminate，
+     * 否则旧会话会一直留在管理页，OTA/提醒也会重复发给同一台设备。 */
+    this.lastRxAt = Date.now();
+    this.timers.push(setInterval(() => {
+      if (Date.now() - this.lastRxAt > 90_000) {
+        log(`[${this.sid}] 90 秒没有上行，关闭僵尸会话`);
+        try { this.ws.terminate(); } catch { /* ignore */ }
+        return;
+      }
+      this.send(build.ping());
+    }, 25000));
 
     /* 信息栏定时推送 */
     const pushMs = Math.max(10, this.ctx.config.info.pushSec || 60) * 1000;
@@ -217,6 +228,7 @@ export class DeviceSession {
   /* ── 消息分发 ─────────────────────────────────────────────────────── */
 
   onMessage(data, isBinary) {
+    this.lastRxAt = Date.now();
     if (isBinary) {
       if (this.recording) this.opus.push(Buffer.from(data));
       return;
@@ -287,11 +299,25 @@ export class DeviceSession {
     this.caps = Array.isArray(m.caps) ? m.caps : [];
     log(`[${this.sid}] hello mac=${this.mac} fw=${this.fw} caps=${this.caps.join(",")}`);
 
+    this.dropDuplicateSessions();
     await this.pushInfo(true);
     this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data)));
     /* 补课轮次：设备重启后 Lua 里的 R 会回到 1，这里按服务器记的再推一次 */
     const round = Number(this.ctx.config.timetable?.round) || 1;
     this.send(build.evt("round_" + round));
+  }
+
+  /** 同一台设备重连后，旧连接可能还挂在网上（半开 TCP）——立刻踢掉，
+   *  管理页/OTA/提醒才不会把同一台设备算成多台。 */
+  dropDuplicateSessions() {
+    if (!this.mac) return;
+    for (const other of [...this.ctx.devices]) {
+      if (other === this || !other.mac || other.mac !== this.mac) continue;
+      log(`[${this.sid}] 同一设备的新连接，关闭旧会话 ${other.sid}`);
+      this.ctx.devices.delete(other);
+      try { other.close(); } catch { /* ignore */ }
+      try { other.ws.terminate(); } catch { /* ignore */ }
+    }
   }
 
   onBtn(m) {

@@ -38,6 +38,17 @@ const UPD_ZIP = path.join(UPD_DIR, "server.zip");
 const UPD_META = path.join(UPD_DIR, "pending.json");
 const VERSION_FILE = path.join(ROOT, "VERSION");
 
+/** 同一台设备可能残留多个 WS 会话（半开 TCP/重连）：按 MAC 去重，保留最近有上行的 */
+function uniqueDevices(devices) {
+  const byKey = new Map();
+  for (const d of devices) {
+    const key = d.mac || d.sid;
+    const prev = byKey.get(key);
+    if (!prev || (d.lastRxAt || 0) > (prev.lastRxAt || 0)) byKey.set(key, d);
+  }
+  return [...byKey.values()];
+}
+
 /* ── 创造模式：Lua AI 后台任务 ───────────────────────────────────────
  * 模型生成可能跑 30~90 秒，不能挂在 HTTP 请求上（nginx 会 504）。
  * POST /api/lua/ai 只启动任务，管理页轮询 /api/lua/ai/status 拿步骤和结果。 */
@@ -339,7 +350,7 @@ export async function handleHttp(req, res, ctx) {
       if (p === "/api/status" && req.method === "GET") {
         return json(res, 200, {
           uptimeSec: Math.round(process.uptime()),
-          devices: [...ctx.devices].map((d) => ({
+          devices: uniqueDevices(ctx.devices).map((d) => ({
             sid: d.sid,
             mac: d.mac,
             fw: d.fw,
@@ -812,17 +823,29 @@ export async function handleHttp(req, res, ctx) {
         const file = otaInfo();
         return json(res, 200, {
           file,
-          devices: [...ctx.devices].map((d) => ({
-            sid: d.sid, fw: d.fw, ota: d.ota,
+          devices: uniqueDevices(ctx.devices).map((d) => ({
+            sid: d.sid, mac: d.mac, fw: d.fw, ota: d.ota,
             updatable: !!(file && file.version && d.fw && d.fw !== file.version),
           })),
         });
       }
 
       if (p === "/api/ota" && req.method === "POST") {
-        const list = [...ctx.devices];
-        if (!list.length) return json(res, 400, { ok: false, msg: "没有在线设备" });
-        if (!existsSync(OTA_APP)) return json(res, 400, { ok: false, msg: "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）" });
+        const file = otaInfo();
+        if (!existsSync(OTA_APP) || !file)
+          return json(res, 400, { ok: false, msg: "服务器上没有固件（把 myesp32.bin 放到 firmware/build/ota-app.bin）" });
+        if (!ctx.devices.size) return json(res, 400, { ok: false, msg: "没有在线设备" });
+
+        /* 同一台设备只推一次；已经和目标版本相同的直接跳过——否则每点一次
+         * “推送到设备”都会把同版本固件再刷一遍。 */
+        const list = uniqueDevices(ctx.devices)
+          .filter((d) => !(file.version && d.fw === file.version));
+        if (!list.length) {
+          return json(res, 200, {
+            ok: true, sent: 0, file,
+            msg: file.version ? `设备已经是最新版本 ${file.version}` : "没有需要更新的设备",
+          });
+        }
 
         /* 云服务器上"设备连接看到的本地地址"是内网 IP，必须用配置的公网地址；
          * 局域网部署留空时再退回本地地址 */
@@ -834,7 +857,7 @@ export async function handleHttp(req, res, ctx) {
 
         for (const d of list) d.startOta(dst);
         log(`推送 OTA → ${list.length} 台：${dst}`);
-        return json(res, 200, { ok: true, sent: list.length, url: dst, file: otaInfo() });
+        return json(res, 200, { ok: true, sent: list.length, url: dst, file });
       }
 
       return json(res, 404, { ok: false, msg: "未知接口" });
