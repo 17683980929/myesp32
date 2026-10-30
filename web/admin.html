@@ -111,8 +111,8 @@
     </div>
     <div style="margin-top:14px">
       <table>
-        <thead><tr><th>会话</th><th>MAC</th><th>固件</th><th>页面</th><th>状态</th><th>电量</th><th>室温/湿度</th></tr></thead>
-        <tbody id="devTable"><tr><td colspan="7" style="color:var(--muted)">暂无设备</td></tr></tbody>
+        <thead><tr><th>会话</th><th>MAC</th><th>固件</th><th>页面</th><th>状态</th><th>雷达</th><th>电量</th><th>室温/湿度</th></tr></thead>
+        <tbody id="devTable"><tr><td colspan="8" style="color:var(--muted)">暂无设备</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -530,6 +530,17 @@ async function saveAll() {
   if (j.ok) loadConfig();
 }
 
+function radarText(d) {
+  if (d.stat?.pres === 1) {
+    const dist = Number.isFinite(d.stat.dist) && d.stat.dist > 0
+      ? ` ${(d.stat.dist / 100).toFixed(1)}m`
+      : "";
+    return `有人${dist}`;
+  }
+  if (d.stat?.pres === 0) return d.stat.uart ? "无人" : "无人·无串口";
+  return "—";
+}
+
 async function refreshStatus() {
   try {
     const r = await fetch("api/status");
@@ -557,6 +568,7 @@ async function refreshStatus() {
           <td>${d.fw || "—"}</td>
           <td>${d.page}</td>
           <td>${d.recording ? "🎙 录音中" : d.busy ? "⏳ 处理中" : "空闲"}</td>
+          <td>${radarText(d)}</td>
           <td>${d.stat?.bat != null ? d.stat.bat + "%" : "—"}</td>
           <td>${d.stat?.room ? d.stat.room.t.toFixed(1) + "℃ / " + d.stat.room.h + "%" : "—"}</td>
         </tr>`).join("");

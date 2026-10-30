@@ -37,6 +37,7 @@
 #include "wake.h"
 #include "ble.h"
 #include "lua_runtime.h"
+#include "radar.h"
 
 static const char *TAG = "main";
 
@@ -310,13 +311,16 @@ static void on_lua_result(int id, bool ok, const char *out)
 
 /* ── 板载状态上报（电量/温湿度）────────────────────────────────────── */
 
-/** 上报一次板载状态：{"t":"stat","bat":87,"room":{"t":25.3,"h":55.1}}
- *  （语音助手答"电量/室温/蓝牙"要用；温湿度读失败就只发电量）
+/** 上报一次板载状态：{"t":"stat","bat":87,"room":{"t":25.3,"h":55.1},
+ *  "pres":1,"dist":120,"moving":1,"still":0,"uart":1}
+ *  （语音助手答"电量/室温/蓝牙/有人吗"要用；温湿度读失败就只发电量）
  *  bn = BLE 广播名（协议栈起来之后才有）：助手能直接告诉用户手机里搜什么名字 */
 static void stat_send(void)
 {
     int bat = sensors_battery_pct();
-    char msg[288];
+    radar_state_t rd;
+    radar_get(&rd);
+    char msg[416];
     char ip[20];
     wifi_sta_ip(ip, sizeof(ip));
     const char *part = esp_ota_get_running_partition()->label;   /* ota_0 / ota_1 */
@@ -336,6 +340,13 @@ static void stat_send(void)
     char net_part[64];
     snprintf(net_part, sizeof(net_part), "\"ssid\":\"%s\",", ssid);
 
+    /* 雷达：pres=有人，dist=检测距离 cm，uart=串口在出帧（0 可能是没插 USB） */
+    char radar_part[80];
+    snprintf(radar_part, sizeof(radar_part),
+             "\"pres\":%d,\"dist\":%d,\"moving\":%d,\"still\":%d,\"uart\":%d,",
+             rd.present ? 1 : 0, (int)rd.detect_dist_cm,
+             rd.moving ? 1 : 0, rd.still ? 1 : 0, rd.uart_ok ? 1 : 0);
+
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
         int t10 = (int)(t * 10 + (t >= 0 ? 0.5f : -0.5f));
@@ -345,13 +356,15 @@ static void stat_send(void)
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, t10 / 10, tf, h10 / 10, hf);
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s"
+                 "\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, radar_part,
+                 t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",\"noroom\":1}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part);
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s\"noroom\":1}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, radar_part);
     }
     ws_send_json(msg);
 }
@@ -836,6 +849,19 @@ static void main_loop(void)
             }
         }
 
+        /* 雷达有人/无人变化 → 立即补报一次 stat（服务器据此问候） */
+        {
+            static int s_last_pres = -1;
+            int p = radar_present() ? 1 : 0;
+            if (s_last_pres < 0) s_last_pres = p;
+            else if (p != s_last_pres) {
+                s_last_pres = p;
+                s_stat_at = 0;
+                s_dirty = 1;
+                ESP_LOGI(TAG, "雷达状态变化 → 立即上报（%s）", p ? "有人" : "无人");
+            }
+        }
+
         /* 板载状态上报：连上后立即一次，之后每 30 秒（语音答"电量/室温/蓝牙"用它） */
         if (ws_connected() && (int32_t)(now - s_stat_at) >= 0) {
             stat_send();
@@ -918,6 +944,7 @@ static void boot_online(const wifi_cfg_t *cfg)
     buttons_init(on_button);
     lua_runtime_set_result_cb(on_lua_result);
     lua_runtime_start();                     /* 挂载 fatfs、开机脚本、等下发（不阻塞） */
+    radar_start();                           /* GP1 OUT + UART1(GP2/GP3) 有人检测 */
     s_subq = heap_caps_malloc(sizeof(sub_item_t) * SUBQ_MAX, MALLOC_CAP_SPIRAM);
     if (!s_subq) ESP_LOGE(TAG, "字幕队列分配失败（字幕不可用）");
     ESP_LOGI(TAG, "启动完成（服务器 %s）", cfg->host);

@@ -96,6 +96,9 @@ export class DeviceSession {
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.timers = [];
     this.lastStat = null;
+    this.absentAt = 0;             /* 雷达上次变“无人”的时刻 */
+    this.lastPresenceGreetAt = 0;  /* 上次“有人回来”问候的时刻 */
+    this.presenceGreetBusy = false;
     this.ota = null;               /* 最近一次 OTA 状态 {p, at, msg} */
     this.createMode = 0;           /* 0=关 1=等需求 2=生成中 3=预览 5=等澄清回答 */
     this.createOriginal = "";
@@ -229,12 +232,33 @@ export class DeviceSession {
         if (m.s === "resume") return this.onRecResume();
         return this.onRecStop();
       case DEV.BTN:   return this.onBtn(m);
-      case DEV.STAT:
+      case DEV.STAT: {
+        const prevPres = this.lastStat?.pres;
+        const pres = m.pres === 1 ? 1 : m.pres === 0 ? 0 : null;
+        if (pres === 0 && prevPres !== 0) this.absentAt = Date.now();
         this.lastStat = {
           bat: m.bat, room: m.room, vol: m.vol, bt: m.bt, rssi: m.rssi,
-          up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, part: m.part, at: Date.now(),
+          up: m.up, ip: m.ip, ssid: m.ssid, bn: m.bn, part: m.part,
+          pres,
+          dist: Number.isFinite(m.dist) ? m.dist : null,
+          moving: m.moving === 1,
+          still: m.still === 1,
+          uart: m.uart === 1,
+          at: Date.now(),
         };
+        if (pres !== null && pres !== prevPres) {
+          const d = Number.isFinite(m.dist) && m.dist > 0
+            ? `（${(m.dist / 100).toFixed(1)}m）` : "";
+          log(`[${this.sid}] 雷达：${pres ? "有人" : "无人"}${d}`);
+        }
+        if (pres === 1 && prevPres === 0) {
+          const awayMs = this.absentAt ? Date.now() - this.absentAt : 0;
+          this.absentAt = 0;
+          const awayMin = Math.max(0, this.ctx.config.presence?.awayMin ?? 1);
+          if (awayMs >= awayMin * 60_000) void this.greetPresence();
+        }
         return;
+      }
       case "ota":
         this.ota = { p: m.p ?? -1, at: Date.now(), msg: m.m ?? null };
         log(`[${this.sid}] OTA ${m.p}%${m.m ? " " + m.m : ""}`);
@@ -908,6 +932,35 @@ export class DeviceSession {
       this.send(build.ttsStop(/[？?]\s*$/.test(text.trim())));
     } catch (e) {
       log(`[${this.sid}] 播报失败: ${e.message}`);
+    }
+  }
+
+  /** 雷达从“无人”变“有人”：离开一段时间再回来才问候，避免起身/坐下误触发 */
+  async greetPresence() {
+    const cfg = this.ctx.config.presence ?? {};
+    if (cfg.greet === false) return;
+    if (this.presenceGreetBusy) return;
+    if (this.recording || this.busy || this.streaming) return;
+    if (this.ws.readyState !== 1) return;
+
+    const cooldownMs = Math.max(1, cfg.cooldownMin ?? 20) * 60_000;
+    if (Date.now() - this.lastPresenceGreetAt < cooldownMs) return;
+    this.lastPresenceGreetAt = Date.now();
+    this.presenceGreetBusy = true;
+
+    const h = new Date().getHours();
+    const hi = h < 11 ? "早上好" : h < 14 ? "中午好" : h < 18 ? "下午好" : "晚上好";
+    const lines = [
+      `${hi}，回来啦。先喝口水吧。`,
+      `${hi}，坐下歇会儿吧。`,
+      `${hi}，我在呢。`,
+    ];
+    const text = lines[Math.floor(Math.random() * lines.length)];
+    log(`[${this.sid}] 有人回来 → 问候：${text}`);
+    try {
+      await this.speakOne(text, this.turn);
+    } finally {
+      this.presenceGreetBusy = false;
     }
   }
 
