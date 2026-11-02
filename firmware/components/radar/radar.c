@@ -16,8 +16,8 @@ static const char *TAG = "radar";
 #define RADAR_STACK_WORDS 6144          /* 24KB，放 PSRAM；16KB 时余量只剩 ~1.9KB，诊断日志再加一点，留足 */
 
 #define UART_FRESH_US   (3 * 1000 * 1000LL)
-#define PRESENT_HOLD_US (1200 * 1000LL)
-#define ABSENT_HOLD_US  (2500 * 1000LL)
+#define PRESENT_HOLD_US (2000 * 1000LL)
+#define ABSENT_HOLD_US  (4000 * 1000LL)
 
 static radar_state_t s_state;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -149,7 +149,9 @@ static void radar_task(void *arg)
 
         bool uart_ok = s_last_frame_us != 0 && now - s_last_frame_us < UART_FRESH_US;
         bool out = gpio_get_level(RADAR_OUT_GPIO) != 0;
-        bool raw = out || (uart_ok && s_target_state != 0);
+        /* UART 有帧时以模块目标状态为准；OUT 会被光敏联动/环境光带跳，
+         * 只作为 UART 断帧时的兜底，不能和 UART OR 在一起。 */
+        bool raw = uart_ok ? (s_target_state != 0) : out;
 
         if (raw != s_last_raw) {
             s_last_raw = raw;
