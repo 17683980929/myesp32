@@ -208,8 +208,12 @@ export function startReminders(ctx) {
     }
   };
 
-  const timer = setInterval(tick, 20000);
-  tick();
+  /* 单个定时回调异常不能把整个 Node 进程带走（未捕获异常会直接退出 → 502） */
+  const safeTick = () => {
+    try { tick(); } catch (e) { log("定时检查异常：" + (e?.stack || e?.message || e)); }
+  };
+  const timer = setInterval(safeTick, 20000);
+  safeTick();
   log("已启动（上下课 / 喝水 / 早间问候）");
   return () => clearInterval(timer);
 }

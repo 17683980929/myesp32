@@ -17,6 +17,16 @@ import { handleHttp } from "./http-admin.mjs";
 import { reloadSkills } from "./services/skills.mjs";
 import { startReminders } from "./services/reminders.mjs";
 
+/* 进程级兜底：单个异步/定时错误不能直接带走服务（否则 nginx 立刻 502）。
+ * 未捕获异常记录后退出，交给 run-loop/schtasks 拉起；unhandledRejection 只记日志。 */
+process.on("unhandledRejection", (e) => {
+  console.error("[fatal] unhandledRejection:", e?.stack || e?.message || e);
+});
+process.on("uncaughtException", (e) => {
+  console.error("[fatal] uncaughtException:", e?.stack || e?.message || e);
+  setTimeout(() => process.exit(1), 100);
+});
+
 const config = getConfig();
 const weather = new WeatherCache();
 const devices = new Set();

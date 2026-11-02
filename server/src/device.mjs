@@ -271,7 +271,8 @@ export class DeviceSession {
         }
         if (r.enteredPresent) {
           const awayMin = Math.max(0, this.ctx.config.presence?.awayMin ?? 1);
-          if (r.awayMs >= awayMin * 60_000) void this.greetPresence();
+          if (r.awayMs >= awayMin * 60_000)
+            this.greetPresence().catch((e) => log(`[${this.sid}] 问候异常: ${e?.message || e}`));
         }
         return;
       }

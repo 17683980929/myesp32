@@ -63,9 +63,13 @@ export class WsGateway {
 
     ws.on("message", (data, isBinary) => {
       try {
-        session.onMessage(data, isBinary);
+        const r = session.onMessage(data, isBinary);
+        /* onHello 等是 async：同步 try/catch 接不住它的 reject，必须挂 .catch */
+        if (r && typeof r.catch === "function") {
+          r.catch((e) => log(`[${session.sid}] 异步消息异常: ${e?.stack || e?.message || e}`));
+        }
       } catch (e) {
-        log(`[${session.sid}] 处理消息异常: ${e.message}`);
+        log(`[${session.sid}] 处理消息异常: ${e?.stack || e?.message || e}`);
       }
     });
 
