@@ -56,7 +56,15 @@ export class WsGateway {
       }
     }
 
-    const session = new DeviceSession(ws, this.ctx);
+    let session;
+    try {
+      session = new DeviceSession(ws, this.ctx);
+    } catch (e) {
+      /* 会话初始化失败（Opus/WASM 等）不能带走整个网关 */
+      log(`[ws] 会话创建失败: ${e?.stack || e?.message || e}`);
+      try { ws.close(1011, "session init failed"); } catch { /* ignore */ }
+      return;
+    }
     this.sessions.add(session);
     this.ctx.devices.add(session);
     session.start();

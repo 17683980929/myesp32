@@ -88,7 +88,14 @@ export class DeviceSession {
     this.page = "home";
 
     this.recording = false;
-    this.opus = new OpusToPcm();
+    this.opus = null;
+    try {
+      this.opus = new OpusToPcm();
+    } catch (e) {
+      /* Node 24 + opusscript 的 WASM 会在这里崩：不能让它带走整个服务。
+       * 语音识别会不可用，但雷达/状态/播报/问候仍然正常。 */
+      log(`[${this.sid}] Opus 解码器初始化失败: ${e?.message || e}（语音识别不可用）`);
+    }
     this.history = [];
     this.aborted = false;
     this.busy = false;
@@ -207,7 +214,7 @@ export class DeviceSession {
     this.timers = [];
     for (const w of this.luaWaiters.values()) w({ ok: false, out: "设备断开" });
     this.luaWaiters.clear();
-    try { this.opus.free(); } catch { /* ignore */ }
+    try { this.opus?.free(); } catch { /* ignore */ }
     log(`[${this.sid}] 会话结束`);
   }
 
@@ -230,7 +237,7 @@ export class DeviceSession {
   onMessage(data, isBinary) {
     this.lastRxAt = Date.now();
     if (isBinary) {
-      if (this.recording) this.opus.push(Buffer.from(data));
+      if (this.recording && this.opus) this.opus.push(Buffer.from(data));
       return;
     }
 
@@ -355,7 +362,7 @@ export class DeviceSession {
     }
     this.recording = true;
     this.aborted = false;
-    this.opus.reset();
+    this.opus?.reset();
     log(`[${this.sid}] 开始录音`);
   }
 
@@ -363,7 +370,7 @@ export class DeviceSession {
   onRecResume() {
     if (!this.recording) return;
     this.recording = false;
-    this.opus.reset();                 /* 丢掉录音期间飘来的"静音"帧 */
+    this.opus?.reset();                 /* 丢掉录音期间飘来的"静音"帧 */
     if (this.hold && this.hold === this.turn) {   /* 挂起的回合仍然有效才续播 */
       this.hold = 0;
       log(`[${this.sid}] 用户没说话 → 从断点继续播报`);
@@ -376,6 +383,12 @@ export class DeviceSession {
   async onRecStop() {
     if (!this.recording) return;
     this.recording = false;
+
+    if (!this.opus) {
+      log(`[${this.sid}] Opus 解码器不可用，忽略本次录音`);
+      this.send(build.err("语音识别暂不可用"));
+      return;
+    }
 
     const pcm = this.opus.drain();
     const durMs = this.opus.durationMs;
