@@ -15,6 +15,9 @@ firmware/managed_components/
 server/config.json
 server/*.log
 
+# ── AI 助手工作区记忆（本地会话数据，不进仓库）───────────────
+.workbuddy/
+
 # ── 临时文件 ─────────────────────────────────────────────────
 w.json
 t.json
