@@ -299,6 +299,7 @@ function renderHome(frameSym) {
   if (LAYERED) {
     blit(frameArrays.get("pet_bg"), 200, 300, 0, 0);
     blitMask(frameArrays.get(frameSym), frameArrays.get(frameSym + "_m"), 200, 300, 0, 0);
+    blitMask(frameArrays.get("pet_bg"), frameArrays.get("pet_fg"), 200, 300, 0, 0);
   } else {
     blit(frameArrays.get(frameSym), 200, 300, 0, 0);
   }

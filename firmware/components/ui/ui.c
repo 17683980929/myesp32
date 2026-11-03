@@ -425,6 +425,9 @@ static void draw_pet(void)
      * 只有角色层带 dy，所以背景永远不动——素材到位后这条路自动生效。 */
     lcd_blit(pet_bg, PET_FRAME_W, PET_FRAME_H, 0, 0, 0);
     lcd_blit_mask(frame, pet_masks[fi], PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
+    /* 前景层：桌面厚板 + 左右前板 + 底板盖在人物前面，
+     * 人才是站在桌子后面，而不是浮在桌子上 */
+    lcd_blit_mask(pet_bg, pet_fg, PET_FRAME_W, PET_FRAME_H, 0, 0, 0);
 #else
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
 #endif

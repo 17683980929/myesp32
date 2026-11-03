@@ -35,6 +35,24 @@ const FRAME_BYTES = STRIDE * OUT_H;
  * 0.25 又会让制服阴影糊成一片 */
 const COVER_T = 0.38;
 
+/* 分层模式的版面修正（按 200×300 输出坐标系）：
+ *  - CHAR_DY：整体纵向偏移。原画人物就站在桌子后面（桌面在腰胯高度），保持 0；
+ *  - FG_RECTS：桌子在人物**前面**的部分。合成顺序 背景 → 角色 → 前景，
+ *    这样人物被桌面厚板和左右前板挡住，只在中间开口（x 58..142）露出来，
+ *    站姿/坐姿/胸像的裁断处都被桌子收掉，不会出现"浮在桌子上"。 */
+const CHAR_DY = 10;   /* 下移 10px：脚(254→264)正好藏到底板后面，桌洞中间能看到身体 */
+
+/* 逐帧纵向微调（在 CHAR_DY 基础上再加减）：
+ * 全身帧统一 +0（脚正好落在地面线 268）；胸像/近景帧头画得更低，
+ * 会被桌面厚板切在脸上，需要抬起来，让桌面切在胸口以下。 */
+const FRAME_DY = {};   /* 各帧素材本身对齐，先不再单独偏移 */
+const FG_RECTS = [
+  [8, 194, 192, 208],    /* 桌面厚板 */
+  [8, 208, 58, 270],     /* 左前板 */
+  [142, 208, 192, 270],  /* 右前板 */
+  [8, 264, 192, 272],    /* 底板（挡住脚和胸像的裁断处） */
+];
+
 /* ── PNG 解码（非隔行；1/8bit 灰度、8bit RGB/RGBA、调色板）────────── */
 
 const CRC_TABLE = (() => {
@@ -175,6 +193,21 @@ function downsample(src, ow, oh, thr) {
   return frame;
 }
 
+/** 整幅纵向平移 n 像素（正=下移，负=上移；移出画面的部分丢掉） */
+function shiftDown(bm, n) {
+  if (!n) return bm;
+  const out = new Uint8Array(bm.length);
+  if (n > 0) {
+    for (let y = 0; y + n < OUT_H; y++)
+      out.set(bm.subarray(y * STRIDE, (y + 1) * STRIDE), (y + n) * STRIDE);
+  } else {
+    const k = -n;
+    for (let y = k; y < OUT_H; y++)
+      out.set(bm.subarray(y * STRIDE, (y + 1) * STRIDE), (y - k) * STRIDE);
+  }
+  return out;
+}
+
 /** 带 alpha 的缩放：返回 {char, mask}
  *  mask = alpha 覆盖率 ≥ 0.5；char = 不透明区域内墨点覆盖率 ≥ COVER_T */
 function downsampleLayers(src, ow, oh, thr) {
@@ -287,10 +320,13 @@ if (layered) {
 
   for (const [file, sym] of FRAMES) {
     const src = readPng(path.join(LAYER_DIR, `${file}.png`));
-    const { char, mask } = (src.w === OUT_W && src.h === OUT_H)
+    const { char: char0, mask: mask0 } = (src.w === OUT_W && src.h === OUT_H)
       ? { char: packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128 && src.isInk(x, y)),
           mask: packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128) }
       : downsampleLayers(src, OUT_W, OUT_H, COVER_T);
+    const dy = CHAR_DY + (FRAME_DY[file] || 0);
+    const char = shiftDown(char0, dy);
+    const mask = shiftDown(mask0, dy);
 
     let covered = 0;
     for (const b of mask) covered += [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => (b >> k) & 1).length;
@@ -305,6 +341,16 @@ if (layered) {
 
     console.log(`${file.padEnd(18)} → ${sym.padEnd(22)} 角色 ${((covered / (OUT_W * OUT_H)) * 100).toFixed(1)}%`);
   }
+
+  /* 前景遮罩：桌面/前板/底板。合成时最后画一遍背景像素盖住角色，
+   * 人物就"站在桌子后面"，胸像的裁断处也被桌子收掉 */
+  const fg = new Uint8Array(FRAME_BYTES);
+  for (const [x0, y0, x1, y1] of FG_RECTS)
+    for (let y = y0; y < y1 && y < OUT_H; y++)
+      for (let x = x0; x < x1 && x < OUT_W; x++)
+        fg[y * STRIDE + (x >> 3)] |= 0x80 >> (x & 7);
+  cBody += emitArray("pet_fg", fg, "桌子前景");
+  total += fg.length;
 
   cBody += `const uint8_t *const pet_masks[PET_FRAME_COUNT] = {\n`;
   cBody += FRAMES.map(([, sym]) => `    ${sym}_m,`).join("\n") + "\n};\n";
@@ -359,6 +405,7 @@ ${FRAMES.map(([, sym]) => `extern const uint8_t ${sym}[];`).join("\n")}
 
 #if PET_LAYERED
 extern const uint8_t pet_bg[];
+extern const uint8_t pet_fg[];   /* 桌子前景：合成时最后盖一遍，人物被桌子挡住 */
 extern const uint8_t *const pet_masks[PET_FRAME_COUNT];
 #endif
 

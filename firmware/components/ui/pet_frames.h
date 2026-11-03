@@ -33,6 +33,7 @@ extern const uint8_t pet_sm_16_water[];
 
 #if PET_LAYERED
 extern const uint8_t pet_bg[];
+extern const uint8_t pet_fg[];   /* 桌子前景：合成时最后盖一遍，人物被桌子挡住 */
 extern const uint8_t *const pet_masks[PET_FRAME_COUNT];
 #endif
 
