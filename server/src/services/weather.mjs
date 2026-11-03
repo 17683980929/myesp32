@@ -83,38 +83,32 @@ function forecastDay(d) {
   };
 }
 
-/**
- * 拉一次天气（当前 + 3 天预报）。
- * @returns {Promise<{text:string, temp:number, humidity:number, city:string, at:number,
- *   forecast:Array<{date:string, text:string, min:number, max:number, rainChance:number}>}>}
- */
-export async function fetchWeather(cfg) {
-  const city = (cfg.city || "北京").trim();
-  const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
-
+/** 通用 JSON 请求（带超时） */
+async function fetchJson(url, timeoutMs) {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 12000);
-  let res;
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    res = await fetch(url, {
+    const res = await fetch(url, {
       headers: { "User-Agent": "curl/8.0" },   /* wttr.in 对浏览器 UA 会返回 HTML */
       signal: ac.signal,
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
   } catch (e) {
+    if (e.name === "AbortError") throw new Error(`请求超时（${timeoutMs}ms）`);
+    throw e;
+  } finally {
     clearTimeout(timer);
-    if (e.name === "AbortError") throw new Error("天气请求超时");
-    throw new Error(`天气网络错误: ${e.message}`);
   }
-  clearTimeout(timer);
+}
 
-  if (!res.ok) throw new Error(`天气 HTTP ${res.status}`);
-
-  const j = await res.json();
+/** 主源：wttr.in */
+async function fetchWttr(city) {
+  const j = await fetchJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, 10000);
   const cur = j?.current_condition?.[0];
   if (!cur) throw new Error("天气返回格式异常");
 
   const descRaw = cur.weatherDesc?.[0]?.value ?? "";
-
   const forecast = (Array.isArray(j.weather) ? j.weather : []).slice(0, 3).map(forecastDay);
 
   return {
@@ -125,6 +119,72 @@ export async function fetchWeather(cfg) {
     at: Date.now(),
     forecast,
   };
+}
+
+/** WMO 天气码 → 中文（Open-Meteo 备用源） */
+const WMO_ZH = {
+  0: "晴", 1: "少云", 2: "多云", 3: "阴", 45: "雾", 48: "冻雾",
+  51: "毛毛雨", 53: "毛毛雨", 55: "浓毛毛雨", 56: "冻毛毛雨", 57: "强冻毛毛雨",
+  61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "强冻雨",
+  71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+  80: "小阵雨", 81: "中阵雨", 82: "强阵雨", 85: "小阵雪", 86: "强阵雪",
+  95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷暴伴冰雹",
+};
+function wmoText(code) {
+  return WMO_ZH[Number(code)] ?? "未知";
+}
+
+/** 备用源：Open-Meteo（免注册；先地理编码拿经纬度） */
+async function fetchOpenMeteo(city) {
+  const g = await fetchJson(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}` +
+    `&count=1&language=zh&format=json`, 6000);
+  const hit = g?.results?.[0];
+  if (!hit || !Number.isFinite(hit.latitude) || !Number.isFinite(hit.longitude))
+    throw new Error("城市定位失败");
+
+  const j = await fetchJson(
+    `https://api.open-meteo.com/v1/forecast?latitude=${hit.latitude}&longitude=${hit.longitude}` +
+    `&current=temperature_2m,relative_humidity_2m,weather_code` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+    `&timezone=Asia%2FShanghai&forecast_days=3`, 8000);
+  const c = j?.current;
+  if (!c || !Number.isFinite(Number(c.temperature_2m))) throw new Error("天气返回格式异常");
+
+  const d = j.daily || {};
+  const days = Array.isArray(d.time) ? d.time : [];
+  const forecast = days.slice(0, 3).map((date, i) => ({
+    date,
+    text: wmoText(d.weather_code?.[i]),
+    min: Math.round(Number(d.temperature_2m_min?.[i] ?? 0)),
+    max: Math.round(Number(d.temperature_2m_max?.[i] ?? 0)),
+    rainChance: Math.round(Number(d.precipitation_probability_max?.[i] ?? 0)),
+  }));
+
+  return {
+    text: wmoText(c.weather_code),
+    temp: Math.round(Number(c.temperature_2m)),
+    humidity: Math.round(Number(c.relative_humidity_2m ?? 0)),
+    city,
+    at: Date.now(),
+    forecast,
+  };
+}
+
+/** 拉一次天气（当前 + 3 天预报）；wttr.in 失败自动切 Open-Meteo */
+export async function fetchWeather(cfg) {
+  const city = (cfg.city || "北京").trim();
+  try {
+    return await fetchWttr(city);
+  } catch (e1) {
+    try {
+      const w = await fetchOpenMeteo(city);
+      console.log(`[weather] wttr 失败（${e1.message}），改用 Open-Meteo`);
+      return w;
+    } catch (e2) {
+      throw new Error(`天气源都失败：wttr=${e1.message}；open-meteo=${e2.message}`);
+    }
+  }
 }
 
 /** 带缓存的天气：refreshSec 内不重复请求 */
