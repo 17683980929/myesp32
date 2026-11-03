@@ -12,13 +12,19 @@ import { randomUUID } from "node:crypto";
 import { DEV, SRV, build, buildTimeInfo } from "./protocol.mjs";
 import { createASR } from "./services/asr.mjs";
 import { chatSentences } from "./services/llm.mjs";
-import { TOOLS, executeTool, matchLocalCommand } from "./services/tools.mjs";
+import { TOOLS, executeTool, matchLocalCommand, weatherReply, isWeatherQuestion } from "./services/tools.mjs";
 import { skillTools, runSkill, preSkillFor } from "./services/skills.mjs";
 import { textToOpusFrames, OpusToPcm, FRAME_MS } from "./services/tts.mjs";
 import { presenceFor } from "./services/presence.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log("[dev]", ...a);
+
+/** 给设备显示的短错误：优先用 LlmError.friendly，原始响应只留在服务器日志 */
+function errText(e) {
+  const s = String(e?.friendly || e?.message || "出错了");
+  return s.length > 80 ? s.slice(0, 80) + "…" : s;
+}
 
 /** 单句 TTS 合成超时：Baidu 偶发卡住会让设备端"沉默卡在说话中"，超时后干净收尾 */
 const TTS_TIMEOUT_MS = 12000;
@@ -476,7 +482,7 @@ export class DeviceSession {
     } catch (e) {
       if (this.stale(myTurn)) return;   /* 已被打断：连道歉都别播了 */
       log(`[${this.sid}] 对话失败: ${e.message}`);
-      this.send(build.err(e.message));
+      this.send(build.err(errText(e)));
       await this.speakOne("抱歉，我这边出了点问题。", myTurn);
     } finally {
       if (myTurn === this.turn) {       /* 只有最新回合负责收尾 */
@@ -835,6 +841,7 @@ export class DeviceSession {
     })();
 
     let full = "";
+    let fallback = "";          /* 大模型不可用时的本地降级回答（目前只有天气） */
     let sent = 0;
     const genOpts = {
       apiKey: cfg.llm.apiKey,
@@ -960,13 +967,28 @@ export class DeviceSession {
       }
     } catch (e) {
       log(`[${this.sid}] LLM 失败: ${e.message}`);
-      this.send(build.err(e.message));
+      if (e.name === "LlmError" && isWeatherQuestion(userText)) {
+        log(`[${this.sid}] 大模型不可用，天气改走本地回答`);
+        fallback = await weatherReply(userText, this.ctx);
+      } else {
+        this.send(build.err(errText(e)));
+      }
     } finally {
       ask = /[？?]\s*$/.test(full.trim());
       producing = false;
       await sender;
       if (this.streaming === myTurn) this.streaming = 0;
       if (this.hold === myTurn) this.clearHold();   /* 回合结束了，挂起一并清掉 */
+    }
+
+    if (fallback) {
+      if (!this.stale(myTurn)) {
+        await this.speakOne(fallback, myTurn);
+        this.history.push({ role: "assistant", content: fallback });
+        if (this.history.length > 20) this.history = this.history.slice(-20);
+        log(`[${this.sid}] 本地天气回答 ${fallback.length} 字`);
+      }
+      return;
     }
 
     if (full && !this.stale(myTurn)) {

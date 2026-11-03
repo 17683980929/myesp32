@@ -14,6 +14,29 @@
  */
 
 const SENT_END = /[。！？；!?;\n]/;
+const RETRY_DELAYS_MS = [700, 1800];      /* 503/429/网络抖动：最多再试 2 次 */
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 给设备/用户看的短错误；详细原始响应只进服务器日志 */
+export class LlmError extends Error {
+  constructor(message, friendly, status) {
+    super(message);
+    this.name = "LlmError";
+    this.friendly = friendly || message;
+    this.status = status;
+  }
+}
+
+function friendlyLlmError(status, detail) {
+  const d = String(detail || "").toLowerCase();
+  if (status === 503 || /too busy|overloaded|service is too busy/.test(d))
+    return "大模型服务繁忙，请稍后再试";
+  if (status === 429) return "请求太频繁，请稍后再试";
+  if (status === 401 || status === 403) return "大模型鉴权失败，请检查 API Key";
+  if (status >= 500) return "大模型服务暂时不可用，请稍后再试";
+  return `大模型请求失败（HTTP ${status}）`;
+}
 
 /**
  * 流式对话，yield 增量文本。
@@ -54,30 +77,48 @@ export async function* chatStream(o) {
   };
   if (tools?.length) body.tools = tools;
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-
+  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
   let res;
-  try {
-    res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
-  } catch (e) {
-    clearTimeout(timer);
-    if (e.name === "AbortError") throw new Error("LLM 请求超时");
-    throw new Error(`LLM 网络错误: ${e.message}`);
-  }
+  let streamTimer;
+  for (let attempt = 0; ; attempt++) {
+    const attemptAc = new AbortController();
+    const attemptTimer = setTimeout(() => attemptAc.abort(), timeoutMs);
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: attemptAc.signal,
+      });
+    } catch (e) {
+      clearTimeout(attemptTimer);
+      if (e.name === "AbortError")
+        throw new LlmError("LLM 请求超时", "大模型响应超时，请稍后再试");
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw new LlmError(`LLM 网络错误: ${e.message}`, "网络不稳定，没连上大模型");
+    }
 
-  if (!res.ok) {
-    clearTimeout(timer);
+    if (res.ok) {
+      streamTimer = attemptTimer;
+      break;
+    }
+
     const txt = await res.text().catch(() => "");
-    throw new Error(`LLM HTTP ${res.status}: ${txt.slice(0, 200)}`);
+    clearTimeout(attemptTimer);
+    if (attempt < RETRY_DELAYS_MS.length && RETRY_STATUS.has(res.status)) {
+      await sleep(RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
+    throw new LlmError(
+      `LLM HTTP ${res.status}: ${txt.slice(0, 200)}`,
+      friendlyLlmError(res.status, txt),
+      res.status);
   }
 
   const decoder = new TextDecoder();
@@ -109,8 +150,12 @@ export async function* chatStream(o) {
         } catch { /* 半包 JSON，忽略 */ }
       }
     }
+  } catch (e) {
+    if (e.name === "AbortError")
+      throw new LlmError("LLM 流读取超时", "大模型响应超时，请稍后再试");
+    throw e;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(streamTimer);
   }
 }
 

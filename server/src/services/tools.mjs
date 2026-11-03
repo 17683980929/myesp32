@@ -284,6 +284,70 @@ function cnNum(s) {
  * @param {{config:object, weather:object}} ctx 服务器上下文
  * @param {object} session 当前设备会话（DeviceSession）
  */
+/** 天气问答的统一格式化（LLM 工具与本地降级共用） */
+export async function weatherReply(dayRaw, ctx) {
+  const wc = ctx.config.weather ?? {};
+  if (wc.enabled === false) return "天气功能没开启。";
+  try {
+    const w = await ctx.weather.get(wc);
+    if (!w || !w.text) return "天气源暂时拿不到数据。";
+    const city = w.city || wc.city;
+    const fc = Array.isArray(w.forecast) ? w.forecast : [];
+    const h = Number.isFinite(w.humidity) ? `，湿度 ${w.humidity}%` : "";
+
+    const raw = String(dayRaw ?? "今天");
+    const day = /明天/.test(raw) ? 1 : /后天/.test(raw) ? 2 : /未来|几|三/.test(raw) ? 3 : 0;
+
+    /* 按北京时间的日期匹配，跨零点也能对上；对不上再按序号兜底 */
+    const bj = new Date(Date.now() + 8 * 3600e3);
+    const pick = (n) => {
+      const date = new Date(bj.getTime() + n * 86400e3).toISOString().slice(0, 10);
+      const d = fc.find((x) => x.date === date) || fc[n];
+      if (!d) return null;
+      const t = [d.min, d.max].every(Number.isFinite) ? `${d.min}~${d.max}℃` : `${d.max}℃`;
+      const md = /^(\d{4})-(\d{2})-(\d{2})$/.test(d.date)
+        ? `${Number(d.date.slice(5, 7))}月${Number(d.date.slice(8, 10))}日`
+        : d.date;
+      return { md, text: `${d.text}，${t}，降雨概率 ${d.rainChance}%` };
+    };
+
+    if (day === 3) {
+      const lines = [["今天", 0], ["明天", 1], ["后天", 2]]
+        .map(([name, i]) => {
+          const p = pick(i);
+          return p ? `${name}（${p.md}）：${p.text}` : null;
+        })
+        .filter(Boolean);
+      if (!lines.length) return "预报暂时拿不到数据。";
+      return `${city}未来三天：${lines.join("；")}。`;
+    }
+
+    if (day === 1 || day === 2) {
+      const name = day === 1 ? "明天" : "后天";
+      const p = pick(day);
+      if (!p) return `预报里暂时没有${name}的数据。`;
+      return `${city}${name}（${p.md}）：${p.text}。`;
+    }
+
+    const curLine = `${city}当前天气：${w.text}，气温 ${w.temp}℃${h}。`;
+    const today = pick(0);
+    return curLine + (today ? `今天（${today.md}）：${today.text}。` : "");
+  } catch (e) {
+    console.warn(`[tools] 查天气失败: ${e.message}`);
+    return "天气源暂时拿不到数据，稍后再试。";
+  }
+}
+
+/** 短句天气意图：只用于大模型不可用时的本地降级，避免劫走长问题 */
+export function isWeatherQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 24) return false;
+  if (/讲|故事|笑话|唱|写|画|做|打开|设置|提醒|闹钟|课表|翻译|空调/.test(t)) return false;
+  if (!/天气|下雨|雨伞|带伞|气温|温度|多少度|几度|冷不冷|热不热|降温|升温/.test(t)) return false;
+  if (t === "天气") return true;
+  return /[？?]|吗|呢|怎么样|如何|多少|几度|会不会|要不要|冷不冷|热不热|问|查|看看|预报|今天|明天|后天|未来|三天|这几天/.test(t);
+}
+
 export async function executeTool(name, args = {}, ctx, session) {
   switch (name) {
     case "get_time": {
@@ -293,55 +357,7 @@ export async function executeTool(name, args = {}, ctx, session) {
     }
 
     case "get_weather": {
-      const wc = ctx.config.weather ?? {};
-      if (wc.enabled === false) return "天气功能没开启。";
-      try {
-        const w = await ctx.weather.get(wc);
-        if (!w || !w.text) return "天气源暂时拿不到数据。";
-        const city = w.city || wc.city;
-        const fc = Array.isArray(w.forecast) ? w.forecast : [];
-        const h = Number.isFinite(w.humidity) ? `，湿度 ${w.humidity}%` : "";
-
-        const raw = String(args.day ?? "今天");
-        const day = /明天/.test(raw) ? 1 : /后天/.test(raw) ? 2 : /未来|几|三/.test(raw) ? 3 : 0;
-
-        /* 按北京时间的日期匹配，跨零点也能对上；对不上再按序号兜底 */
-        const bj = new Date(Date.now() + 8 * 3600e3);
-        const pick = (n) => {
-          const date = new Date(bj.getTime() + n * 86400e3).toISOString().slice(0, 10);
-          const d = fc.find((x) => x.date === date) || fc[n];
-          if (!d) return null;
-          const t = [d.min, d.max].every(Number.isFinite) ? `${d.min}~${d.max}℃` : `${d.max}℃`;
-          const md = /^(\d{4})-(\d{2})-(\d{2})$/.test(d.date)
-            ? `${Number(d.date.slice(5, 7))}月${Number(d.date.slice(8, 10))}日`
-            : d.date;
-          return { md, text: `${d.text}，${t}，降雨概率 ${d.rainChance}%` };
-        };
-
-        if (day === 3) {
-          const lines = [["今天", 0], ["明天", 1], ["后天", 2]]
-            .map(([name, i]) => {
-              const p = pick(i);
-              return p ? `${name}（${p.md}）：${p.text}` : null;
-            })
-            .filter(Boolean);
-          if (!lines.length) return "预报暂时拿不到数据。";
-          return `${city}未来三天：${lines.join("；")}。`;
-        }
-
-        if (day === 1 || day === 2) {
-          const name = day === 1 ? "明天" : "后天";
-          const p = pick(day);
-          if (!p) return `预报里暂时没有${name}的数据。`;
-          return `${city}${name}（${p.md}）：${p.text}。`;
-        }
-
-        const curLine = `${city}当前天气：${w.text}，气温 ${w.temp}℃${h}。`;
-        const today = pick(0);
-        return curLine + (today ? `今天（${today.md}）：${today.text}。` : "");
-      } catch (e) {
-        return `查天气失败：${e.message}`;
-      }
+      return weatherReply(args.day ?? "今天", ctx);
     }
 
     case "get_news": {
