@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #ifndef MYESP32_FW
-#define MYESP32_FW "0.1.53"
+#define MYESP32_FW "0.1.54"
 #endif
 
 /** 信息栏数据（服务器下发的 + 板子本地读的） */
@@ -76,8 +76,12 @@ esp_err_t ws_client_start(const char *host_port, const char *token);
 /** 发 JSON 控制消息（返回是否成功：链路假死/上行锁死时失败） */
 int ws_send_json(const char *json);
 
-/** 发一帧 Opus 音频 */
+/** 发一帧上行音频（Opus 帧或 PCM 裸流，看 ws_uplink_is_pcm()） */
 void ws_send_audio(const uint8_t *frame, size_t len);
+
+/** 服务器是否要求上行发 PCM 裸流（16k/mono/s16）。
+ *  hello_ack 里 audio="pcm" 时为 1——服务器端没有 Opus 解码器时走这条路。 */
+int ws_uplink_is_pcm(void);
 
 int ws_connected(void);
 

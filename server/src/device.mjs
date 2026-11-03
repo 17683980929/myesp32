@@ -96,6 +96,7 @@ export class DeviceSession {
     this.page = "home";
 
     this.recording = false;
+    this.pcmBuf = [];           /* 服务器端没有 Opus 解码器时，设备改发 PCM 裸流 */
     this.opus = null;
     try {
       this.opus = new OpusToPcm();
@@ -251,7 +252,10 @@ export class DeviceSession {
   onMessage(data, isBinary) {
     this.lastRxAt = Date.now();
     if (isBinary) {
-      if (this.recording && this.opus) this.opus.push(Buffer.from(data));
+      if (this.recording) {
+        if (this.opus) this.opus.push(Buffer.from(data));
+        else this.pcmBuf.push(Buffer.from(data));   /* hello 里已让设备改发 PCM */
+      }
       return;
     }
 
@@ -328,7 +332,8 @@ export class DeviceSession {
 
     this.dropDuplicateSessions();
     await this.pushInfo(true);
-    this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data)));
+    this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data),
+                             this.opus ? "opus" : "pcm"));
     /* 补课轮次：设备重启后 Lua 里的 R 会回到 1，这里按服务器记的再推一次 */
     const round = Number(this.ctx.config.timetable?.round) || 1;
     this.send(build.evt("round_" + round));
@@ -379,6 +384,7 @@ export class DeviceSession {
     this.recording = true;
     this.aborted = false;
     this.opus?.reset();
+    this.pcmBuf.length = 0;
     log(`[${this.sid}] 开始录音`);
   }
 
@@ -387,6 +393,7 @@ export class DeviceSession {
     if (!this.recording) return;
     this.recording = false;
     this.opus?.reset();                 /* 丢掉录音期间飘来的"静音"帧 */
+    this.pcmBuf.length = 0;
     const resuming = this.hold && this.hold === this.turn;
     this.clearHold();
     log(resuming ? `[${this.sid}] 用户没说话 → 从断点继续播报` : `[${this.sid}] 用户没说话 → 回到待命`);
@@ -396,17 +403,20 @@ export class DeviceSession {
     if (!this.recording) return;
     this.recording = false;
 
-    if (!this.opus) {
-      log(`[${this.sid}] Opus 解码器不可用，忽略本次录音`);
-      this.send(build.err("语音识别暂不可用"));
-      return;
+    let pcm, durMs;
+    if (this.opus) {
+      pcm = this.opus.drain();
+      durMs = this.opus.durationMs;
+      this.opus.reset();
+    } else {
+      /* 服务器端 Opus 解码器不可用（Node 24 + opusscript 的 WASM）：设备已按
+       * hello_ack 的 audio="pcm" 改发 16k/mono/s16 裸流，这里直接拼起来即可 */
+      pcm = Buffer.concat(this.pcmBuf);
+      this.pcmBuf.length = 0;
+      durMs = (pcm.length / 2 / 16000) * 1000;
     }
 
-    const pcm = this.opus.drain();
-    const durMs = this.opus.durationMs;
-    this.opus.reset();
-
-    log(`[${this.sid}] 录音结束 ${durMs.toFixed(0)}ms / ${pcm.length} 字节`);
+    log(`[${this.sid}] 录音结束 ${durMs.toFixed(0)}ms / ${pcm.length} 字节${this.opus ? "" : "（PCM 上行）"}`);
     if (pcm.length < 1600) {              /* < 50ms，基本是误触 */
       log(`[${this.sid}] 音频太短，忽略`);
       if (this.hold && this.hold === this.turn) {   /* 当作“没说话”：解开挂起，继续播报 */

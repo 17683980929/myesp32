@@ -1,4 +1,4 @@
-/* 自动生成，请勿手改。来源: 300x400_阈值（值班室背景版） */
+/* 自动生成，请勿手改。来源: pet_layers */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 
@@ -12,7 +12,7 @@
 /* 1 = 素材是「背景板 + 角色层」：固件先画背景板，再按遮罩贴角色，
  *     角色可以单独上下位移，背景保持静止；
  * 0 = 整帧图（连背景一起画）：只能整屏直贴，背景会跟着动。 */
-#define PET_LAYERED  0
+#define PET_LAYERED  1
 
 extern const uint8_t pet_sm_01_idle[];
 extern const uint8_t pet_sm_02_idle_blink[];

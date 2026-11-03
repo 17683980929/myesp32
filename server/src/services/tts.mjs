@@ -280,9 +280,37 @@ export async function textToOpusFrames(text, opts = {}) {
  * 上行：设备发来的 Opus 帧 → PCM（喂给 ASR）
  * ══════════════════════════════════════════════════════════════════════════ */
 
+/* opusscript 的 Application 常量并非所有版本都导出（云端装过旧版就会抛），
+ * 用数值兜底：2049 = OPUS_APPLICATION_AUDIO。 */
+const OPUS_APP_AUDIO = (OpusScript.Application && OpusScript.Application.AUDIO) || 2049;
+let s_opusErr = "";
+
+/** 构造 Opus 解码器：逐个方案试，失败原因留在 s_opusErr 里给 /api/status 看 */
+export function createOpusDecoder() {
+  const tries = [
+    ["Application.AUDIO", () => new OpusScript(SAMPLE_RATE, CHANNELS, OPUS_APP_AUDIO)],
+    ["默认参数", () => new OpusScript(SAMPLE_RATE, CHANNELS)],
+  ];
+  for (const [label, fn] of tries) {
+    try {
+      s_opusErr = "";
+      return fn();
+    } catch (e) {
+      s_opusErr = label + ": " + (e?.message || e);
+    }
+  }
+  return null;
+}
+
+/** 语音识别是否可用（云端排查用） */
+export function opusStatus() {
+  return { ok: !s_opusErr, err: s_opusErr };
+}
+
 export class OpusToPcm {
   constructor() {
-    this.dec = new OpusScript(SAMPLE_RATE, CHANNELS, OpusScript.Application.AUDIO);
+    this.dec = createOpusDecoder();
+    if (!this.dec) throw new Error(s_opusErr || "Opus 解码器初始化失败");
     this.chunks = [];
     this.frames = 0;
     this.samples = 0;

@@ -259,7 +259,7 @@ const cHeader = readFileSync("firmware/components/ui/pet_frames.h", "utf8");
 const LAYERED = /#define PET_LAYERED\s+1/.test(cHeader);
 const frameArrays = new Map();
 {
-  const re = /const uint8_t (pet_sm_\w+)\[(\d+)\] = \{([\s\S]*?)\};/g;
+  const re = /const uint8_t (\w+)\[(\d+)\] = \{([\s\S]*?)\};/g;
   let m;
   while ((m = re.exec(cFrames))) {
     frameArrays.set(m[1], Buffer.from((m[3].match(/0x[0-9a-f]{2}/g) || []).map((h) => parseInt(h, 16))));
@@ -334,7 +334,7 @@ function renderHome(frameSym) {
 
   /* 块3 状态 */
   const row = (y, label, value) => {
-    if (/[^ -]/.test(label)) drawCjk(PANEL_X + 4, y, label, 1, 1);
+    if (/[^\x00-\x7f]/.test(label)) drawCjk(PANEL_X + 4, y, label, 1, 1);
     else drawText(PANEL_X + 4, y + 5, label, 1, 1);
     drawCjk(PANEL_X + PANEL_SEP_W - cjkW(value, 1) - 4, y, value, 1, 1);
   };

@@ -190,8 +190,10 @@ static void mic_task(void *arg)
             continue;
         }
 
-        /* 懒创建编码器（首次录音时） */
-        if (!enc) {
+        /* 懒创建编码器（首次录音时）。服务器没有 Opus 解码器时会要求 PCM 上行，
+         * 那条路不需要编码器，连创建都省了（省 ~30KB 栈峰值和 CPU）。 */
+        int pcm_up = ws_uplink_is_pcm();
+        if (!pcm_up && !enc) {
             int err = 0;
             enc = opus_encoder_create(AUD_SAMPLE_HZ, 1, OPUS_APPLICATION_VOIP, &err);
             if (!enc || err != OPUS_OK) {
@@ -203,7 +205,7 @@ static void mic_task(void *arg)
             opus_encoder_ctl(enc, OPUS_SET_BITRATE(24000));
             opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(3));
         }
-        if (s_enc_reset) {
+        if (!pcm_up && s_enc_reset) {
             opus_encoder_ctl(enc, OPUS_RESET_STATE);
             s_enc_reset = 0;
             frames = 0;
@@ -226,9 +228,18 @@ static void mic_task(void *arg)
         fill += READ_CHUNK;
 
         if (fill >= FRAME_SAMPLES) {
-            int n = opus_encode(enc, mono, FRAME_SAMPLES, enc_buf, sizeof(enc_buf));
+            int n;
+            const uint8_t *uplink = enc_buf;
+            if (pcm_up) {
+                /* PCM 上行：960 样点 × 2 字节 = 1920 字节/60ms（32KB/s），WiFi 完全够；
+                 * 服务器直接拼起来喂 ASR，不需要任何解码库 */
+                uplink = (const uint8_t *)mono;
+                n = FRAME_SAMPLES * 2;
+            } else {
+                n = opus_encode(enc, mono, FRAME_SAMPLES, enc_buf, sizeof(enc_buf));
+            }
             if (n > 0) {
-                ws_send_audio(enc_buf, (size_t)n);
+                ws_send_audio(uplink, (size_t)n);
                 if (++frames == 1) {
                     float sr[4];
                     slot_rms(in, READ_CHUNK * 2, sr);

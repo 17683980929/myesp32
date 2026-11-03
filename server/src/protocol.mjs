@@ -42,8 +42,10 @@ export const SRV = {
 /* ── 构造辅助 ─────────────────────────────────────────────────────────── */
 
 export const build = {
-  helloAck: (sid, page, info) =>
-    ({ t: SRV.HELLO_ACK, sid, pv: PROTOCOL_VERSION, page, info }),
+  /* audio：设备上行用哪种编码。"opus"=服务器能解码；"pcm"=服务器没有解码器，
+   * 设备直接发 16k/mono/s16 裸流（固件会按这个字段切换） */
+  helloAck: (sid, page, info, audio = "opus") =>
+    ({ t: SRV.HELLO_ACK, sid, pv: PROTOCOL_VERSION, page, info, audio }),
   info: (info) => ({ t: SRV.INFO, ...info }),
   page: (name) => ({ t: SRV.PAGE, name }),
   stt: (text) => ({ t: SRV.STT, text }),

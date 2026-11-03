@@ -175,6 +175,39 @@ function downsample(src, ow, oh, thr) {
   return frame;
 }
 
+/** 带 alpha 的缩放：返回 {char, mask}
+ *  mask = alpha 覆盖率 ≥ 0.5；char = 不透明区域内墨点覆盖率 ≥ COVER_T */
+function downsampleLayers(src, ow, oh, thr) {
+  const char = new Uint8Array(STRIDE * oh);
+  const mask = new Uint8Array(STRIDE * oh);
+  const sx = src.w / ow, sy = src.h / oh;
+
+  for (let dy = 0; dy < oh; dy++) {
+    const y0 = dy * sy, y1 = y0 + sy;
+    for (let dx = 0; dx < ow; dx++) {
+      const x0 = dx * sx, x1 = x0 + sx;
+      let area = 0, aSum = 0, inkSum = 0;
+      for (let y = Math.floor(y0); y < Math.ceil(y1); y++) {
+        const wy = Math.min(y1, y + 1) - Math.max(y0, y);
+        if (wy <= 0) continue;
+        for (let x = Math.floor(x0); x < Math.ceil(x1); x++) {
+          const wx = Math.min(x1, x + 1) - Math.max(x0, x);
+          if (wx <= 0) continue;
+          const w = wx * wy;
+          area += w;
+          const a = src.alphaAt(x, y);
+          aSum += (a / 255) * w;
+          if (a >= 128 && src.isInk(x, y)) inkSum += w;
+        }
+      }
+      if (area <= 0) continue;
+      if (aSum / area >= 0.5) mask[dy * STRIDE + (dx >> 3)] |= 0x80 >> (dx & 7);
+      if (inkSum / area >= thr) char[dy * STRIDE + (dx >> 3)] |= 0x80 >> (dx & 7);
+    }
+  }
+  return { char, mask };
+}
+
 /* ── PNG 编码（预览用，灰度 8bit）────────────────────────────────── */
 
 function writePngGray(file, w, h, get) {
@@ -246,20 +279,18 @@ let total = 0;
 
 if (layered) {
   const bg = readPng(path.join(LAYER_DIR, "bg.png"));
-  if (bg.w !== OUT_W || bg.h !== OUT_H)
-    throw new Error(`bg.png 必须是 ${OUT_W}×${OUT_H}，实际 ${bg.w}×${bg.h}`);
-
-  const bgBits = packBits(OUT_W, OUT_H, (x, y) => bg.isInk(x, y));
+  const bgBits = (bg.w === OUT_W && bg.h === OUT_H)
+    ? packBits(OUT_W, OUT_H, (x, y) => bg.isInk(x, y))
+    : downsample(bg, OUT_W, OUT_H, COVER_T);
   cBody += emitArray("pet_bg", bgBits, "背景板");
   total += bgBits.length;
 
   for (const [file, sym] of FRAMES) {
     const src = readPng(path.join(LAYER_DIR, `${file}.png`));
-    if (src.w !== OUT_W || src.h !== OUT_H)
-      throw new Error(`${file}.png 必须是 ${OUT_W}×${OUT_H}，实际 ${src.w}×${src.h}`);
-
-    const mask = packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128);
-    const char = packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128 && src.isInk(x, y));
+    const { char, mask } = (src.w === OUT_W && src.h === OUT_H)
+      ? { char: packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128 && src.isInk(x, y)),
+          mask: packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128) }
+      : downsampleLayers(src, OUT_W, OUT_H, COVER_T);
 
     let covered = 0;
     for (const b of mask) covered += [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => (b >> k) & 1).length;

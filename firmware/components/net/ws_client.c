@@ -21,6 +21,7 @@ static esp_websocket_client_handle_t s_cli = NULL;
 static ws_handler_t s_handler = NULL;
 static ws_bin_handler_t s_bin_handler = NULL;
 static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1 };
+static int  s_uplink_pcm = 0;   /* 1 = 上行改发 PCM 裸流（hello_ack 的 audio 字段决定） */
 
 /* 文本帧组装缓冲：esp_websocket_client 1.4+ 按每次 read 分片派发
  * （payload_offset/payload_len），大帧会拆成多次回调——攒齐整包再解析。
@@ -74,7 +75,16 @@ static void on_data(char *data, int len)
 
     const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(root, "t"));
 
-    if (t && !strcmp(t, "ping")) {
+    if (t && !strcmp(t, "hello_ack")) {
+        /* 服务器告诉我们上行用什么编码：没有 Opus 解码器时改发 PCM 裸流，
+         * 这样服务器侧就不需要任何解码库（Node 24 + opusscript 的 WASM 会炸） */
+        const char *audio = cJSON_GetStringValue(cJSON_GetObjectItem(root, "audio"));
+        int pcm = (audio && !strcmp(audio, "pcm")) ? 1 : 0;
+        if (pcm != s_uplink_pcm) {
+            s_uplink_pcm = pcm;
+            ESP_LOGI(TAG, "上行音频：%s", pcm ? "PCM 裸流（服务器无 Opus 解码器）" : "Opus");
+        }
+    } else if (t && !strcmp(t, "ping")) {
         /* 服务器保活 ping：回 pong（服务器端判活用），但 ping 本身不算
          * "应用数据活跃"、不刷新 s_last_rx_ms——否则半死链路里只有 ping
          * 能通行时，网络看门狗永远不会触发（这次卡死排查的教训）。 */
@@ -293,6 +303,8 @@ void ws_send_audio(const uint8_t *frame, size_t len)
     tx_result(esp_websocket_client_send_bin(s_cli, (const char *)frame, len,
                                             pdMS_TO_TICKS(300)) >= 0);
 }
+
+int ws_uplink_is_pcm(void) { return s_uplink_pcm; }
 
 int ws_connected(void)
 {

@@ -27,6 +27,7 @@ import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
+import { opusStatus } from "./services/tts.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -363,6 +364,7 @@ export async function handleHttp(req, res, ctx) {
           })),
           weather: ctx.weather.data,
           weatherError: ctx.weather.lastError,
+          voice: opusStatus(),   /* opus 解码器是否可用：为 false 时设备会说"语音识别暂不可用" */
         });
       }
 
