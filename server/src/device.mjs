@@ -254,7 +254,7 @@ export class DeviceSession {
     if (isBinary) {
       if (this.recording) {
         if (this.opus) this.opus.push(Buffer.from(data));
-        else this.pcmBuf.push(Buffer.from(data));   /* hello 里已让设备改发 PCM */
+        else if (this.canPcm) this.pcmBuf.push(Buffer.from(data));   /* hello 里已让设备改发 PCM */
       }
       return;
     }
@@ -327,13 +327,17 @@ export class DeviceSession {
     this.mac = m.mac ?? "";
     this.fw = m.fw ?? "";
     this.caps = Array.isArray(m.caps) ? m.caps : [];
+    /* 设备能力协商：老固件不认 audio 字段，会继续发 Opus。
+     * 只有固件声明了 "pcm" 能力，服务器才在没有 Opus 解码器时改收 PCM——
+     * 否则会把 Opus 字节当成 PCM 拼进 ASR，识别成一堆噪音。 */
+    this.canPcm = this.caps.includes("pcm");
     this.presence = presenceFor(this.mac, this.sid);
     log(`[${this.sid}] hello mac=${this.mac} fw=${this.fw} caps=${this.caps.join(",")}`);
 
     this.dropDuplicateSessions();
     await this.pushInfo(true);
     this.send(build.helloAck(this.sid, this.page, buildTimeInfo(this.ctx.weather.data),
-                             this.opus ? "opus" : "pcm"));
+                             this.opus || !this.canPcm ? "opus" : "pcm"));
     /* 补课轮次：设备重启后 Lua 里的 R 会回到 1，这里按服务器记的再推一次 */
     const round = Number(this.ctx.config.timetable?.round) || 1;
     this.send(build.evt("round_" + round));
