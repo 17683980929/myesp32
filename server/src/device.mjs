@@ -22,6 +22,8 @@ const log = (...a) => console.log("[dev]", ...a);
 
 /** 单句 TTS 合成超时：Baidu 偶发卡住会让设备端"沉默卡在说话中"，超时后干净收尾 */
 const TTS_TIMEOUT_MS = 12000;
+/** 打断后等用户说话的上限：固件最长录 30 秒，超过说明 resume 丢了/设备卡在录音 */
+const HOLD_TIMEOUT_MS = 35000;
 function withTimeout(p, ms) {
   let t;
   return Promise.race([
@@ -102,6 +104,7 @@ export class DeviceSession {
     this.turn = 0;              /* 对话回合号：新录音会 ++ 作废旧回合（用户打断） */
     this.streaming = 0;         /* 正在按实时节奏发音频的回合号（可挂起/续播） */
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
+    this.holdAt = 0;            /* 挂起开始的时刻（超时兜底用） */
     this.timers = [];
     this.lastStat = null;
     this.lastRxAt = Date.now();    /* 最近一次上行时刻：90 秒没有就清僵尸会话 */
@@ -220,6 +223,11 @@ export class DeviceSession {
 
   /** 某回合是否已作废（被新录音打断 / 会话关闭） */
   stale(turn) { return this.aborted || turn !== this.turn; }
+
+  clearHold() {
+    this.hold = 0;
+    this.holdAt = 0;
+  }
 
   /** 等设备上报一次新状态（at 晚于 since）；超时返回 undefined，不拿旧值充数 */
   async waitBt(since, timeoutMs) {
@@ -354,10 +362,12 @@ export class DeviceSession {
        * 非流式阶段（如短句播报/思考中）没有可续的东西，维持作废语义。 */
       if (this.streaming) {
         this.hold = this.streaming;
+        this.holdAt = Date.now();
         log(`[${this.sid}] 用户打断 → 暂停当前播报（等用户说话）`);
       } else {
         log(`[${this.sid}] 用户打断，作废上一轮回答`);
         this.turn++;
+        this.clearHold();
       }
     }
     this.recording = true;
@@ -371,13 +381,9 @@ export class DeviceSession {
     if (!this.recording) return;
     this.recording = false;
     this.opus?.reset();                 /* 丢掉录音期间飘来的"静音"帧 */
-    if (this.hold && this.hold === this.turn) {   /* 挂起的回合仍然有效才续播 */
-      this.hold = 0;
-      log(`[${this.sid}] 用户没说话 → 从断点继续播报`);
-    } else {
-      this.hold = 0;
-      log(`[${this.sid}] 用户没说话 → 回到待命`);
-    }
+    const resuming = this.hold && this.hold === this.turn;
+    this.clearHold();
+    log(resuming ? `[${this.sid}] 用户没说话 → 从断点继续播报` : `[${this.sid}] 用户没说话 → 回到待命`);
   }
 
   async onRecStop() {
@@ -397,6 +403,10 @@ export class DeviceSession {
     log(`[${this.sid}] 录音结束 ${durMs.toFixed(0)}ms / ${pcm.length} 字节`);
     if (pcm.length < 1600) {              /* < 50ms，基本是误触 */
       log(`[${this.sid}] 音频太短，忽略`);
+      if (this.hold && this.hold === this.turn) {   /* 当作“没说话”：解开挂起，继续播报 */
+        this.clearHold();
+        log(`[${this.sid}] 短音频按未说话处理 → 继续播报`);
+      }
       return;
     }
 
@@ -408,7 +418,7 @@ export class DeviceSession {
   async talk(pcm) {
     const cfg = this.ctx.config;
     const myTurn = ++this.turn;         /* 本回合编号：被新录音/断开作废时失效 */
-    if (this.hold) this.hold = 0;       /* 说新事了：旧回合的挂起一并作废 */
+    if (this.hold) this.clearHold();    /* 说新事了：旧回合的挂起一并作废 */
     this.busy = true;
 
     try {
@@ -791,11 +801,19 @@ export class DeviceSession {
         if (this.hold === myTurn) {
           /* 被打断挂起：不发帧；恢复时整句重发（设备端缓冲已清，
            * 字幕与声音重新对齐，最多重听一句） */
-          resend = true;
-          ci = 0;
-          wasHeld = true;
-          await sleep(30);
-          continue;
+          if (!this.holdAt || Date.now() - this.holdAt > HOLD_TIMEOUT_MS) {
+            log(`[${this.sid}] 等用户说话超时 → 继续播报`);
+            this.clearHold();
+            resend = true;
+            ci = 0;
+            wasHeld = true;
+          } else {
+            resend = true;
+            ci = 0;
+            wasHeld = true;
+            await sleep(30);
+            continue;
+          }
         }
         if (resend) {
           if (wasHeld) {                       /* 挂起恢复：重开设备端播放流 */
@@ -948,7 +966,7 @@ export class DeviceSession {
       producing = false;
       await sender;
       if (this.streaming === myTurn) this.streaming = 0;
-      if (this.hold === myTurn) this.hold = 0;   /* 回合结束了，挂起一并清掉 */
+      if (this.hold === myTurn) this.clearHold();   /* 回合结束了，挂起一并清掉 */
     }
 
     if (full && !this.stale(myTurn)) {

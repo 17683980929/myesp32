@@ -10,25 +10,7 @@ import { build, buildTimeInfo } from "../protocol.mjs";
 import { getConfig, saveConfig } from "../config.mjs";
 import { getHotNews } from "./news.mjs";
 import { webSearch } from "./search.mjs";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-/* 课表数据（服务器侧，供"明天有没有课/今天几节"这类问答用；
- * 板子上的 Lua 画布是另一份展示用数据） */
-const TT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../data/timetable.json");
-function loadTimetable() {
-  try {
-    const tt = JSON.parse(readFileSync(TT_PATH, "utf8"));
-    const round = Number(getConfig().timetable?.round) || 0;
-    const key = tt.rounds?.[round - 1];
-    if (key) {
-      const M = { A: "1", B: "18", C: "20", D: "24" };
-      tt.grid = key.map((s) => [...s].map((ch) => (ch === "-" ? null : M[ch] || null)));
-    }
-    return tt;
-  } catch { return null; }
-}
+import { loadTimetable } from "./timetable.mjs";
 
 const PAGE_ZH = { home: "主页", portal: "功能画布", func: "功能页" };
 const BT_ZH = { 0: "关闭", 1: "广播中", 2: "已连接" };

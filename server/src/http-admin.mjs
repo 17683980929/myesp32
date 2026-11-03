@@ -538,19 +538,87 @@ export async function handleHttp(req, res, ctx) {
         if (code.length > 6000)
           return json(res, 400, { ok: false, msg: `脚本过长（${code.length} 字符，上限 6000）` });
 
-        const cfg = getConfig();
-        saveConfig({ lua: { prevScript: cfg.lua.activeScript, activeScript: code } });
+        const cfg0 = getConfig();
+        const old = cfg0.lua?.activeScript || "";
+        const current = old || currentLuaScript();
+        const checked = validateLua(code, current);
+        if (!checked.ok)
+          return json(res, 400, { ok: false, msg: "脚本没有通过校验", errors: checked.errors, warnings: checked.warnings });
 
-        /* 推给所有在线设备，等执行回执（每台最多 8 秒；热点/弱网回执可能慢） */
-        const id = Date.now() % 100000;
         const list = [...ctx.devices];
+        const privileged = (checked.permissions || []).filter((x) =>
+          ["gpio", "gpio:all", "audio", "rtc", "wifi", "ble", "sys", "fs", "net"].includes(x)
+        );
+        if (privileged.length && list.length) {
+          const needFw = privileged.some((x) => x === "fs" || x === "net") ? 38 : 37;
+          const fwOk = list.every((d) => {
+            const m = String(d.fw || "").match(/^0\.1\.(\d+)/);
+            return m && Number(m[1]) >= needFw;
+          });
+          if (!fwOk)
+            return json(res, 409, {
+              ok: false,
+              msg: `脚本申请了扩展权限，设备固件需 ≥ 0.1.${needFw}；请先 OTA 再下发`,
+              errors: ["设备固件过低，无法加载扩展 Lua API"],
+            });
+        }
+
+        /* 0.1.39+ 先 dry-run：语法/顶层逻辑/定时器回调通过才真正下发；
+         * 老固件不支持 dry-run，退回直接下发 */
+        const checkReady = list.length && list.every((d) => {
+          const m = String(d.fw || "").match(/^0\.1\.(\d+)/);
+          return m && Number(m[1]) >= 39;
+        });
+        if (checkReady) {
+          const cid = Date.now() % 100000;
+          const checks = await Promise.all(list.map((d) => d.sendLua(cid, checked.code, 10000, true)));
+          const failed = checks.find((r) => !r.ok);
+          if (failed) {
+            const why = String(failed.out || (failed.timeout ? "预检查超时" : "设备预检查失败")).slice(0, 600);
+            log(`下发 Lua 脚本：设备预检查失败（${why.slice(0, 100)}），未下发`);
+            return json(res, 502, {
+              ok: false,
+              msg: "设备预检查失败，未下发",
+              precheckFailed: true,
+              results: checks,
+              errors: [why],
+              warnings: checked.warnings,
+            });
+          }
+        }
+
+        const oldPrev = cfg0.lua?.prevScript || "";
+        saveConfig({ lua: { prevScript: old, activeScript: checked.code } });
+
         if (!list.length) {
           log("下发 Lua 脚本 → 0 台设备（已保存）");
-          return json(res, 200, { ok: true, sent: 0, id, results: [] });
+          return json(res, 200, { ok: true, sent: 0, results: [], warnings: checked.warnings });
         }
-        const results = await Promise.all(list.map((d) => d.sendLua(id, code, 8000)));
+
+        /* 推给所有在线设备，等执行回执（每台最多 8 秒；热点/弱网回执可能慢） */
+        const id = (Date.now() + 1) % 100000;
+        const results = await Promise.all(list.map((d) => d.sendLua(id, checked.code, 8000)));
+        const okCount = results.filter((r) => r.ok).length;
         log(`下发 Lua 脚本 → ${list.length} 台设备：${results.map((r) => (r.ok ? "成功" : r.timeout ? "回执超时" : "失败")).join(" ")}`);
-        return json(res, 200, { ok: true, sent: list.length, id, results });
+
+        if (okCount === 0) {
+          saveConfig({ lua: { prevScript: oldPrev, activeScript: old } });
+          const rid = (id + 1) % 100000;
+          await Promise.all(list.map((d) => d.sendLua(rid, old, 8000))).catch(() => {});
+          const failed = results.find((r) => !r.ok);
+          const why = String(failed?.out || (failed?.timeout ? "回执超时" : "设备未返回错误信息")).slice(0, 600);
+          log(`下发 Lua 脚本失败，已回滚：${why.slice(0, 100)}`);
+          return json(res, 502, {
+            ok: false,
+            msg: "设备加载失败，已回滚上一版",
+            rolledBack: true,
+            results,
+            errors: [why],
+            warnings: checked.warnings,
+          });
+        }
+
+        return json(res, 200, { ok: true, sent: list.length, id, results, warnings: checked.warnings });
       }
 
       /* ── 创造模式：Lua AI ───────────────────────────────────────── */

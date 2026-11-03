@@ -10,12 +10,10 @@
  *   morningEnabled / morningHour / morningMinute
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { ROOT, getConfig, saveConfig } from "../config.mjs";
+import { getConfig, saveConfig } from "../config.mjs";
 import { build } from "../protocol.mjs";
+import { loadTimetable } from "./timetable.mjs";
 
-const TT_PATH = path.resolve(ROOT, "data/timetable.json");
 const log = (...a) => console.log("[remind]", ...a);
 
 function beijing() {
@@ -43,22 +41,20 @@ function daysToAnniversary(mmdd, b) {
   return Math.round((target - today) / 86400e3);
 }
 
-function loadTimetable() {
-  try {
-    const tt = JSON.parse(readFileSync(TT_PATH, "utf8"));
-    const round = Number(getConfig().timetable?.round) || 0;
-    const key = tt.rounds?.[round - 1];
-    if (key) {
-      const M = { A: "1", B: "18", C: "20", D: "24" };
-      tt.grid = key.map((s) => [...s].map((ch) => (ch === "-" ? null : M[ch] || null)));
-    }
-    return tt;
-  } catch { return null; }
-}
-
 function toMin(hhmm) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
   return m ? Number(m[1]) * 60 + Number(m[2]) : -1;
+}
+
+/** 课间喝水/下课提醒的那一分钟（-1 = 这个课间不提醒）。
+ *  用课表里每节自己的 end，缺失才回退到全局 classEndAfterMin。 */
+export function waterAtMinute(period, next, fallbackMin) {
+  const start = toMin(period?.time);
+  const endRaw = toMin(period?.end);
+  const end = endRaw >= 0 ? endRaw : (start >= 0 ? start + fallbackMin : -1);
+  const nextStart = toMin(next?.time);
+  if (end < 0 || nextStart < 0 || nextStart - end < 5) return -1;
+  return nextStart - end <= 30 ? Math.floor((end + nextStart) / 2) : end + 5;
 }
 
 /** 到点的闹钟：下发 alarm 事件（带待办文本），提醒音由固件本地合成 */
@@ -190,10 +186,8 @@ export function startReminders(ctx) {
       const periods = tt.periods || [];
       for (let r = 0; r < periods.length - 1; r++) {
         if (!tt.grid[r]?.[col]) continue;             /* 只在她刚上完课的课间提醒 */
-        const end = toMin(periods[r].time) + dur;
-        const next = toMin(periods[r + 1].time);
-        if (end < 0 || next < 0 || next - end < 5) continue;
-        const at = (next - end <= 30) ? Math.floor((end + next) / 2) : end + 5;
+        const at = waterAtMinute(periods[r], periods[r + 1], dur);
+        if (at < 0) continue;
         if (b.minute === at) {
           const key = `${b.ymd}:water${r}`;
           if (!fired.has(key)) {

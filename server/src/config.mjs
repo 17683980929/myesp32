@@ -38,7 +38,7 @@ export const DEFAULT_CONFIG = {
   reminders: {
     enabled: true,
     classLeadMin: 10,        /* 课前几分钟提醒 */
-    classEndAfterMin: 40,    /* 上课后多少分钟算下课（补课表每节 40 分钟） */
+    classEndAfterMin: 40,    /* 课表缺少 end 时的回退值（正常用 periods.end） */
     waterEnabled: true,      /* 喝水：她上完课后的课间中点提醒 */
     waterStartHour: 8,
     waterEndHour: 17,
@@ -241,6 +241,7 @@ export function maskedConfig() {
   c.tts.tencent.secretId = mask(c.tts.tencent.secretId);
   c.tts.tencent.secretKey = mask(c.tts.tencent.secretKey);
   c.server.authToken = mask(c.server.authToken);
+  c.server.uploadToken = mask(c.server.uploadToken);
   c.server.adminPassword = mask(c.server.adminPassword);
   c.wifi.password = mask(c.wifi.password);
   return c;
