@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define PET_FRAME_W  200
-#define PET_FRAME_H  267
+#define PET_FRAME_H  300
 #define PET_FRAME_STRIDE  25
 #define PET_FRAME_COUNT  16
 

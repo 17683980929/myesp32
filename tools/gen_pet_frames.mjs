@@ -1,14 +1,17 @@
 /**
- * gen_pet_frames.mjs — 把 300×400 1-bit 黑白帧转成固件用的 200×267 1bpp C 数组
+ * gen_pet_frames.mjs — 把 300×400 1-bit 黑白帧转成固件用的 200×300 1bpp C 数组
  *
  * 用法：node tools/gen_pet_frames.mjs [素材目录] [输出目录]
  *   默认素材：assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值
  *   默认输出：firmware/components/ui/pet_frames.c / pet_frames.h
  *
  * 约定（与 lcd_blit 一致）：
- *   - 每行 25 字节（200/8），共 267 行 = 6675 字节
+ *   - 每行 25 字节（200/8），共 300 行 = 7500 字节
  *   - MSB 在左，bit=1 表示墨（黑）
  *   - 缩放用面积覆盖率 + 阈值，保住细线（纯最近邻会丢掉 1px 的墙线）
+ *
+ * 尺寸：源 3:4 → 屏上桌宠区 2:3，纵向拉伸约 12% 填满 200×300（上下不再留白边）。
+ *   背景是白墙白地面，留白本来也不明显，但填满后桌面下沿和屏幕底边齐平，更像一整块背景。
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -19,7 +22,7 @@ const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_pet_with_bg/300
 const OUT_DIR = process.argv[3] || "firmware/components/ui";
 
 const OUT_W = 200;
-const OUT_H = 267;
+const OUT_H = 300;
 const STRIDE = OUT_W / 8;
 
 /* 覆盖率阈值：0.38 是拿 3 帧对比调出来的——0.5 会让墙上的窗框细线断掉，

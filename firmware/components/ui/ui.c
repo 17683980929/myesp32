@@ -32,7 +32,7 @@
 #define PET_W            200
 #endif
 #ifndef PET_H
-#define PET_H            267
+#define PET_H            300
 #endif
 
 #define PANEL_X          208
@@ -209,25 +209,90 @@ static int seg_time_w(const char *s, int h)
 
 /* ── 图标（程序化绘制，免字体）────────────────────────────────────── */
 
-/** 温度计：圆头 + 竖管 + 刻度 */
-static void icon_therm(int x, int y, int s, int ink)
+/** 整数平方根（水滴下半圆用，半径 ≤ 15，直接试） */
+static int isqrt_i(int v)
 {
-    int r = s / 5;
-    lcd_fill(x + s / 4, y + s / 3, r * 2, s / 2, ink);
-    lcd_fill(x + s / 4 + r / 2, y + s / 3 + r, r, s / 3, ink);
-    for (int i = 0; i < 3; i++)
-        lcd_hline(x + s * 2 / 3, y + s / 3 + i * (s / 4), s / 3, ink);
+    int r = 0;
+    while ((r + 1) * (r + 1) <= v) r++;
+    return r;
 }
 
-/** 水滴 */
+/** 实心圆（含边界）。+r 让边缘不是锯齿方块 */
+static void disc(int cx, int cy, int r, int ink)
+{
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = 0;
+        while ((dx + 1) * (dx + 1) + dy * dy <= r * r + r) dx++;
+        lcd_hline(cx - dx, cy + dy, dx * 2 + 1, ink);
+    }
+}
+
+/** 1 像素圆环 */
+static void ring(int cx, int cy, int r, int ink)
+{
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= r * r && d2 > (r - 1) * (r - 1)) lcd_pixel(cx + dx, cy + dy, ink);
+        }
+}
+
+/** 直线段（Bresenham），太阳光芒用 */
+static void line_seg(int x0, int y0, int x1, int y1, int ink)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    for (;;) {
+        lcd_pixel(x0, y0, ink);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+/** 温度计：圆底 + 空心管 + 水银柱 + 刻度（22px 下能看清是温度计，不是黑棒） */
+static void icon_therm(int x, int y, int s, int ink)
+{
+    int r  = s / 5;                       /* 球半径 */
+    int cx = x + s * 2 / 5;
+    int cy = y + s - r - 1;
+
+    lcd_fill(cx - r + 1, y + r, 2, cy - y - r + 1, ink);        /* 左壁 */
+    lcd_fill(cx + r - 2, y + r, 2, cy - y - r + 1, ink);        /* 右壁 */
+    lcd_hline(cx - r + 1, y + r, r * 2 - 1, ink);               /* 管顶 */
+
+    lcd_fill(cx - 1, y + s / 2, 3, cy - (y + s / 2) + 1, ink);  /* 水银 */
+    disc(cx, cy, r, ink);                                        /* 球 */
+
+    for (int i = 0; i < 3; i++)                                  /* 刻度 */
+        lcd_hline(cx + r + 2, y + r + i * (s / 5), s / 4, ink);
+}
+
+/** 水滴：上尖下圆，实心；左上挖一个白点当高光，避免整块死黑 */
 static void icon_drop(int x, int y, int s, int ink)
 {
+    int cx = x + s / 2;
+    int r  = s * 3 / 10;
+    int cy = y + s - r;                  /* 下半圆圆心 */
+    int hTop = cy - y;
+
     for (int j = 0; j < s; j++) {
-        int half = (j < s / 3) ? (j * s / 2 / (s / 3) / 2 + 1)
-                               : (s / 2 - (j - s / 3) * (s / 2) / (s - s / 3));
+        int yy = y + j;
+        int half;
+        if (j < hTop) {
+            half = hTop > 0 ? (r * j * j) / (hTop * hTop) : r;   /* 二次曲线：尖头 */
+        } else {
+            int dy = yy - cy;
+            int v = r * r - dy * dy;
+            half = v > 0 ? isqrt_i(v) : 0;
+        }
         if (half < 1) half = 1;
-        lcd_hline(x + s / 2 - half, y + j, half * 2, ink);
+        lcd_hline(cx - half, yy, half * 2 + 1, ink);
     }
+    lcd_fill(cx - r / 2 - 1, y + s * 2 / 3, 2, 3, 0);
 }
 
 /** 电池：外框 + 电极 + 电量条 */
@@ -243,26 +308,33 @@ static void icon_battery(int x, int y, int s, int pct, int ink)
 /** 云 + 太阳（天气用，kind 0=晴 1=多云 2=阴 3=雨） */
 static void icon_weather(int x, int y, int s, int kind, int ink)
 {
-    if (kind == 0) {                     /* 晴：圆 + 4 条光线 */
-        int r = s / 3;
-        lcd_fill(x + s / 4, y + s / 4, r * 2, r * 2, ink);
-        lcd_fill(x + s / 4 + r / 4, y + s / 4 + r / 4, r * 3 / 2, r * 3 / 2, 0);
-        lcd_hline(x + s / 2 - r / 2, y - s / 8, r + s / 8, ink);
-        lcd_hline(x + s / 2 - r / 2, y + s - s / 4, r + s / 8, ink);
-        lcd_fill(x - s / 8, y + s / 2 - r / 2, s / 8, r + s / 8, ink);
-        lcd_fill(x + s - s / 4, y + s / 2 - r / 2, s / 8, r + s / 8, ink);
+    if (kind == 0) {                     /* 晴：圆环 + 8 条光芒 */
+        int cx = x + s / 2, cy = y + s / 2, r = s / 4;
+        static const int8_t DIR[8][2] = {
+            { 1, 0 }, { 1, 1 }, { 0, 1 }, { -1, 1 },
+            { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 },
+        };
+        ring(cx, cy, r, ink);
+        for (int i = 0; i < 8; i++) {
+            int dx = DIR[i][0], dy = DIR[i][1];
+            line_seg(cx + dx * (r + 2), cy + dy * (r + 2),
+                     cx + dx * (r + 4), cy + dy * (r + 4), ink);
+        }
         return;
     }
-    /* 云（多云/阴/雨通用） */
-    int r = s / 4;
-    lcd_fill(x + s / 6, y + s / 2, s * 2 / 3, s / 3, ink);
-    lcd_fill(x + s / 4, y + s / 4, r * 2, r * 2, ink);
-    lcd_fill(x + s / 2, y + s / 5, r * 2 + s / 6, r * 2, ink);
-    if (kind == 3) {                     /* 雨：3 条斜线 */
+
+    /* 云：三个圆 + 平底（比三个方块叠起来像云） */
+    int r1 = s / 5, r2 = s / 4;
+    int by = y + s * 3 / 5;
+    disc(x + s * 3 / 10, by, r1, ink);
+    disc(x + s * 11 / 20, y + s / 2, r2, ink);
+    disc(x + s * 4 / 5, by, r1 - 1, ink);
+    lcd_fill(x + s / 5, by, s * 3 / 5, r1, ink);
+
+    if (kind == 3) {                     /* 雨：3 条短斜线 */
         for (int i = 0; i < 3; i++) {
-            int bx = x + s / 4 + i * (s / 3);
-            for (int j = 0; j < s / 4; j++)
-                lcd_pixel(bx + j / 2, y + s * 3 / 4 + j, ink);
+            int bx = x + s / 3 + i * (s / 5);
+            line_seg(bx, y + s * 4 / 5, bx + 2, y + s * 4 / 5 + s / 5, ink);
         }
     }
 }
@@ -299,8 +371,10 @@ static uint32_t s_act_next;
 static int      s_act_dy;              /* 动作期间的垂直偏移（像素） */
 static int      s_act_bob;             /* 1 = 这个动作要上下动 */
 
-/* 上下动的波形：0→-1→-2→-3→-2→-1→0→0，70ms 一步（约 14fps），比两档方波顺得多 */
-static const int8_t BOB_STEPS[] = { 0, -1, -2, -3, -2, -1, 0, 0 };
+/* 上下动的波形：0→+1→+2→+3→+2→+1→0→0，70ms 一步（约 14fps），比两档方波顺得多。
+ * 帧改成满屏 200×300 后没有上边距，只往下动：露出的是顶部白墙（看不出来），
+ * 往上动会在桌面下沿露出白条。 */
+static const int8_t BOB_STEPS[] = { 0, 1, 2, 3, 2, 1, 0, 0 };
 #define BOB_STEP_MS 70
 
 /* 喝水提醒状态（函数在 draw_pet 之后实现，变量必须先声明） */
@@ -333,7 +407,7 @@ static void draw_pet(void)
     if (fi < 0 || fi >= PET_FRAME_COUNT) fi = 0;
     const uint8_t *frame = PET_NAMES[fi];
     int dx = (PET_W - PET_FRAME_W) / 2;              /* 0 */
-    int dy = (LCD_H - PET_FRAME_H) / 2 + s_act_dy;   /* 16，随机动作时轻微上下 */
+    int dy = (LCD_H - PET_FRAME_H) / 2 + s_act_dy;   /* 0（帧已满屏），随机动作时轻微下移 */
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
 }
 
@@ -421,7 +495,7 @@ static void draw_water_bubble(void)
 {
     int w = 176, h = 46;
     int x = (PET_W - w) / 2;
-    int y = 4 + s_water_dy;                  /* 桌宠帽子之上（帧顶部 48 行是空白） */
+    int y = 4 + s_water_dy;                  /* 压住顶部白墙/挂钟，帽子之上 */
     lcd_fill(x, y, w, h, 0);                 /* 白底，盖住桌宠 */
     lcd_rect(x, y, w, h, 1);
     lcd_rect(x + 2, y + 2, w - 4, h - 4, 1);
@@ -722,11 +796,11 @@ static void render_panel(void)
     int vx = PANEL_X + 76;               /* 数值列 */
 
     /* 天气：图标 + 城市标签 + 天气文字（1 倍）+ 气温（2 倍） */
-    icon_weather(PANEL_X, 86, 24, weather_kind(info->weather), 1);
+    icon_weather(PANEL_X, 84, 24, weather_kind(info->weather), 1);
     char city[16];
     city_label(city, sizeof(city), info->city);
-    if (has_cjk(city)) draw_cjk(PANEL_X + 32, 90, city, 1, 1);
-    else               draw_text(PANEL_X + 32, 95, city, 1, 1);
+    if (has_cjk(city)) draw_cjk(PANEL_X + 32, 88, city, 1, 1);
+    else               draw_text(PANEL_X + 32, 93, city, 1, 1);
 
     /* 天气文字保持 1 倍（和城市标签同高），气温 2 倍（和其他数值同规格） */
     const char *wtext = info->weather[0] ? info->weather : "--";
@@ -735,38 +809,38 @@ static void render_panel(void)
         snprintf(wtemp, sizeof(wtemp), " %d`C", info->weather_temp);
 
     int ww1 = has_cjk(wtext) ? cjk_text_w(wtext, 1) : text_w(wtext, 1);
-    if (has_cjk(wtext)) draw_cjk(vx, 90, wtext, 1, 1);
-    else                draw_text(vx, 95, wtext, 1, 1);
+    if (has_cjk(wtext)) draw_cjk(vx, 88, wtext, 1, 1);
+    else                draw_text(vx, 93, wtext, 1, 1);
 
     if (wtemp[0]) {
         if (vx + ww1 + text_w(wtemp, 2) <= PANEL_X + PANEL_SEP_W)
-            draw_text(vx + ww1, 90, wtemp, 2, 1);
+            draw_text(vx + ww1, 88, wtemp, 2, 1);
         else
-            draw_text(vx + ww1, 95, wtemp, 1, 1);          /* 实在放不下才降到 1 倍 */
+            draw_text(vx + ww1, 93, wtemp, 1, 1);          /* 实在放不下才降到 1 倍 */
     }
 
     /* 温度 */
-    icon_therm(PANEL_X, 120, 22, 1);
-    draw_cjk(PANEL_X + 32, 122, "温度", 1, 1);
+    icon_therm(PANEL_X, 118, 22, 1);
+    draw_cjk(PANEL_X + 32, 120, "温度", 1, 1);
     char tb[32];
     if (t > -50 && t < 150) snprintf(tb, sizeof(tb), "%.1f`C", t);
     else                    snprintf(tb, sizeof(tb), "--`C");
-    draw_text(vx, 122, tb, 2, 1);
+    draw_text(vx, 120, tb, 2, 1);
 
     /* 湿度 */
-    icon_drop(PANEL_X, 152, 22, 1);
-    draw_cjk(PANEL_X + 32, 154, "湿度", 1, 1);
+    icon_drop(PANEL_X, 150, 22, 1);
+    draw_cjk(PANEL_X + 32, 152, "湿度", 1, 1);
     char hb[16];
     if (h >= 0) snprintf(hb, sizeof(hb), "%d%%", (int)(h + 0.5f));
     else        snprintf(hb, sizeof(hb), "--%%");
-    draw_text(vx, 154, hb, 2, 1);
+    draw_text(vx, 152, hb, 2, 1);
 
-    /* 电量（图标和文字视线对齐：文字墨迹 186..200，图标同高） */
-    icon_battery(PANEL_X, 188, 26, bat, 1);
-    draw_cjk(PANEL_X + 32, 186, "电量", 1, 1);
+    /* 电量（图标和文字视线对齐：文字墨迹 184..198，图标同高） */
+    icon_battery(PANEL_X, 186, 26, bat, 1);
+    draw_cjk(PANEL_X + 32, 184, "电量", 1, 1);
     char bb[16];
     snprintf(bb, sizeof(bb), "%d%%", bat);
-    draw_text(vx, 186, bb, 2, 1);
+    draw_text(vx, 184, bb, 2, 1);
 
     /* 底部：连接状态（WiFi / 服务器 / 蓝牙）。
      * 字幕已经整栏挪到右栏（说话中显示），底部不再画字幕。

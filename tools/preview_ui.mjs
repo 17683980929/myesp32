@@ -158,21 +158,67 @@ function segTimeW(str, h) {
 
 /* ── 图标（与 ui.c 一致）──────────────────────────────────────────── */
 
+const isqrt = (v) => { let r = 0; while ((r + 1) * (r + 1) <= v) r++; return r; };
+
+function disc(cx, cy, r, ink = 1) {
+  for (let dy = -r; dy <= r; dy++) {
+    let dx = 0;
+    while ((dx + 1) * (dx + 1) + dy * dy <= r * r + r) dx++;
+    hline(cx - dx, cy + dy, dx * 2 + 1, ink);
+  }
+}
+
+function ring(cx, cy, r, ink = 1) {
+  for (let dy = -r; dy <= r; dy++)
+    for (let dx = -r; dx <= r; dx++) {
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= r * r && d2 > (r - 1) * (r - 1)) px(cx + dx, cy + dy, ink);
+    }
+}
+
+function lineSeg(x0, y0, x1, y1, ink = 1) {
+  let dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
+  let dy = y1 > y0 ? y0 - y1 : y1 - y0, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    px(x0, y0, ink);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+
 function iconTherm(x, y, s, ink = 1) {
   const r = Math.floor(s / 5);
-  fill(x + Math.floor(s / 4), y + Math.floor(s / 3), r * 2, Math.floor(s / 2), ink);
-  fill(x + Math.floor(s / 4) + Math.floor(r / 2), y + Math.floor(s / 3) + r, r, Math.floor(s / 3), ink);
-  for (let i = 0; i < 3; i++) hline(x + Math.floor((s * 2) / 3), y + Math.floor(s / 3) + i * Math.floor(s / 4), Math.floor(s / 3), ink);
+  const cx = x + Math.floor((s * 2) / 5);
+  const cy = y + s - r - 1;
+  fill(cx - r + 1, y + r, 2, cy - y - r + 1, ink);
+  fill(cx + r - 2, y + r, 2, cy - y - r + 1, ink);
+  hline(cx - r + 1, y + r, r * 2 - 1, ink);
+  fill(cx - 1, y + Math.floor(s / 2), 3, cy - (y + Math.floor(s / 2)) + 1, ink);
+  disc(cx, cy, r, ink);
+  for (let i = 0; i < 3; i++) hline(cx + r + 2, y + r + i * Math.floor(s / 5), Math.floor(s / 4), ink);
 }
 
 function iconDrop(x, y, s, ink = 1) {
+  const cx = x + Math.floor(s / 2);
+  const r = Math.floor((s * 3) / 10);
+  const cy = y + s - r;
+  const hTop = cy - y;
   for (let j = 0; j < s; j++) {
-    let half = j < Math.floor(s / 3)
-      ? Math.floor((j * s) / 2 / Math.floor(s / 3) / 2 + 1)
-      : Math.floor(s / 2 - ((j - Math.floor(s / 3)) * Math.floor(s / 2)) / (s - Math.floor(s / 3)));
+    const yy = y + j;
+    let half;
+    if (j < hTop) half = hTop > 0 ? Math.floor((r * j * j) / (hTop * hTop)) : r;
+    else {
+      const dy = yy - cy;
+      const v = r * r - dy * dy;
+      half = v > 0 ? isqrt(v) : 0;
+    }
     if (half < 1) half = 1;
-    hline(x + Math.floor(s / 2) - half, y + j, half * 2, ink);
+    hline(cx - half, yy, half * 2 + 1, ink);
   }
+  fill(cx - Math.floor(r / 2) - 1, y + Math.floor((s * 2) / 3), 2, 3, 0);
 }
 
 function iconBattery(x, y, s, pct, ink = 1) {
@@ -185,23 +231,23 @@ function iconBattery(x, y, s, pct, ink = 1) {
 
 function iconWeather(x, y, s, kind, ink = 1) {
   if (kind === 0) {
-    const r = Math.floor(s / 3);
-    fill(x + Math.floor(s / 4), y + Math.floor(s / 4), r * 2, r * 2, ink);
-    fill(x + Math.floor(s / 4) + Math.floor(r / 4), y + Math.floor(s / 4) + Math.floor(r / 4), Math.floor((r * 3) / 2), Math.floor((r * 3) / 2), 0);
-    hline(x + Math.floor(s / 2) - Math.floor(r / 2), y - Math.floor(s / 8), r + Math.floor(s / 8), ink);
-    hline(x + Math.floor(s / 2) - Math.floor(r / 2), y + s - Math.floor(s / 4), r + Math.floor(s / 8), ink);
-    fill(x - Math.floor(s / 8), y + Math.floor(s / 2) - Math.floor(r / 2), Math.floor(s / 8), r + Math.floor(s / 8), ink);
-    fill(x + s - Math.floor(s / 4), y + Math.floor(s / 2) - Math.floor(r / 2), Math.floor(s / 8), r + Math.floor(s / 8), ink);
+    const cx = x + Math.floor(s / 2), cy = y + Math.floor(s / 2), r = Math.floor(s / 4);
+    const DIR = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+    ring(cx, cy, r, ink);
+    for (const [dx, dy] of DIR)
+      lineSeg(cx + dx * (r + 2), cy + dy * (r + 2), cx + dx * (r + 4), cy + dy * (r + 4), ink);
     return;
   }
-  const r = Math.floor(s / 4);
-  fill(x + Math.floor(s / 6), y + Math.floor(s / 2), Math.floor((s * 2) / 3), Math.floor(s / 3), ink);
-  fill(x + Math.floor(s / 4), y + Math.floor(s / 4), r * 2, r * 2, ink);
-  fill(x + Math.floor(s / 2), y + Math.floor(s / 5), r * 2 + Math.floor(s / 6), r * 2, ink);
+  const r1 = Math.floor(s / 5), r2 = Math.floor(s / 4);
+  const by = y + Math.floor((s * 3) / 5);
+  disc(x + Math.floor((s * 3) / 10), by, r1, ink);
+  disc(x + Math.floor((s * 11) / 20), y + Math.floor(s / 2), r2, ink);
+  disc(x + Math.floor((s * 4) / 5), by, r1 - 1, ink);
+  fill(x + Math.floor(s / 5), by, Math.floor((s * 3) / 5), r1, ink);
   if (kind === 3) {
     for (let i = 0; i < 3; i++) {
-      const bx = x + Math.floor(s / 4) + i * Math.floor(s / 3);
-      for (let j = 0; j < Math.floor(s / 4); j++) px(bx + Math.floor(j / 2), y + Math.floor((s * 3) / 4) + j, ink);
+      const bx = x + Math.floor(s / 3) + i * Math.floor(s / 5);
+      lineSeg(bx, y + Math.floor((s * 4) / 5), bx + 2, y + Math.floor((s * 4) / 5) + Math.floor(s / 5), ink);
     }
   }
 }
@@ -233,7 +279,7 @@ const BOX_L = 202, BOX_R = 396;
 
 function renderHome(frameSym) {
   fb.fill(0);
-  blit(frameArrays.get(frameSym), 200, 267, 0, 16);
+  blit(frameArrays.get(frameSym), 200, 300, 0, 0);
 
   for (let y = 0; y < H; y++) px(BOX_L, y, 1);
   for (const y of [2, 72, 212, 298]) hline(BOX_L, y, BOX_R - BOX_L, 1);
@@ -246,23 +292,23 @@ function renderHome(frameSym) {
 
   const vx = PANEL_X + 76;
   /* 块2 环境 */
-  iconWeather(PANEL_X, 86, 24, 0, 1);
-  drawCjk(PANEL_X + 32, 90, "通城", 1, 1);
+  iconWeather(PANEL_X, 84, 24, 0, 1);
+  drawCjk(PANEL_X + 32, 88, "通城", 1, 1);
   const ww1 = cjkW("晴", 1);
-  drawCjk(vx, 90, "晴", 1, 1);
-  drawText(vx + ww1, 90, " 18`C", 2, 1);
+  drawCjk(vx, 88, "晴", 1, 1);
+  drawText(vx + ww1, 88, " 18`C", 2, 1);
 
-  iconTherm(PANEL_X, 120, 22, 1);
-  drawCjk(PANEL_X + 32, 122, "温度", 1, 1);
-  drawText(vx, 122, "24.5`C", 2, 1);
+  iconTherm(PANEL_X, 118, 22, 1);
+  drawCjk(PANEL_X + 32, 120, "温度", 1, 1);
+  drawText(vx, 120, "24.5`C", 2, 1);
 
-  iconDrop(PANEL_X, 152, 22, 1);
-  drawCjk(PANEL_X + 32, 154, "湿度", 1, 1);
-  drawText(vx, 154, "58%", 2, 1);
+  iconDrop(PANEL_X, 150, 22, 1);
+  drawCjk(PANEL_X + 32, 152, "湿度", 1, 1);
+  drawText(vx, 152, "58%", 2, 1);
 
-  iconBattery(PANEL_X, 188, 26, 76, 1);
-  drawCjk(PANEL_X + 32, 186, "电量", 1, 1);
-  drawText(vx, 186, "76%", 2, 1);
+  iconBattery(PANEL_X, 186, 26, 76, 1);
+  drawCjk(PANEL_X + 32, 184, "电量", 1, 1);
+  drawText(vx, 184, "76%", 2, 1);
 
   /* 块3 状态 */
   const row = (y, label, value) => {
