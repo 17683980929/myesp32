@@ -1,11 +1,32 @@
 /**
- * services/weather.mjs — 天气（wttr.in，免注册）
+ * services/weather.mjs — 天气（wttr.in 主源，Open-Meteo 备用）
  *
  * 板子不直接联网，服务器拉好天气后随信息栏一起推给设备。
  *
  * wttr.in 的 lang=zh 参数实测不可靠（返回的 lang_zh 还是英文），
  * 所以这里自己维护一张英文→中文的映射表。按「越具体越先匹配」排序。
+ *
+ * 国内服务器上 wttr.in 经常整站连不上；失败自动切 Open-Meteo。
+ * Open-Meteo 的地理编码查不到县级中文名（如“通城县”），
+ * 可在 data/weather-cities.json 里直接补经纬度。
  */
+
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const CITY_COORDS_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)), "../../data/weather-cities.json");
+let cityCoordsCache;
+function cityCoords(city) {
+  if (cityCoordsCache === undefined) {
+    try { cityCoordsCache = JSON.parse(readFileSync(CITY_COORDS_PATH, "utf8")); }
+    catch { cityCoordsCache = {}; }
+  }
+  const v = cityCoordsCache?.[city];
+  const lat = Number(v?.lat), lon = Number(v?.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+}
 
 const WEATHER_MAP = [
   /* 先匹配长的、具体的，避免 "Patchy light rain" 被 "Light rain" 抢先 */
@@ -96,7 +117,9 @@ async function fetchJson(url, timeoutMs) {
     return await res.json();
   } catch (e) {
     if (e.name === "AbortError") throw new Error(`请求超时（${timeoutMs}ms）`);
-    throw e;
+    /* fetch failed 只是壳，真正原因在 cause（ENOTFOUND / ECONNREFUSED / 证书…） */
+    const cause = e.cause?.code || e.cause?.message;
+    throw new Error(cause ? `${e.message}（${cause}）` : e.message);
   } finally {
     clearTimeout(timer);
   }
@@ -104,7 +127,7 @@ async function fetchJson(url, timeoutMs) {
 
 /** 主源：wttr.in */
 async function fetchWttr(city) {
-  const j = await fetchJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, 10000);
+  const j = await fetchJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, 6000);
   const cur = j?.current_condition?.[0];
   if (!cur) throw new Error("天气返回格式异常");
 
@@ -134,17 +157,23 @@ function wmoText(code) {
   return WMO_ZH[Number(code)] ?? "未知";
 }
 
-/** 备用源：Open-Meteo（免注册；先地理编码拿经纬度） */
+/** 备用源：Open-Meteo（免注册；优先用内置坐标，否则地理编码） */
 async function fetchOpenMeteo(city) {
-  const g = await fetchJson(
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}` +
-    `&count=1&language=zh&format=json`, 6000);
-  const hit = g?.results?.[0];
-  if (!hit || !Number.isFinite(hit.latitude) || !Number.isFinite(hit.longitude))
-    throw new Error("城市定位失败");
+  let loc = cityCoords(city);
+  if (loc) {
+    console.log(`[weather] 使用内置坐标：${city} ${loc.lat},${loc.lon}`);
+  } else {
+    const g = await fetchJson(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}` +
+      `&count=1&language=zh&format=json`, 6000);
+    const hit = g?.results?.[0];
+    if (!hit || !Number.isFinite(hit.latitude) || !Number.isFinite(hit.longitude))
+      throw new Error(`城市定位失败（查不到「${city}」，可在 data/weather-cities.json 补经纬度）`);
+    loc = { lat: hit.latitude, lon: hit.longitude };
+  }
 
   const j = await fetchJson(
-    `https://api.open-meteo.com/v1/forecast?latitude=${hit.latitude}&longitude=${hit.longitude}` +
+    `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}` +
     `&current=temperature_2m,relative_humidity_2m,weather_code` +
     `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
     `&timezone=Asia%2FShanghai&forecast_days=3`, 8000);
@@ -171,12 +200,25 @@ async function fetchOpenMeteo(city) {
   };
 }
 
-/** 拉一次天气（当前 + 3 天预报）；wttr.in 失败自动切 Open-Meteo */
+/** 拉一次天气（当前 + 3 天预报）；wttr.in 失败自动切 Open-Meteo。
+ *  wttr 失败后 10 分钟内直接走备用源，避免每次刷新都白等超时。 */
+let wttrDownUntil = 0;
+
 export async function fetchWeather(cfg) {
   const city = (cfg.city || "北京").trim();
+
+  if (Date.now() < wttrDownUntil) {
+    try {
+      return await fetchOpenMeteo(city);
+    } catch (e) {
+      throw new Error(`天气源都失败：wttr=刚失败已暂时跳过；open-meteo=${e.message}`);
+    }
+  }
+
   try {
     return await fetchWttr(city);
   } catch (e1) {
+    wttrDownUntil = Date.now() + 10 * 60_000;
     try {
       const w = await fetchOpenMeteo(city);
       console.log(`[weather] wttr 失败（${e1.message}），改用 Open-Meteo`);
