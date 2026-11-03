@@ -1,35 +1,41 @@
 /**
- * gen_pet_frames.mjs — 把 300×400 1-bit 黑白帧转成固件用的 200×300 1bpp C 数组
+ * gen_pet_frames.mjs — 把桌宠素材转成固件用的 200×300 1bpp C 数组
+ *
+ * 两种素材模式，自动判断：
+ *
+ * ① 分层模式（推荐，素材到位后自动启用）
+ *    目录：assets/pet_layers/
+ *      bg.png              200×300 背景板（黑=墨；不带 alpha 也行）
+ *      01_idle.png …       200×300 RGBA，alpha>0 的像素算角色，其余透出背景
+ *    产物：pet_bg[] + 每帧 pet_sm_XX[]（角色墨点）+ pet_sm_XX_m[]（角色遮罩）
+ *    固件：PET_LAYERED=1 → 先画背景板，再按遮罩贴角色，角色可以单独上下位移
+ *
+ * ② 整帧模式（当前素材就是这样）
+ *    目录：assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值
+ *      01_idle.png …       300×400 1-bit 黑白整帧（连背景一起画）
+ *    产物：只有 pet_sm_XX[]，PET_LAYERED=0，固件整屏直贴，背景不能单独静止
  *
  * 用法：node tools/gen_pet_frames.mjs [素材目录] [输出目录]
- *   默认素材：assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值
- *   默认输出：firmware/components/ui/pet_frames.c / pet_frames.h
- *
- * 约定（与 lcd_blit 一致）：
- *   - 每行 25 字节（200/8），共 300 行 = 7500 字节
- *   - MSB 在左，bit=1 表示墨（黑）
- *   - 缩放用面积覆盖率 + 阈值，保住细线（纯最近邻会丢掉 1px 的墙线）
- *
- * 尺寸：源 3:4 → 屏上桌宠区 2:3，纵向拉伸约 12% 填满 200×300（上下不再留白边）。
- *   背景是白墙白地面，留白本来也不明显，但填满后桌面下沿和屏幕底边齐平，更像一整块背景。
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { inflateSync, deflateSync } from "node:zlib";
 import path from "node:path";
 
+const LAYER_DIR = process.env.PET_LAYERS || "assets/pet_layers";
 const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值";
 const OUT_DIR = process.argv[3] || "firmware/components/ui";
 
 const OUT_W = 200;
 const OUT_H = 300;
 const STRIDE = OUT_W / 8;
+const FRAME_BYTES = STRIDE * OUT_H;
 
 /* 覆盖率阈值：0.38 是拿 3 帧对比调出来的——0.5 会让墙上的窗框细线断掉，
  * 0.25 又会让制服阴影糊成一片 */
 const COVER_T = 0.38;
 
-/* ── PNG 解码（只支持非隔行；1/8bit 灰度、8bit RGB/RGBA、调色板）──── */
+/* ── PNG 解码（非隔行；1/8bit 灰度、8bit RGB/RGBA、调色板）────────── */
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -53,7 +59,7 @@ function paeth(a, b, c) {
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
 
-/** 读 PNG，返回 {w,h} 与取墨函数 isInk(x,y) */
+/** 读 PNG，返回 {w,h,isInk(x,y),alphaAt(x,y)} */
 function readPng(file) {
   const buf = readFileSync(file);
   if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error(`${file}: 不是 PNG`);
@@ -107,16 +113,13 @@ function readPng(file) {
     if (depth === 1) {
       const bit = (out[rowBase + (x >> 3)] >> (7 - (x & 7))) & 1;
       if (ctype === 0) return bit === 0;              /* 灰度：0=黑 */
-      const idx = bit;
-      const p = palette ? palette[idx * 3] : 0;
+      const p = palette ? palette[bit * 3] : 0;
       return p < 128;
     }
     if (depth === 8) {
       if (ctype === 0) return out[rowBase + x] < 128;
-      if (ctype === 3) {
-        const idx = out[rowBase + x];
-        return palette[idx * 3] < 128;
-      }
+      if (ctype === 3) return palette[out[rowBase + x] * 3] < 128;
+      if (ctype === 4) return out[rowBase + x * 2] < 128;
       const i = rowBase + x * channels;
       const lum = 0.299 * out[i] + 0.587 * out[i + 1] + 0.114 * out[i + 2];
       return lum < 128;
@@ -124,11 +127,27 @@ function readPng(file) {
     throw new Error(`不支持的位深 ${depth}`);
   };
 
-  return { w, h, isInk };
+  const alphaAt = (x, y) => {
+    if (ctype !== 4 && ctype !== 6) return 255;
+    const i = y * rowBytes + x * channels;
+    return out[i + channels - 1];
+  };
+
+  return { w, h, isInk, alphaAt };
 }
 
-/* ── 缩放：面积覆盖率 ─────────────────────────────────────────────── */
+/* ── 打包 ─────────────────────────────────────────────────────────── */
 
+function packBits(w, h, pred) {
+  const stride = Math.ceil(w / 8);          /* 注意必须取整：200/8=25，写成 (w+7)/8 会得到 25.875 */
+  const bm = new Uint8Array(stride * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      if (pred(x, y)) bm[y * stride + (x >> 3)] |= 0x80 >> (x & 7);
+  return bm;
+}
+
+/** 面积覆盖率下采样（整帧模式用，保住 1px 细线） */
 function downsample(src, ow, oh, thr) {
   const frame = new Uint8Array(STRIDE * oh);
   const sx = src.w / ow, sy = src.h / oh;
@@ -174,7 +193,7 @@ function writePngGray(file, w, h, get) {
   };
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8; ihdr[9] = 0; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  ihdr[8] = 8; ihdr[9] = 0;
   writeFileSync(file, Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", ihdr),
@@ -206,51 +225,90 @@ const FRAMES = [
 
 /* ── 主流程 ───────────────────────────────────────────────────────── */
 
-const previewDir = path.join(OUT_DIR, "../../../assets/pet_frames_preview");
+const layered = existsSync(path.join(LAYER_DIR, "bg.png"));
+const previewDir = "assets/pet_frames_preview";
+const wantPreview = OUT_DIR.includes("firmware");   /* 测试输出到临时目录时不覆盖正式预览 */
 mkdirSync(path.resolve(previewDir), { recursive: true });
+
+function emitArray(sym, bm, note = "") {
+  let ones = 0;
+  for (const b of bm) ones += [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => (b >> k) & 1).length;
+  let s = `/* ${note}${note ? " — " : ""}${ones}/${OUT_W * OUT_H} 墨点 (${((ones / (OUT_W * OUT_H)) * 100).toFixed(1)}%) */\n`;
+  s += `const uint8_t ${sym}[${bm.length}] = {\n`;
+  for (let i = 0; i < bm.length; i += 16) {
+    s += "    " + Array.from(bm.subarray(i, i + 16), (b) => "0x" + b.toString(16).padStart(2, "0")).join(",") + ",\n";
+  }
+  return s + "};\n\n";
+}
 
 let cBody = "";
 let total = 0;
 
-for (const [file, sym] of FRAMES) {
-  const src = readPng(path.join(SRC_DIR, `${file}.png`));
-  const frame = downsample(src, OUT_W, OUT_H, COVER_T);
-  total += frame.length;
+if (layered) {
+  const bg = readPng(path.join(LAYER_DIR, "bg.png"));
+  if (bg.w !== OUT_W || bg.h !== OUT_H)
+    throw new Error(`bg.png 必须是 ${OUT_W}×${OUT_H}，实际 ${bg.w}×${bg.h}`);
 
-  let ones = 0;
-  for (const b of frame) ones += (b & 0x0f).toString(2).replace(/0/g, "").length + (b >> 4).toString(2).replace(/0/g, "").length;
+  const bgBits = packBits(OUT_W, OUT_H, (x, y) => bg.isInk(x, y));
+  cBody += emitArray("pet_bg", bgBits, "背景板");
+  total += bgBits.length;
 
-  cBody += `/* ${file} — 墨点 ${ones}/${OUT_W * OUT_H} (${((ones / (OUT_W * OUT_H)) * 100).toFixed(1)}%) */\n`;
-  cBody += `const uint8_t ${sym}[${frame.length}] = {\n`;
-  for (let i = 0; i < frame.length; i += 16) {
-    const line = Array.from(frame.subarray(i, i + 16), (b) => "0x" + b.toString(16).padStart(2, "0")).join(",");
-    cBody += `    ${line},\n`;
+  for (const [file, sym] of FRAMES) {
+    const src = readPng(path.join(LAYER_DIR, `${file}.png`));
+    if (src.w !== OUT_W || src.h !== OUT_H)
+      throw new Error(`${file}.png 必须是 ${OUT_W}×${OUT_H}，实际 ${src.w}×${src.h}`);
+
+    const mask = packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128);
+    const char = packBits(OUT_W, OUT_H, (x, y) => src.alphaAt(x, y) >= 128 && src.isInk(x, y));
+
+    let covered = 0;
+    for (const b of mask) covered += [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => (b >> k) & 1).length;
+
+    cBody += emitArray(sym, char, file);
+    cBody += emitArray(`${sym}_m`, mask, `${file} 遮罩`);
+    total += char.length + mask.length;
+
+    if (wantPreview)
+      writePngGray(path.resolve(previewDir, `${sym}.png`), OUT_W, OUT_H,
+        (x, y) => ((char[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1 ? 0 : 255));
+
+    console.log(`${file.padEnd(18)} → ${sym.padEnd(22)} 角色 ${((covered / (OUT_W * OUT_H)) * 100).toFixed(1)}%`);
   }
-  cBody += "};\n\n";
 
-  writePngGray(
-    path.resolve(previewDir, `${sym}.png`),
-    OUT_W, OUT_H,
-    (x, y) => ((frame[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1 ? 0 : 255)
-  );
+  cBody += `const uint8_t *const pet_masks[PET_FRAME_COUNT] = {\n`;
+  cBody += FRAMES.map(([, sym]) => `    ${sym}_m,`).join("\n") + "\n};\n";
+} else {
+  for (const [file, sym] of FRAMES) {
+    const src = readPng(path.join(SRC_DIR, `${file}.png`));
+    const frame = downsample(src, OUT_W, OUT_H, COVER_T);
+    total += frame.length;
+    cBody += emitArray(sym, frame, file);
 
-  console.log(`${file.padEnd(18)} → ${sym.padEnd(22)} 墨点 ${((ones / (OUT_W * OUT_H)) * 100).toFixed(1)}%`);
+    if (wantPreview)
+      writePngGray(path.resolve(previewDir, `${sym}.png`), OUT_W, OUT_H,
+        (x, y) => ((frame[y * STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1 ? 0 : 255));
+
+    let ones = 0;
+    for (const b of frame) ones += [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => (b >> k) & 1).length;
+    console.log(`${file.padEnd(18)} → ${sym.padEnd(22)} 墨点 ${((ones / (OUT_W * OUT_H)) * 100).toFixed(1)}%`);
+  }
 }
 
-const cFile =
+const srcNote = layered ? "assets/pet_layers（背景板 + 角色透明层）" : SRC_DIR;
+
+writeFileSync(path.join(OUT_DIR, "pet_frames.c"),
 `/* 自动生成，请勿手改。
- * 来源：assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值
+ * 来源：${srcNote}
  * 生成：node tools/gen_pet_frames.mjs
- * 规格：${OUT_W}×${OUT_H}，1bpp（MSB 在左），1 = 墨（黑），25 字节/行
+ * 规格：${OUT_W}×${OUT_H}，1bpp（MSB 在左），1 = 墨（黑），${STRIDE} 字节/行
  */
 #include <stdint.h>
+#include "pet_frames.h"
 
-${cBody}`;
-
-writeFileSync(path.join(OUT_DIR, "pet_frames.c"), cFile);
+${cBody}`);
 
 writeFileSync(path.join(OUT_DIR, "pet_frames.h"),
-`/* 自动生成，请勿手改。来源: 300x400_阈值（值班室背景版） */
+`/* 自动生成，请勿手改。来源: ${layered ? "pet_layers" : "300x400_阈值（值班室背景版）"} */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 
@@ -261,10 +319,21 @@ writeFileSync(path.join(OUT_DIR, "pet_frames.h"),
 #define PET_FRAME_STRIDE  ${STRIDE}
 #define PET_FRAME_COUNT  ${FRAMES.length}
 
+/* 1 = 素材是「背景板 + 角色层」：固件先画背景板，再按遮罩贴角色，
+ *     角色可以单独上下位移，背景保持静止；
+ * 0 = 整帧图（连背景一起画）：只能整屏直贴，背景会跟着动。 */
+#define PET_LAYERED  ${layered ? 1 : 0}
+
 ${FRAMES.map(([, sym]) => `extern const uint8_t ${sym}[];`).join("\n")}
+
+#if PET_LAYERED
+extern const uint8_t pet_bg[];
+extern const uint8_t *const pet_masks[PET_FRAME_COUNT];
+#endif
 
 #endif
 `);
 
-console.log(`\n共 ${FRAMES.length} 帧，${total} 字节 → ${path.join(OUT_DIR, "pet_frames.c")}`);
+console.log(`\n模式：${layered ? "分层（背景板 + 角色遮罩）" : "整帧（单层）"}`);
+console.log(`共 ${FRAMES.length} 帧，${FRAME_BYTES} 字节/张，合计 ${total} 字节 → ${path.join(OUT_DIR, "pet_frames.c")}`);
 console.log(`预览 → ${path.resolve(previewDir)}`);

@@ -255,6 +255,8 @@ function iconWeather(x, y, s, kind, ink = 1) {
 /* ── 桌宠帧 ───────────────────────────────────────────────────────── */
 
 const cFrames = readFileSync("firmware/components/ui/pet_frames.c", "utf8");
+const cHeader = readFileSync("firmware/components/ui/pet_frames.h", "utf8");
+const LAYERED = /#define PET_LAYERED\s+1/.test(cHeader);
 const frameArrays = new Map();
 {
   const re = /const uint8_t (pet_sm_\w+)\[(\d+)\] = \{([\s\S]*?)\};/g;
@@ -271,6 +273,21 @@ function blit(data, w, h, dx, dy) {
       px(dx + x, dy + y, (data[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1);
 }
 
+/** 带遮罩贴图：只有 mask 位为 1 的像素才写（对应固件 lcd_blit_mask） */
+function blitMask(data, mask, w, h, dx, dy) {
+  const stride = Math.ceil(w / 8);
+  for (let y = 0; y < h; y++) {
+    if (!mask) continue;
+    let any = false;
+    for (let i = 0; i < stride; i++) if (mask[y * stride + i]) { any = true; break; }
+    if (!any) continue;
+    for (let x = 0; x < w; x++) {
+      if (!((mask[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1)) continue;
+      px(dx + x, dy + y, (data[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1);
+    }
+  }
+}
+
 /* ── 布局（与 ui.c draw_panel_divider / draw_panel_cells / render_panel 一致）── */
 
 const PANEL_X = 208;
@@ -279,7 +296,12 @@ const BOX_L = 202, BOX_R = 396;
 
 function renderHome(frameSym) {
   fb.fill(0);
-  blit(frameArrays.get(frameSym), 200, 300, 0, 0);
+  if (LAYERED) {
+    blit(frameArrays.get("pet_bg"), 200, 300, 0, 0);
+    blitMask(frameArrays.get(frameSym), frameArrays.get(frameSym + "_m"), 200, 300, 0, 0);
+  } else {
+    blit(frameArrays.get(frameSym), 200, 300, 0, 0);
+  }
 
   for (let y = 0; y < H; y++) px(BOX_L, y, 1);
   for (const y of [2, 72, 212, 298]) hline(BOX_L, y, BOX_R - BOX_L, 1);

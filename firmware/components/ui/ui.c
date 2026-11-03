@@ -366,12 +366,28 @@ static uint32_t s_pres_absent_at;       /* 连续无人起点（ms），0=没计
 /* 空闲随机小动作：用现成的 10 帧表情（开心/爱心/疑惑/困/睡/敬礼/指路/巡逻/音符/充电），
  * 每 8~20 秒随机播一个 1.2~3 秒。
  *
- * 注意：不做整帧上下抖动。桌宠帧是"连背景一起画"的整屏图，平移整帧会让钟、窗、
- * 桌面跟着一起晃（用户明确反馈"背景在动"）。要只让角色动，必须把背景和角色拆成两层，
- * 而素材里角色和桌子/窗台是画在一起的、没有独立角色层，拆不干净，所以宁可不动。 */
+ * 上下抖动只在分层素材（PET_LAYERED=1）下生效：那时背景板是单独一层，
+ * 平移角色层不会带动背景。整帧素材下 pet_bob_dy() 恒返回 0——
+ * 整帧平移会把钟、窗、桌面一起带走（用户明确反馈过"背景在动"）。 */
 static int      s_act_frame = -1;      /* ≥0 = 正在播随机动作 */
 static uint32_t s_act_until;
 static uint32_t s_act_next;
+static int      s_act_dy;              /* 角色层垂直偏移（只有分层模式非 0） */
+static int      s_act_bob;             /* 1 = 这个动作要上下动 */
+
+/** 上下抖动幅度：只有分层素材下才真的动。
+ *  整帧素材里帧和背景是同一张图，平移会把钟/窗/桌面一起带走，所以恒返回 0。 */
+static int pet_bob_dy(uint32_t now, int enable)
+{
+#if PET_LAYERED
+    static const int8_t BOB[] = { 0, 1, 2, 3, 2, 1, 0, 0 };
+    if (!enable) return 0;
+    return BOB[(now / 70) % (sizeof(BOB) / sizeof(BOB[0]))];
+#else
+    (void)now; (void)enable;
+    return 0;
+#endif
+}
 
 /* 喝水提醒状态（函数在 draw_pet 之后实现，变量必须先声明） */
 static int      s_water_on;
@@ -403,18 +419,28 @@ static void draw_pet(void)
     if (fi < 0 || fi >= PET_FRAME_COUNT) fi = 0;
     const uint8_t *frame = PET_NAMES[fi];
     int dx = (PET_W - PET_FRAME_W) / 2;              /* 0 */
-    int dy = (LCD_H - PET_FRAME_H) / 2;               /* 0（帧满屏） */
+    int dy = (LCD_H - PET_FRAME_H) / 2 + s_act_dy;   /* 满屏 → 0，分层模式可上下动 */
+#if PET_LAYERED
+    /* 两层渲染：背景板固定画一遍，角色按遮罩贴上去。
+     * 只有角色层带 dy，所以背景永远不动——素材到位后这条路自动生效。 */
+    lcd_blit(pet_bg, PET_FRAME_W, PET_FRAME_H, 0, 0, 0);
+    lcd_blit_mask(frame, pet_masks[fi], PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
+#else
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
+#endif
 }
 
 /** 开始一个随机空闲动作：从非语音的 10 个表情里挑一个 */
 static void start_idle_action(uint32_t now)
 {
     static const uint8_t picks[] = { 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+    static const uint8_t bob[]   = { 1, 1, 0, 0, 0, 1, 0, 0, 1, 0 };  /* 开心/爱心/敬礼/音符会动 */
     uint32_t r = esp_random();
     int i = (int)(r % (sizeof(picks) / sizeof(picks[0])));
 
     s_act_frame = picks[i];
+    s_act_bob   = bob[i];
+    s_act_dy    = 0;
     s_act_until = now + 1200 + (r >> 8) % 1800;              /* 1.2~3.0 秒 */
     s_act_next  = now + 8000 + (r >> 16) % 12000;            /* 下次 8~20 秒后 */
 }
@@ -424,6 +450,7 @@ static void pet_tick(uint32_t now)
     if (s_pet != PET_IDLE) {
         /* 语音状态优先：打断随机动作 */
         s_act_frame = -1;
+        s_act_dy = 0;
         switch (s_pet) {
         case PET_LISTENING: s_frame_idx = 2; break;
         case PET_THINKING:  s_frame_idx = 3; break;
@@ -438,6 +465,7 @@ static void pet_tick(uint32_t now)
         if (s_pres_absent_at == 0) s_pres_absent_at = now;
         if ((int32_t)(now - s_pres_absent_at) >= 180000) {
             s_act_frame = -1;
+            s_act_dy = 0;
             s_frame_idx = 9;             /* pet_sm_10_sleeping */
             return;
         }
@@ -447,9 +475,11 @@ static void pet_tick(uint32_t now)
     if (s_act_frame >= 0) {
         if ((int32_t)(now - s_act_until) >= 0) {
             s_act_frame = -1;
+            s_act_dy = 0;
             s_frame_idx = 0;
         } else {
             s_frame_idx = s_act_frame;
+            s_act_dy = pet_bob_dy(now, s_act_bob);
         }
         return;
     }
@@ -613,6 +643,7 @@ int ui_tick(uint32_t now)
 {
     pet_state_t prev_state = s_pet;
     int prev_idx = s_frame_idx;
+    int prev_dy = s_act_dy;
 
     s_pet = (s_voice == UI_VOICE_LISTENING) ? PET_LISTENING :
             (s_voice == UI_VOICE_THINKING)  ? PET_THINKING  :
@@ -645,7 +676,7 @@ int ui_tick(uint32_t now)
     }
 
     int changed = (s_pet != prev_state) || (s_frame_idx != prev_idx) ||
-                  water_changed ||
+                  (s_act_dy != prev_dy) || water_changed ||
                   (s_lua_frame != s_lua_frame_prev) || vol_changed;
     s_lua_frame_prev = s_lua_frame;
     return changed;

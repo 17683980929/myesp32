@@ -26,6 +26,12 @@ void lcd_pixel(int x, int y, int ink);
  *  invert=1 时取反（桌宠帧就是这种，背景 0）。 */
 void lcd_blit(const uint8_t *data, int w, int h, int dx, int dy, int invert);
 
+/** 带遮罩的 1bpp blit（两层渲染用）：只有 mask 位为 1 的像素才写。
+ *  data 和 mask 都是 w×h、行优先 MSB 在前；mask 里 0 的像素保持原样（背景透出来）。
+ *  整行 mask 全 0 时直接跳过，所以角色层只占一小块时开销接近零。 */
+void lcd_blit_mask(const uint8_t *data, const uint8_t *mask,
+                   int w, int h, int dx, int dy, int invert);
+
 /** 实线矩形（只描边） */
 void lcd_rect(int x, int y, int w, int h, int ink);
 

@@ -179,6 +179,30 @@ void lcd_blit(const uint8_t *data, int w, int h, int dx, int dy, int invert)
     }
 }
 
+void lcd_blit_mask(const uint8_t *data, const uint8_t *mask,
+                   int w, int h, int dx, int dy, int invert)
+{
+    int stride = (w + 7) / 8;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *m = mask + y * stride;
+        const uint8_t *d = data + y * stride;
+
+        /* 整行没角色 → 一个字节都不用查（角色只占中间一小块时省掉大半开销） */
+        int empty = 1;
+        for (int i = 0; i < stride; i++) {
+            if (m[i]) { empty = 0; break; }
+        }
+        if (empty) continue;
+
+        for (int x = 0; x < w; x++) {
+            if (!((m[x >> 3] >> (7 - (x & 7))) & 1)) continue;
+            int ink = (d[x >> 3] >> (7 - (x & 7))) & 1;
+            if (invert) ink = !ink;
+            lcd_pixel(dx + x, dy + y, ink);
+        }
+    }
+}
+
 void lcd_rect(int x, int y, int w, int h, int ink)
 {
     for (int i = 0; i < w; i++) { lcd_pixel(x + i, y, ink); lcd_pixel(x + i, y + h - 1, ink); }
