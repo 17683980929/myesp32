@@ -1,8 +1,12 @@
 /**
  * ui.c — 400×300 单色界面
  *
- * 左半 0..199：桌宠（200×267 帧垂直居中）
- * 右半 200..399：信息栏（7 段时钟 + 图标 + 中文标签 + 数值）
+ * 左半 0..199：桌宠（200×267 帧垂直居中，值班室背景版）
+ * x=202 竖线：桌宠与文本的分界，同时是右栏三块的左边线
+ * 右栏 208..392：三块（横线在 y=2/72/212/298）
+ *   块1 时间：7 段时钟 + 日期/星期
+ *   块2 环境：天气 + 温度 + 湿度 + 电量
+ *   块3 状态：WiFi / 服务器 / 蓝牙 / 雷达
  *
  * 时钟走 PCF85063 RTC，秒级刷新（主循环每秒重绘）。
  * 中文标签用 16×16 点阵（font_cjk，由 tools/gen_cjk.ps1 生成）。
@@ -33,6 +37,11 @@
 
 #define PANEL_X          208
 #define PANEL_SEP_W      (LCD_W - PANEL_X - 8)
+
+/* 右栏三块的分隔线：竖线是桌宠/文本分界，同时充当三块的左边线；
+ * 横线 2/72/212/298 把右栏切成「时间 / 环境 / 状态」三块（相邻块共用边线）。 */
+#define PANEL_BOX_L      202
+#define PANEL_BOX_R      396
 
 /* ── 文本（font5x7，支持 1/2/3 倍放大）────────────────────────────── */
 
@@ -643,6 +652,20 @@ static void draw_sub_column(void)
     }
 }
 
+/** 桌宠与文本之间的竖分隔线（整屏高；字幕模式下也保留） */
+static void draw_panel_divider(void)
+{
+    for (int y = 0; y < LCD_H; y++) lcd_pixel(PANEL_BOX_L, y, 1);
+}
+
+/** 右栏三块共用的边线：顶边、两块之间的分界、底边 */
+static void draw_panel_cells(void)
+{
+    static const int ys[] = { 2, 72, 212, 298 };
+    for (size_t i = 0; i < sizeof(ys) / sizeof(ys[0]); i++)
+        lcd_hline(PANEL_BOX_L, ys[i], PANEL_BOX_R - PANEL_BOX_L, 1);
+}
+
 static void render_panel(void)
 {
     /* 说话中（以及最后一句的 4 秒保留期）：右栏整栏显示字幕，不显示板载信息 */
@@ -651,6 +674,7 @@ static void render_panel(void)
         return;
     }
 
+    draw_panel_cells();
     dev_info_t *info = ws_client_info();
 
     /* 本地传感器：5 秒缓存。桌宠动画会以 ~14fps 重绘，若每帧都同步读 SHTC3，
@@ -676,9 +700,9 @@ static void render_panel(void)
         char tbuf[24];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", H, Mi, S);
         int sw = seg_time_w(tbuf, 38);
-        seg_time(PANEL_X + (PANEL_SEP_W - sw) / 2, 6, tbuf, 38, 1);
+        seg_time(PANEL_X + (PANEL_SEP_W - sw) / 2, 8, tbuf, 38, 1);
     } else {
-        draw_text(PANEL_X + (PANEL_SEP_W - text_w("--:--:--", 2)) / 2, 18,
+        draw_text(PANEL_X + (PANEL_SEP_W - text_w("--:--:--", 2)) / 2, 20,
                   "--:--:--", 2, 1);
     }
 
@@ -688,24 +712,21 @@ static void render_panel(void)
         char db[40], wb[16];
         snprintf(db, sizeof(db), "%04d-%02d-%02d", Y, Mo, D);
         snprintf(wb, sizeof(wb), "%s", WD[Wd % 7]);
-        draw_text(PANEL_X, 50, db, 2, 1);
-        draw_text(PANEL_X + PANEL_SEP_W - text_w(wb, 2), 50, wb, 2, 1);
+        draw_text(PANEL_X, 52, db, 2, 1);
+        draw_text(PANEL_X + PANEL_SEP_W - text_w(wb, 2), 52, wb, 2, 1);
     } else {
-        draw_text(PANEL_X, 50, "----/--/--", 2, 1);
-        draw_text(PANEL_X + PANEL_SEP_W - text_w("---", 2), 50, "---", 2, 1);
+        draw_text(PANEL_X, 52, "----/--/--", 2, 1);
+        draw_text(PANEL_X + PANEL_SEP_W - text_w("---", 2), 52, "---", 2, 1);
     }
-
-    /* 分隔线 */
-    lcd_hline(PANEL_X, 72, PANEL_SEP_W, 1);
 
     int vx = PANEL_X + 76;               /* 数值列 */
 
     /* 天气：图标 + 城市标签 + 天气文字（1 倍）+ 气温（2 倍） */
-    icon_weather(PANEL_X, 80, 24, weather_kind(info->weather), 1);
+    icon_weather(PANEL_X, 86, 24, weather_kind(info->weather), 1);
     char city[16];
     city_label(city, sizeof(city), info->city);
-    if (has_cjk(city)) draw_cjk(PANEL_X + 32, 84, city, 1, 1);
-    else               draw_text(PANEL_X + 32, 89, city, 1, 1);
+    if (has_cjk(city)) draw_cjk(PANEL_X + 32, 90, city, 1, 1);
+    else               draw_text(PANEL_X + 32, 95, city, 1, 1);
 
     /* 天气文字保持 1 倍（和城市标签同高），气温 2 倍（和其他数值同规格） */
     const char *wtext = info->weather[0] ? info->weather : "--";
@@ -714,45 +735,45 @@ static void render_panel(void)
         snprintf(wtemp, sizeof(wtemp), " %d`C", info->weather_temp);
 
     int ww1 = has_cjk(wtext) ? cjk_text_w(wtext, 1) : text_w(wtext, 1);
-    if (has_cjk(wtext)) draw_cjk(vx, 84, wtext, 1, 1);
-    else                draw_text(vx, 89, wtext, 1, 1);
+    if (has_cjk(wtext)) draw_cjk(vx, 90, wtext, 1, 1);
+    else                draw_text(vx, 95, wtext, 1, 1);
 
     if (wtemp[0]) {
         if (vx + ww1 + text_w(wtemp, 2) <= PANEL_X + PANEL_SEP_W)
-            draw_text(vx + ww1, 84, wtemp, 2, 1);
+            draw_text(vx + ww1, 90, wtemp, 2, 1);
         else
-            draw_text(vx + ww1, 89, wtemp, 1, 1);          /* 实在放不下才降到 1 倍 */
+            draw_text(vx + ww1, 95, wtemp, 1, 1);          /* 实在放不下才降到 1 倍 */
     }
 
     /* 温度 */
-    icon_therm(PANEL_X, 114, 22, 1);
-    draw_cjk(PANEL_X + 32, 116, "温度", 1, 1);
+    icon_therm(PANEL_X, 120, 22, 1);
+    draw_cjk(PANEL_X + 32, 122, "温度", 1, 1);
     char tb[32];
     if (t > -50 && t < 150) snprintf(tb, sizeof(tb), "%.1f`C", t);
     else                    snprintf(tb, sizeof(tb), "--`C");
-    draw_text(vx, 116, tb, 2, 1);
+    draw_text(vx, 122, tb, 2, 1);
 
     /* 湿度 */
-    icon_drop(PANEL_X, 146, 22, 1);
-    draw_cjk(PANEL_X + 32, 148, "湿度", 1, 1);
+    icon_drop(PANEL_X, 152, 22, 1);
+    draw_cjk(PANEL_X + 32, 154, "湿度", 1, 1);
     char hb[16];
     if (h >= 0) snprintf(hb, sizeof(hb), "%d%%", (int)(h + 0.5f));
     else        snprintf(hb, sizeof(hb), "--%%");
-    draw_text(vx, 148, hb, 2, 1);
+    draw_text(vx, 154, hb, 2, 1);
 
-    /* 电量（图标和文字视线对齐：文字墨迹 182..194，图标同高） */
-    icon_battery(PANEL_X, 182, 26, bat, 1);
-    draw_cjk(PANEL_X + 32, 180, "电量", 1, 1);
+    /* 电量（图标和文字视线对齐：文字墨迹 186..200，图标同高） */
+    icon_battery(PANEL_X, 188, 26, bat, 1);
+    draw_cjk(PANEL_X + 32, 186, "电量", 1, 1);
     char bb[16];
     snprintf(bb, sizeof(bb), "%d%%", bat);
-    draw_text(vx, 180, bb, 2, 1);
+    draw_text(vx, 186, bb, 2, 1);
 
     /* 底部：连接状态（WiFi / 服务器 / 蓝牙）。
-     * 字幕已经整栏挪到右栏（说话中显示），底部不再画字幕。 */
-    lcd_hline(PANEL_X, 212, PANEL_SEP_W, 1);
-    status_row(222, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
-    status_row(242, "服务器", ws_connected() ? "已连接" : "未连接");
-    status_row(262, "蓝牙", ble_state_str());
+     * 字幕已经整栏挪到右栏（说话中显示），底部不再画字幕。
+     * 三块共用的边线由 draw_panel_cells() 统一画，这里只排内容（块3 内 4 行）。 */
+    status_row(218, "WiFi", wifi_sta_connected() ? "已连接" : "未连接");
+    status_row(238, "服务器", ws_connected() ? "已连接" : "未连接");
+    status_row(258, "蓝牙", ble_state_str());
 
     /* 雷达三态：未就绪（没插 USB/串口没帧）/ 有人 0.3m / 无人 */
     char rv[24];
@@ -766,7 +787,7 @@ static void render_panel(void)
     } else {
         snprintf(rv, sizeof(rv), "无人");
     }
-    status_row(282, "雷达", rv);
+    status_row(278, "雷达", rv);
 }
 
 /* ── 渲染 ──────────────────────────────────────────────────────────── */
@@ -929,6 +950,7 @@ static void render_frame(void)
     /* ── 主页 ── */
     lcd_clear(0);
     draw_pet();
+    draw_panel_divider();          /* 先画分界竖线，再让气泡/文字压在上面 */
     if (s_water_on) draw_water_bubble();
 
     /* 语音状态字（桌宠区顶部居中）：录音中 / 思考中 / 说话中 */

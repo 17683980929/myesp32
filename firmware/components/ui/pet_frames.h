@@ -1,4 +1,4 @@
-/* 自动生成，请勿手改。来源: 1bit_threshold */
+/* 自动生成，请勿手改。来源: 300x400_阈值（值班室背景版） */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 
@@ -24,6 +24,6 @@ extern const uint8_t pet_sm_12_direct[];
 extern const uint8_t pet_sm_13_patrol[];
 extern const uint8_t pet_sm_14_note[];
 extern const uint8_t pet_sm_15_charging[];
-extern const uint8_t pet_sm_16_water[];   /* 喝水动作帧（ui/pet_water.c，非自动生成） */
+extern const uint8_t pet_sm_16_water[];
 
 #endif

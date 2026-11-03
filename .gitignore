@@ -32,3 +32,10 @@ desktop.ini
 
 # ── 第三方资料（HowToLiveBetter 正文，用 server/tools/fetch-life-guide.mjs 重新拉取）──
 server/data/life-guide/
+
+# ── 桌宠素材：高清原图 4MB+，生成帧只用 300x400_阈值 ─────────────
+assets/pet_v2/xiaozhi_police_pet_with_bg/raw_高清/
+
+# ── 生成的预览图（node tools/preview_ui.mjs 可随时重出）──────────
+assets/pet_frames_preview/
+assets/ui_preview.png
