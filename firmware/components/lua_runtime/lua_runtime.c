@@ -983,11 +983,83 @@ static int dry_run_timers(void)
     return 0;
 }
 
-/** 执行一段脚本：关旧状态 → 全新状态 → pcall。
- *  dry=1：先加载 Lua mock 覆盖硬件 API，只检查语法/顶层逻辑，不持久化。
+/** dry-run：用独立的 lua_State 跑 mock，不碰正在运行的脚本。
+ *  运行中的状态、定时器、事件绑定原样保留；check 失败也不会让设备失去脚本。 */
+static int run_dry(const char *code)
+{
+    lua_State *live = s_L;
+    timer_slot_t saved_timers[TIMER_MAX];
+    memcpy(saved_timers, s_timers, sizeof(saved_timers));
+    int saved_evt_ref[EVT_COUNT];
+    memcpy(saved_evt_ref, s_evt_ref, sizeof(saved_evt_ref));
+    uint32_t saved_evt_stamp[EVT_COUNT];
+    memcpy(saved_evt_stamp, s_evt_min_stamp, sizeof(saved_evt_stamp));
+    uint32_t saved_perms = s_perms;
+    int saved_capture = s_capture;
+    int64_t saved_exec = s_exec_start_us;
+    int64_t saved_paused = s_paused_us;
+    int saved_hook = s_hook_active;
+
+    timers_clear();
+    for (int i = 0; i < EVT_COUNT; i++) s_evt_ref[i] = LUA_NOREF;
+
+    lua_State *L = lua_newstate(lua_alloc, NULL, luaL_makeseed(NULL));
+    if (!L) {
+        snprintf(s_err, OUT_CAP, "内存不足，无法创建 dry-run 状态");
+        memcpy(s_timers, saved_timers, sizeof(s_timers));
+        memcpy(s_evt_ref, saved_evt_ref, sizeof(s_evt_ref));
+        memcpy(s_evt_min_stamp, saved_evt_stamp, sizeof(s_evt_min_stamp));
+        s_perms = saved_perms;
+        return 0;
+    }
+
+    s_L = L;
+    open_sandbox(L);
+    register_apis(L);
+    parse_perms(code);
+
+    out_reset();
+    s_capture = 0;
+    s_err[0] = 0;
+    s_exec_start_us = esp_timer_get_time();
+    s_paused_us = 0;
+    s_hook_active = 1;
+
+    int r = luaL_dostring(L, MOCK_LUA);
+    if (r == LUA_OK) r = luaL_loadbuffer(L, code, strlen(code), "=script");
+    if (r == LUA_OK) r = lua_pcall(L, 0, 1, 0);
+
+    int ok = (r == LUA_OK);
+    if (!ok) {
+        const char *err = lua_tostring(L, -1);
+        snprintf(s_err, OUT_CAP, "%s", err ? err : "未知错误");
+        lua_settop(L, 0);
+    } else if (dry_run_timers() != 0) {
+        ok = 0;                      /* 定时器回调里出错，同样算检查失败 */
+    }
+
+    s_hook_active = 0;
+    lua_close(L);
+    s_L = live;
+
+    memcpy(s_timers, saved_timers, sizeof(s_timers));
+    memcpy(s_evt_ref, saved_evt_ref, sizeof(s_evt_ref));
+    memcpy(s_evt_min_stamp, saved_evt_stamp, sizeof(s_evt_min_stamp));
+    s_perms = saved_perms;
+    s_capture = saved_capture;
+    s_exec_start_us = saved_exec;
+    s_paused_us = saved_paused;
+    s_hook_active = saved_hook;
+    return ok;
+}
+
+/** 执行一段脚本：关旧状态 → 全新状态 → pcall；成功且 persist 时写入 active.lua。
+ *  dry=1 走独立的 run_dry（不销毁正在运行的脚本）。
  *  @return 1 成功 / 0 失败（错误文本在 s_err） */
 static int run_code(const char *code, int persist, int dry)
 {
+    if (dry) return run_dry(code);
+
     if (s_L) {
         lua_close(s_L);
         s_L = NULL;
@@ -1009,36 +1081,12 @@ static int run_code(const char *code, int persist, int dry)
     register_apis(s_L);
 
     out_reset();
-    s_capture = dry ? 0 : 1;
+    s_capture = 1;
     s_err[0] = 0;
 
     s_exec_start_us = esp_timer_get_time();
     s_paused_us = 0;
     s_hook_active = 1;
-
-    if (dry) {
-        int r = luaL_dostring(s_L, MOCK_LUA);
-        if (r == LUA_OK) r = luaL_loadbuffer(s_L, code, strlen(code), "=script");
-        if (r == LUA_OK) r = lua_pcall(s_L, 0, 1, 0);
-
-        int ok = (r == LUA_OK);
-        if (!ok) {
-            const char *err = lua_tostring(s_L, -1);
-            snprintf(s_err, OUT_CAP, "%s", err ? err : "未知错误");
-            lua_settop(s_L, 0);
-        } else if (dry_run_timers() != 0) {
-            ok = 0;                      /* 定时器回调里出错，同样算检查失败 */
-        }
-        s_hook_active = 0;
-        lua_close(s_L);
-        s_L = NULL;
-        timers_clear();
-        for (int i = 0; i < EVT_COUNT; i++) {
-            s_evt_ref[i] = LUA_NOREF;
-            s_evt_min_stamp[i] = 0;
-        }
-        return ok;
-    }
 
     int r = luaL_loadbuffer(s_L, code, strlen(code), "=script");
     if (r == LUA_OK) r = lua_pcall(s_L, 0, 1, 0);
