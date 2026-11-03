@@ -291,7 +291,10 @@ const FRAMES = [
 
 /* ── 主流程 ───────────────────────────────────────────────────────── */
 
-const layered = existsSync(path.join(LAYER_DIR, "bg.png"));
+/* 分层模式要显式开启：`assets/pet_layers/ENABLE` 存在才用。
+ * 否则一律走整帧模式（人物和背景是一张图，背景不能单独动，但也不会穿帮）。 */
+const layered = existsSync(path.join(LAYER_DIR, "bg.png")) &&
+                existsSync(path.join(LAYER_DIR, "ENABLE"));
 const previewDir = "assets/pet_frames_preview";
 const wantPreview = OUT_DIR.includes("firmware");   /* 测试输出到临时目录时不覆盖正式预览 */
 mkdirSync(path.resolve(previewDir), { recursive: true });
