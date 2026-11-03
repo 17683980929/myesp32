@@ -19,6 +19,7 @@ static const char *TAG = "radar";
 #define PRESENT_HOLD_US (2000 * 1000LL)
 #define ABSENT_HOLD_US  (4000 * 1000LL)
 #define STILL_NEAR_CM   90              /* 静止目标只信 ≤0.9m（坐着的人），远的静态物不算 */
+#define MOVE_MIN_ENERGY 30              /* 运动能量 ≥30 才算：滤掉风扇/空气/反射的弱运动 */
 
 static radar_state_t s_state;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -152,9 +153,10 @@ static void radar_task(void *arg)
         bool out = gpio_get_level(RADAR_OUT_GPIO) != 0;
         /* UART 有帧时以模块目标状态为准；OUT 会被光敏联动/环境光带跳，
          * 只作为 UART 断帧时的兜底，不能和 UART OR 在一起。
-         * 运动目标 1.6m 内都算；静止目标只在近处才算（坐着的人），
-         * 远的椅背/桌沿/墙即使静止能量 100 也忽略。 */
-        bool moving = uart_ok && (s_target_state & 0x01) != 0;
+         * 运动目标 1.6m 内都算，但能量 <30 的弱运动（风扇/空气/反射）不算；
+         * 静止目标只在 ≤0.9m 才算（坐着的人），远的椅背/桌沿/墙即使 100 也忽略。 */
+        bool moving = uart_ok && (s_target_state & 0x01) != 0 &&
+                      s_state.move_energy >= MOVE_MIN_ENERGY;
         bool still_near = uart_ok && (s_target_state & 0x02) != 0 &&
                           s_state.still_dist_cm <= STILL_NEAR_CM;
         bool raw = uart_ok ? (moving || still_near) : out;
