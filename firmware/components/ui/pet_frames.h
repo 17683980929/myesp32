@@ -1,4 +1,4 @@
-/* 自动生成，请勿手改。来源: assets/pet_v2/xiaozhi_police_integrated_fixed_bg，适配: cover */
+/* 自动生成，请勿手改。来源: assets/pet_v2/xiaozhi_police_v3_fullbody，适配: cover */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 

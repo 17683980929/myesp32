@@ -1,0 +1,25 @@
+大头卡通警察桌宠 · 全身固定背景版 v3（300x400 纯黑白）
+
+改进：
+- 16帧全部全身站姿（note记录、drinking喝水已补画全身）
+- 警察站在前景地面上，办公桌退到身后中景，不再像站在桌上
+- 背景完全钉死（挂钟/窗户/桌子位置所有帧一致）
+- 所有角色统一大小（高280px，脚底对齐y=365）
+- 角色形象与原始锚点完全一致
+
+情绪-文件名：
+  idle/idle_blink -> 01_idle / 02_idle_blink
+  listening       -> 03_listening
+  thinking        -> 04_thinking
+  speaking        -> 05_speaking
+  happy           -> 06_happy
+  loving/点赞     -> 07_love
+  confused        -> 08_confused
+  sleepy          -> 09_sleepy
+  sleeping        -> 10_sleeping
+  salute          -> 11_salute
+  direct/指挥     -> 12_direct
+  patrol/巡逻     -> 13_patrol
+  note/记录       -> 14_note
+  charging/充电   -> 15_charging
+  drinking/喝水   -> 16_drinking

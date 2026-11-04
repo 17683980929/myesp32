@@ -11,7 +11,7 @@
  *    固件：PET_LAYERED=1 → 先画背景板，再按遮罩贴角色，角色可以单独上下位移
  *
  * ② 整帧模式（当前素材就是这样）
- *    目录：assets/pet_v2/xiaozhi_police_integrated_fixed_bg
+ *    目录：assets/pet_v2/xiaozhi_police_v3_fullbody
  *      01_idle.png …       300×400 黑白整帧（连背景一起画，背景 16 帧钉死）
  *    产物：只有 pet_sm_XX[]，PET_LAYERED=0，固件整屏直贴
  *
@@ -23,7 +23,7 @@ import { inflateSync, deflateSync } from "node:zlib";
 import path from "node:path";
 
 const LAYER_DIR = process.env.PET_LAYERS || "assets/pet_layers";
-const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_integrated_fixed_bg";
+const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_v3_fullbody";
 const OUT_DIR = process.argv[3] || "firmware/components/ui";
 
 const OUT_W = 200;
