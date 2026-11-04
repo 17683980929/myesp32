@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #ifndef MYESP32_FW
-#define MYESP32_FW "0.1.59"
+#define MYESP32_FW "0.1.60"
 #endif
 
 /** 信息栏数据（服务器下发的 + 板子本地读的） */
@@ -19,6 +19,8 @@ typedef struct {
     char city[20];       /* "北京"（服务器配置的城市） */
     int  weather_temp;   /* 16，<-1 表示无 */
     int  mm, dd, wday;   /* 数字日期：月/日/星期(0=周日) */
+    int  sunrise_min;    /* 日出：当天第几分钟，-1=服务器没给 */
+    int  sunset_min;     /* 日落：同上。设备用 RTC 判昼夜，断网也不受影响 */
     /* 本地读的 */
     float room_t;
     float room_h;

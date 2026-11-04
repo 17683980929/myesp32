@@ -294,7 +294,55 @@ const PANEL_X = 208;
 const PANEL_SEP_W = W - PANEL_X - 8;
 const BOX_L = 202, BOX_R = 396;
 
-function renderHome(frameSym) {
+/* ── 墙上挂钟（擦掉原图固定的指针，按真实时间重画）────────────────── */
+
+const CLOCK_CX = 27, CLOCK_CY = 41, CLOCK_CLEAR_R = 25;
+
+/* 60 个方向单位向量（×256）：sin/cos 表，固件里用同一张 */
+const SIN60 = [], COS60 = [];
+for (let i = 0; i < 60; i++) {
+  SIN60.push(Math.round(256 * Math.sin((i * Math.PI) / 30)));
+  COS60.push(Math.round(256 * Math.cos((i * Math.PI) / 30)));
+}
+
+/** len × v/256，四舍五入（和固件 mul256 一致） */
+const mul256 = (len, v) => { const p = len * v; return p >= 0 ? Math.floor((p + 128) / 256) : -Math.floor((-p + 128) / 256); };
+const proj = (len, tab, i) => mul256(len, tab[i]);
+
+function drawWallClock(h, m) {
+  disc(CLOCK_CX, CLOCK_CY, CLOCK_CLEAR_R, 0);          /* 擦掉原画的指针和刻度 */
+  ring(CLOCK_CX, CLOCK_CY, 22, 1);                     /* 外圈 */
+  ring(CLOCK_CX, CLOCK_CY, 21, 1);
+  for (let i = 0; i < 12; i++) {                       /* 12 个刻度：贴着外圈往里伸 4px */
+    const a = i * 5;
+    lineSeg(CLOCK_CX + proj(16, SIN60, a), CLOCK_CY - proj(16, COS60, a),
+            CLOCK_CX + proj(19, SIN60, a), CLOCK_CY - proj(19, COS60, a), 1);
+  }
+  const ha = ((h % 12) * 5 + Math.floor(m / 12)) % 60;
+  lineSeg(CLOCK_CX, CLOCK_CY, CLOCK_CX + proj(9, SIN60, ha), CLOCK_CY - proj(9, COS60, ha), 1);
+  lineSeg(CLOCK_CX, CLOCK_CY, CLOCK_CX + proj(14, SIN60, m), CLOCK_CY - proj(14, COS60, m), 1);
+  px(CLOCK_CX, CLOCK_CY, 1);
+}
+
+/* ── 窗外：白天太阳 / 夜里月亮 ────────────────────────────────────── */
+
+const SKY_CX = 191, SKY_CY = 46;
+const RAY8 = [[0, -256], [181, -181], [256, 0], [181, 181], [0, 256], [-181, 181], [-256, 0], [-181, -181]];
+
+function drawSky(day) {
+  if (day) {
+    ring(SKY_CX, SKY_CY, 4, 1);
+    for (const [ux, uy] of RAY8) {
+      lineSeg(SKY_CX + mul256(6, ux), SKY_CY + mul256(6, uy),
+              SKY_CX + mul256(8, ux), SKY_CY + mul256(8, uy), 1);
+    }
+  } else {
+    disc(SKY_CX, SKY_CY, 5, 1);                        /* 实心圆挖掉偏移的一块 → 弯月 */
+    disc(SKY_CX + 3, SKY_CY - 2, 4, 0);
+  }
+}
+
+function renderHome(frameSym, opts = {}) {
   fb.fill(0);
   if (LAYERED) {
     blit(frameArrays.get("pet_bg"), 200, 300, 0, 0);
@@ -304,11 +352,14 @@ function renderHome(frameSym) {
     blit(frameArrays.get(frameSym), 200, 300, 0, 0);
   }
 
+  drawWallClock(opts.h ?? 14, opts.m ?? 32);
+  drawSky(opts.day ?? true);
+
   for (let y = 0; y < H; y++) px(BOX_L, y, 1);
   for (const y of [2, 72, 212, 298]) hline(BOX_L, y, BOX_R - BOX_L, 1);
 
   /* 块1 时间 */
-  const tbuf = "14:32:07";
+  const tbuf = `${String(opts.h ?? 14).padStart(2, "0")}:${String(opts.m ?? 32).padStart(2, "0")}:${String(opts.s ?? 7).padStart(2, "0")}`;
   segTime(PANEL_X + Math.floor((PANEL_SEP_W - segTimeW(tbuf, 38)) / 2), 8, tbuf, 38, 1);
   drawText(PANEL_X, 52, "2026-11-03", 2, 1);
   drawText(PANEL_X + PANEL_SEP_W - textW("TUE", 2), 52, "TUE", 2, 1);
@@ -380,9 +431,26 @@ function savePng(file, scale = 2) {
 }
 
 const out = process.argv[2] || "assets/ui_preview.png";
-renderHome("pet_sm_01_idle");
+/* 可选参数：小时 分钟 day|night（用来预览挂钟指针和窗外日/月） */
+const argH = Number(process.argv[3] ?? 14);
+const argM = Number(process.argv[4] ?? 32);
+const argDay = (process.argv[5] ?? "day") !== "night";
+renderHome("pet_sm_01_idle", { h: argH, m: argM, day: argDay });
 savePng(out);
-console.log("预览已生成:", out);
+console.log("预览已生成:", out, `${argH}:${String(argM).padStart(2, "0")}`, argDay ? "白天" : "夜晚");
+
+/* DUMP=x0,y0,x1,y1 打印某个区域的 ASCII 图（调像素级布局用） */
+if (process.env.DUMP) {
+  const [dx0, dy0, dx1, dy1] = process.env.DUMP.split(",").map(Number);
+  let hdr = "     ";
+  for (let x = dx0; x <= dx1; x++) hdr += x % 10 === 0 ? String((x / 10) % 10) : " ";
+  console.log(hdr);
+  for (let y = dy0; y <= dy1; y++) {
+    let row = String(y).padStart(3) + "  ";
+    for (let x = dx0; x <= dx1; x++) row += fb[y * W + x] ? "#" : ".";
+    console.log(row);
+  }
+}
 
 /* ── 几何自检：压线 / 出界 ────────────────────────────────────────── */
 

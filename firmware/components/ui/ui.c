@@ -410,6 +410,124 @@ static const uint8_t *PET_NAMES[PET_FRAME_COUNT] = {
     pet_sm_16_water,
 };
 
+/* ── 墙上挂钟 + 窗外天色（跟真实时间联动）────────────────────────────
+ *
+ * 素材里的挂钟是画死在图上的（指针永远指着 12:05），窗户外是空白。
+ * 贴完帧以后把表盘那块擦白重画：12 个刻度 + 时针/分针按 PCF85063 走；
+ * 窗外按服务器的日出/日落时间画太阳或月亮。
+ *
+ * 几何是量出来的（200×300 输出坐标）：
+ *   挂钟 中心 (27,41)，外圈半径 22，擦除半径 25
+ *        —— 人物最近到 (39,65)，与 r=25 的擦除圆不相交，16 帧都不会被擦掉
+ *   窗外 玻璃条 x 183..199 / y 37..70，太阳月亮中心 (191,46)
+ */
+#define CLOCK_CX        27
+#define CLOCK_CY        41
+#define CLOCK_CLEAR_R   25
+#define SKY_CX          191
+#define SKY_CY          46
+
+/* 60 个方向单位向量（×256）：省掉 libm，也省得每帧算三角函数 */
+static const int16_t SIN60[60] = {
+        0,    27,    53,    79,   104,   128,   150,   171,   190,   207,
+      222,   234,   243,   250,   255,   256,   255,   250,   243,   234,
+      222,   207,   190,   171,   150,   128,   104,    79,    53,    27,
+        0,   -27,   -53,   -79,  -104,  -128,  -150,  -171,  -190,  -207,
+     -222,  -234,  -243,  -250,  -255,  -256,  -255,  -250,  -243,  -234,
+     -222,  -207,  -190,  -171,  -150,  -128,  -104,   -79,   -53,   -27
+};
+static const int16_t COS60[60] = {
+      256,   255,   250,   243,   234,   222,   207,   190,   171,   150,
+      128,   104,    79,    53,    27,     0,   -27,   -53,   -79,  -104,
+     -128,  -150,  -171,  -190,  -207,  -222,  -234,  -243,  -250,  -255,
+     -256,  -255,  -250,  -243,  -234,  -222,  -207,  -190,  -171,  -150,
+     -128,  -104,   -79,   -53,   -27,     0,    27,    53,    79,   104,
+      128,   150,   171,   190,   207,   222,   234,   243,   250,   255
+};
+
+/** 太阳的 8 条光芒方向（45° 一档，×256） */
+static const int16_t RAY8[8][2] = {
+    {   0, -256 }, { 181, -181 }, { 256,    0 }, { 181,  181 },
+    {   0,  256 }, { -181,  181 }, { -256,   0 }, { -181, -181 },
+};
+
+/** len × v/256，四舍五入（截断会让指针系统性偏短、左右不对称） */
+static int mul256(int len, int v)
+{
+    int p = len * v;
+    return p >= 0 ? (p + 128) / 256 : -((-p + 128) / 256);
+}
+
+static int proj(int len, const int16_t *tab, int idx)
+{
+    return mul256(len, tab[idx]);
+}
+
+/** 表盘：擦白 → 外圈 → 12 个刻度 → 时针/分针 → 中心点 */
+static void draw_wall_clock(int h, int m)
+{
+    disc(CLOCK_CX, CLOCK_CY, CLOCK_CLEAR_R, 0);
+    ring(CLOCK_CX, CLOCK_CY, 22, 1);     /* 外圈画两圈凑成 2px：1px 的圆在斜角上会断成点 */
+    ring(CLOCK_CX, CLOCK_CY, 21, 1);
+
+    for (int i = 0; i < 12; i++) {
+        int a = i * 5;                       /* 每格 30° = 表里 5 档 */
+        line_seg(CLOCK_CX + proj(16, SIN60, a), CLOCK_CY - proj(16, COS60, a),
+                 CLOCK_CX + proj(19, SIN60, a), CLOCK_CY - proj(19, COS60, a), 1);
+    }
+
+    int ha = ((h % 12) * 5 + m / 12) % 60;   /* 时针每小时 30°，每分钟再走 0.5° */
+    line_seg(CLOCK_CX, CLOCK_CY,
+             CLOCK_CX + proj(9, SIN60, ha), CLOCK_CY - proj(9, COS60, ha), 1);
+    line_seg(CLOCK_CX, CLOCK_CY,
+             CLOCK_CX + proj(14, SIN60, m), CLOCK_CY - proj(14, COS60, m), 1);
+    lcd_pixel(CLOCK_CX, CLOCK_CY, 1);
+}
+
+/** 窗外：白天太阳（空心圆 + 8 道光芒），夜里弯月（实心圆挖掉偏移的一块） */
+static void draw_sky(int day)
+{
+    if (day) {
+        ring(SKY_CX, SKY_CY, 4, 1);
+        for (int i = 0; i < 8; i++) {
+            int ux = RAY8[i][0], uy = RAY8[i][1];
+            line_seg(SKY_CX + mul256(6, ux), SKY_CY + mul256(6, uy),
+                     SKY_CX + mul256(8, ux), SKY_CY + mul256(8, uy), 1);
+        }
+    } else {
+        disc(SKY_CX, SKY_CY, 5, 1);
+        disc(SKY_CX + 3, SKY_CY - 2, 4, 0);
+    }
+}
+
+/** 挂钟 + 窗外天色。RTC 每 5 秒最多读一次（分针只按分钟走，5 秒误差看不出来） */
+static void draw_time_decor(void)
+{
+    static int hh = -1, mm = 0, day = 1;
+    static uint32_t at;
+    uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+    if (hh < 0 || (uint32_t)(now - at) >= 5000) {
+        at = now;                        /* 读失败也记时间，避免每帧都去戳 I2C */
+        int Y, Mo, D, Wd, H, Mi, S;
+        if (pcf85063_get(&Y, &Mo, &D, &Wd, &H, &Mi, &S) == 0) {
+            hh = H;
+            mm = Mi;
+
+            dev_info_t *in = ws_client_info();
+            int sr = in ? in->sunrise_min : -1;
+            int ss = in ? in->sunset_min : -1;
+            int sod = H * 60 + Mi;
+            if (sr >= 0 && ss > sr) day = (sod >= sr && sod < ss);
+            else                    day = (sod >= 6 * 60 && sod < 18 * 60);   /* 没数据按 6~18 点 */
+        }
+    }
+    if (hh < 0) return;                  /* RTC 一直读不到：保留素材原画的挂钟 */
+
+    draw_wall_clock(hh, mm);
+    draw_sky(day);
+}
+
 /* 帧数据 1=墨（黑），帧背景 0=白。与全工程约定一致，不用取反 */
 static void draw_pet(void)
 {
@@ -431,6 +549,9 @@ static void draw_pet(void)
 #else
     lcd_blit(frame, PET_FRAME_W, PET_FRAME_H, dx, dy, 0);
 #endif
+
+    /* 贴完帧再画时间和天色：这一步会盖掉素材里画死的指针和空白窗外 */
+    draw_time_decor();
 }
 
 /** 开始一个随机空闲动作：从非语音的 10 个表情里挑一个 */

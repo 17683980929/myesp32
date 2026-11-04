@@ -20,7 +20,8 @@ static const char *TAG = "ws";
 static esp_websocket_client_handle_t s_cli = NULL;
 static ws_handler_t s_handler = NULL;
 static ws_bin_handler_t s_bin_handler = NULL;
-static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1 };
+static dev_info_t s_info = { .weather_temp = -1, .room_t = -1, .room_h = -1, .battery = -1,
+                             .sunrise_min = -1, .sunset_min = -1 };
 static int  s_uplink_pcm = 0;   /* 1 = 上行改发 PCM 裸流（hello_ack 的 audio 字段决定） */
 
 /* 文本帧组装缓冲：esp_websocket_client 1.4+ 按每次 read 分片派发
@@ -111,6 +112,8 @@ static void on_data(char *data, int len)
         if ((v = cJSON_GetObjectItem(root, "mm")))  s_info.mm = v->valueint;
         if ((v = cJSON_GetObjectItem(root, "dd")))  s_info.dd = v->valueint;
         if ((v = cJSON_GetObjectItem(root, "wday"))) s_info.wday = v->valueint;
+        if ((v = cJSON_GetObjectItem(root, "sunr"))) s_info.sunrise_min = v->valueint;
+        if ((v = cJSON_GetObjectItem(root, "suns"))) s_info.sunset_min = v->valueint;
         cJSON *w = cJSON_GetObjectItem(root, "weather");
         if (w) {
             const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(w, "text"));

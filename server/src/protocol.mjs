@@ -78,6 +78,10 @@ export function buildTimeInfo(weather) {
     mm: now.getUTCMonth() + 1,
     dd: now.getUTCDate(),
     wday: now.getUTCDay(),
+    /* 日出/日落（当天第几分钟，-1=未知）：设备拿它决定窗外画太阳还是月亮。
+     * 板子自己不联网，但只要有这两个值就能用 RTC 判昼/夜，断网也不会错。 */
+    sunr: Number.isFinite(weather?.sunrise) ? weather.sunrise : -1,
+    suns: Number.isFinite(weather?.sunset) ? weather.sunset : -1,
     weather: weather
       ? { text: weather.text, temp: weather.temp, city: weather.city ?? null }
       : { text: "--", temp: null, city: null },

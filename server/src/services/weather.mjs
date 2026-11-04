@@ -125,6 +125,25 @@ async function fetchJson(url, timeoutMs) {
   }
 }
 
+/** "06:42 AM" / "6:42 PM" → 当天第几分钟（wttr.in 的 astronomy 格式） */
+function clockToMin(s) {
+  const m = /(\d{1,2}):(\d{2})\s*(AM|PM)?/i.exec(String(s || ""));
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const mi = parseInt(m[2], 10);
+  const ap = (m[3] || "").toUpperCase();
+  if (ap === "PM" && h !== 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  if (!(h >= 0 && h < 24) || !(mi >= 0 && mi < 60)) return null;
+  return h * 60 + mi;
+}
+
+/** "2026-11-04T06:42" → 当天第几分钟（Open-Meteo 的 daily.sunrise 格式） */
+function isoToMin(s) {
+  const m = /T(\d{2}):(\d{2})/.exec(String(s || ""));
+  return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null;
+}
+
 /** 主源：wttr.in */
 async function fetchWttr(city) {
   const j = await fetchJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, 6000);
@@ -134,12 +153,19 @@ async function fetchWttr(city) {
   const descRaw = cur.weatherDesc?.[0]?.value ?? "";
   const forecast = (Array.isArray(j.weather) ? j.weather : []).slice(0, 3).map(forecastDay);
 
+  /* 今天的日出日落（设备拿它决定窗外画太阳还是月亮） */
+  const astro = j?.weather?.[0]?.astronomy?.[0];
+  const sunrise = clockToMin(astro?.sunrise);
+  const sunset = clockToMin(astro?.sunset);
+
   return {
     text: toChinese(descRaw),
     temp: parseInt(cur.temp_C ?? "0", 10),
     humidity: parseInt(cur.humidity ?? "0", 10),
     city,
     at: Date.now(),
+    sunrise,
+    sunset,
     forecast,
   };
 }
@@ -175,7 +201,7 @@ async function fetchOpenMeteo(city) {
   const j = await fetchJson(
     `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}` +
     `&current=temperature_2m,relative_humidity_2m,weather_code` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
     `&timezone=Asia%2FShanghai&forecast_days=3`, 8000);
   const c = j?.current;
   if (!c || !Number.isFinite(Number(c.temperature_2m))) throw new Error("天气返回格式异常");
@@ -196,6 +222,8 @@ async function fetchOpenMeteo(city) {
     humidity: Math.round(Number(c.relative_humidity_2m ?? 0)),
     city,
     at: Date.now(),
+    sunrise: isoToMin(d.sunrise?.[0]),
+    sunset: isoToMin(d.sunset?.[0]),
     forecast,
   };
 }
