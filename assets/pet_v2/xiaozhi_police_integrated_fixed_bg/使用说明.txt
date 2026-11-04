@@ -1,0 +1,24 @@
+大头卡通警察桌宠 · 一体式固定背景版（300x400，纯黑白）
+
+特点：
+- 16张完整一体式图片，每张都包含固定值班室背景+对应动作警察
+- 背景完全钉死（挂钟/桌子/盆栽/马克杯/窗户位置所有帧一致），切换时不抖
+- 所有全身帧警察大小统一（高270px，脚底对齐）
+- note和drinking是桌后近景，头部略大（镜头感，已确认可接受）
+
+情绪-文件名：
+  idle/idle_blink -> 01_idle / 02_idle_blink
+  listening       -> 03_listening
+  thinking        -> 04_thinking
+  speaking        -> 05_speaking
+  happy           -> 06_happy
+  loving/点赞     -> 07_love
+  confused        -> 08_confused
+  sleepy          -> 09_sleepy
+  sleeping        -> 10_sleeping
+  salute          -> 11_salute
+  direct/指挥     -> 12_direct
+  patrol/巡逻     -> 13_patrol
+  note/记录       -> 14_note
+  charging/充电   -> 15_charging
+  drinking/喝水   -> 16_drinking

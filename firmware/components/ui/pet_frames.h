@@ -1,4 +1,4 @@
-/* 自动生成，请勿手改。来源: 300x400_阈值（值班室背景版） */
+/* 自动生成，请勿手改。来源: assets/pet_v2/xiaozhi_police_integrated_fixed_bg，适配: cover */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 

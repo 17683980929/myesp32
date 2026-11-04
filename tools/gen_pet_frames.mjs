@@ -11,9 +11,9 @@
  *    固件：PET_LAYERED=1 → 先画背景板，再按遮罩贴角色，角色可以单独上下位移
  *
  * ② 整帧模式（当前素材就是这样）
- *    目录：assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值
- *      01_idle.png …       300×400 1-bit 黑白整帧（连背景一起画）
- *    产物：只有 pet_sm_XX[]，PET_LAYERED=0，固件整屏直贴，背景不能单独静止
+ *    目录：assets/pet_v2/xiaozhi_police_integrated_fixed_bg
+ *      01_idle.png …       300×400 黑白整帧（连背景一起画，背景 16 帧钉死）
+ *    产物：只有 pet_sm_XX[]，PET_LAYERED=0，固件整屏直贴
  *
  * 用法：node tools/gen_pet_frames.mjs [素材目录] [输出目录]
  */
@@ -23,7 +23,7 @@ import { inflateSync, deflateSync } from "node:zlib";
 import path from "node:path";
 
 const LAYER_DIR = process.env.PET_LAYERS || "assets/pet_layers";
-const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_pet_with_bg/300x400_阈值";
+const SRC_DIR = process.argv[2] || "assets/pet_v2/xiaozhi_police_integrated_fixed_bg";
 const OUT_DIR = process.argv[3] || "firmware/components/ui";
 
 const OUT_W = 200;
@@ -34,6 +34,12 @@ const FRAME_BYTES = STRIDE * OUT_H;
 /* 覆盖率阈值：0.38 是拿 3 帧对比调出来的——0.5 会让墙上的窗框细线断掉，
  * 0.25 又会让制服阴影糊成一片 */
 const COVER_T = 0.38;
+
+/* 整帧模式的适配方式（素材 3:4 → 屏格 2:3，两者比例不同）：
+ *  "contain" = 等比缩放 + 居中留白。挂钟还是正圆；源图上下本来就是白墙/白地面，
+ *              留白正好落在白边里，看不出来 → 默认
+ *  "stretch" = 横纵各自拉伸填满。不留白，但纵向上 12.5% 的拉伸会把挂钟压成椭圆 */
+const FIT = process.env.PET_FIT || "cover";
 
 /* 分层模式的版面修正（按 200×300 输出坐标系）：
  *  - CHAR_DY：整体纵向偏移。原画人物就站在桌子后面（桌面在腰胯高度），保持 0；
@@ -165,20 +171,37 @@ function packBits(w, h, pred) {
   return bm;
 }
 
-/** 面积覆盖率下采样（整帧模式用，保住 1px 细线） */
-function downsample(src, ow, oh, thr) {
+/** 面积覆盖率下采样（整帧模式用，保住 1px 细线）
+ *
+ *  fit = "contain"：等比缩放 + 居中留白。圆（挂钟）还是圆，代价是上下或左右有白边。
+ *  fit = "cover"  ：等比缩放 + 居中裁切。不留白、不变形，代价是左右各裁掉一点。
+ *  fit = "stretch"：横纵各自拉伸填满。不留白不裁切，但 3:4 → 2:3 会把圆压成椭圆。 */
+function downsample(src, ow, oh, thr, fit = "stretch") {
   const frame = new Uint8Array(STRIDE * oh);
-  const sx = src.w / ow, sy = src.h / oh;
+  let sx, sy, offX, offY;
+  if (fit === "contain" || fit === "cover") {
+    const s = fit === "contain"
+      ? Math.min(ow / src.w, oh / src.h)     /* 整张图塞进屏幕，留白 */
+      : Math.max(ow / src.w, oh / src.h);    /* 铺满屏幕，溢出部分裁掉 */
+    sx = sy = 1 / s;
+    offX = (ow - src.w * s) / 2;             /* cover 时为负 = 裁切 */
+    offY = (oh - src.h * s) / 2;
+  } else {
+    sx = src.w / ow; sy = src.h / oh;
+    offX = offY = 0;
+  }
 
   for (let dy = 0; dy < oh; dy++) {
-    const y0 = dy * sy, y1 = y0 + sy;
+    const y0 = (dy - offY) * sy, y1 = y0 + sy;
+    if (y1 <= 0 || y0 >= src.h) continue;            /* 整行在源图外 → 留白 */
     for (let dx = 0; dx < ow; dx++) {
-      const x0 = dx * sx, x1 = x0 + sx;
+      const x0 = (dx - offX) * sx, x1 = x0 + sx;
+      if (x1 <= 0 || x0 >= src.w) continue;
       let ink = 0, area = 0;
-      for (let y = Math.floor(y0); y < Math.ceil(y1); y++) {
+      for (let y = Math.max(0, Math.floor(y0)); y < Math.min(src.h, Math.ceil(y1)); y++) {
         const wy = Math.min(y1, y + 1) - Math.max(y0, y);
         if (wy <= 0) continue;
-        for (let x = Math.floor(x0); x < Math.ceil(x1); x++) {
+        for (let x = Math.max(0, Math.floor(x0)); x < Math.min(src.w, Math.ceil(x1)); x++) {
           const wx = Math.min(x1, x + 1) - Math.max(x0, x);
           if (wx <= 0) continue;
           area += wx * wy;
@@ -360,7 +383,7 @@ if (layered) {
 } else {
   for (const [file, sym] of FRAMES) {
     const src = readPng(path.join(SRC_DIR, `${file}.png`));
-    const frame = downsample(src, OUT_W, OUT_H, COVER_T);
+    const frame = downsample(src, OUT_W, OUT_H, COVER_T, FIT);
     total += frame.length;
     cBody += emitArray(sym, frame, file);
 
@@ -388,7 +411,7 @@ writeFileSync(path.join(OUT_DIR, "pet_frames.c"),
 ${cBody}`);
 
 writeFileSync(path.join(OUT_DIR, "pet_frames.h"),
-`/* 自动生成，请勿手改。来源: ${layered ? "pet_layers" : "300x400_阈值（值班室背景版）"} */
+`/* 自动生成，请勿手改。来源: ${layered ? "assets/pet_layers" : SRC_DIR}，适配: ${FIT} */
 #ifndef PET_FRAMES_H
 #define PET_FRAMES_H
 
