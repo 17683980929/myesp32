@@ -16,10 +16,30 @@ static const char *TAG = "radar";
 #define RADAR_STACK_WORDS 6144          /* 24KB，放 PSRAM；16KB 时余量只剩 ~1.9KB，诊断日志再加一点，留足 */
 
 #define UART_FRESH_US   (3 * 1000 * 1000LL)
-#define PRESENT_HOLD_US (2000 * 1000LL)
-#define ABSENT_HOLD_US  (4000 * 1000LL)
-#define STILL_NEAR_CM   90              /* 静止目标只信 ≤0.9m（坐着的人），远的静态物不算 */
-#define MOVE_MIN_ENERGY 30              /* 运动能量 ≥30 才算：滤掉风扇/空气/反射的弱运动 */
+#define PRESENT_HOLD_US (1500 * 1000LL)
+#define ABSENT_HOLD_US  (6000 * 1000LL)
+
+/* ── 判定门限（2026-11-04 按实测日志重定）────────────────────────────
+ *
+ * 现场日志（模块每 30 秒一条）里，静止目标的距离在 39~99cm 之间来回跳，
+ * 而原来的门限正好是 90cm —— 那个静态反射物每越过一次阈值，
+ * 状态就在有人/无人之间翻一次，这是"反复横跳"的直接原因。
+ *
+ * 现在的做法：
+ *   1) 静止目标收紧到 70cm（坐桌前实测 40~64cm，静态物在 80cm 以外）
+ *   2) 静止目标还要能量 ≥30、距离 >12cm，滤掉弱反射和近场自反射
+ *   3) 静止"只能维持、不能触发"——最近 2 分钟内没有任何运动命中时，
+ *      光有静止目标不算有人（桌椅、墙、外壳永远静止，但不该判有人）
+ *   4) 运动目标补上 1.6m 距离上限（原代码注释写了却没实现，
+ *      窗外/走廊的人影会被当成有人）
+ */
+#define MOVE_MAX_CM      160            /* 运动目标最远 1.6m */
+#define STILL_NEAR_CM    70             /* 静止目标最远 0.7m */
+#define MIN_CM           12             /* 小于这个距离基本是自身外壳的近场反射 */
+#define MOVE_MIN_ENERGY  50             /* 运动能量门限（原 30。实测有人时 81~100，
+                                         * 噪声能到 43，取 50 把噪声挡在外面） */
+#define STILL_MIN_ENERGY 30             /* 静止能量门限（原来完全没有） */
+#define STILL_MEMORY_US  (120 * 1000 * 1000LL)   /* 静止维持需要最近 2 分钟有过运动 */
 
 static radar_state_t s_state;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -33,6 +53,8 @@ static size_t s_buf_len;
 static bool s_last_raw;
 static int64_t s_raw_since_us;
 static int64_t s_last_frame_us;
+static int64_t s_last_move_us;    /* 最近一次"运动命中"的时刻，静止维持靠它 */
+static uint8_t s_move_run;        /* 运动命中连续持续了几个采样周期（滤单帧误报） */
 static uint8_t s_target_state;
 static uint32_t s_rx_bytes;       /* UART 收到的原始字节数（诊断） */
 static uint32_t s_frames;         /* 有效目标帧数（诊断） */
@@ -60,10 +82,10 @@ static void handle_frame(const uint8_t *f, uint16_t dlen, bool new_proto)
     uint8_t  sen   = d[8];
     uint16_t ddist = (uint16_t)(d[9] | ((uint16_t)d[10] << 8));
 
-    s_target_state = st;
     s_last_frame_us = esp_timer_get_time();
 
     taskENTER_CRITICAL(&s_lock);
+    s_target_state = st;              /* 状态位和各路能量/距离要同一帧、同一把锁里更新 */
     s_state.moving = (st & 0x01) != 0;
     s_state.still  = (st & 0x02) != 0;
     s_state.move_dist_cm  = mdist;
@@ -151,25 +173,50 @@ static void radar_task(void *arg)
 
         bool uart_ok = s_last_frame_us != 0 && now - s_last_frame_us < UART_FRESH_US;
         bool out = gpio_get_level(RADAR_OUT_GPIO) != 0;
-        /* UART 有帧时以模块目标状态为准；OUT 会被光敏联动/环境光带跳，
-         * 只作为 UART 断帧时的兜底，不能和 UART OR 在一起。
-         * 运动目标 1.6m 内都算，但能量 <30 的弱运动（风扇/空气/反射）不算；
-         * 静止目标只在 ≤0.9m 才算（坐着的人），远的椅背/桌沿/墙即使 100 也忽略。 */
-        bool moving = uart_ok && (s_target_state & 0x01) != 0 &&
-                      s_state.move_energy >= MOVE_MIN_ENERGY;
-        bool still_near = uart_ok && (s_target_state & 0x02) != 0 &&
-                          s_state.still_dist_cm <= STILL_NEAR_CM;
-        bool raw = uart_ok ? (moving || still_near) : out;
+
+        /* 状态位和距离/能量必须在同一把锁里取，否则会把上一帧的状态和这一帧的能量拼在一起 */
+        radar_state_t snap;
+        uint8_t st;
+        taskENTER_CRITICAL(&s_lock);
+        snap = s_state;
+        st = s_target_state;
+        taskEXIT_CRITICAL(&s_lock);
+
+        /* 运动命中：能量够、距离在 (12cm, 1.6m] 内。
+         * 上限很关键——没有上限时，窗外/走廊/别的房间有人走动也会判"有人"。 */
+        bool move_hit = uart_ok && (st & 0x01) != 0 &&
+                        snap.move_energy >= MOVE_MIN_ENERGY &&
+                        snap.move_dist_cm > MIN_CM && snap.move_dist_cm <= MOVE_MAX_CM;
+
+        /* 静止命中：桌前的静态物（桌沿/椅背/墙/外壳）永远静止，所以静止只能"维持"、
+         * 不能"触发"——必须有最近的运动命中做前提。 */
+        bool still_hit = uart_ok && (st & 0x02) != 0 &&
+                         snap.still_energy >= STILL_MIN_ENERGY &&
+                         snap.still_dist_cm > MIN_CM && snap.still_dist_cm <= STILL_NEAR_CM;
+
+        /* 单帧误报不能刷新"最近运动"，否则一次噪声就能让静止目标维持两分钟。
+         * 连续 3 个采样周期（约 0.3 秒、覆盖两帧以上）才算真的动过。 */
+        if (move_hit) {
+            if (s_move_run < 255) s_move_run++;
+        } else {
+            s_move_run = 0;
+        }
+        if (s_move_run >= 3) s_last_move_us = now;
+        bool recent_move = s_last_move_us != 0 && now - s_last_move_us < STILL_MEMORY_US;
+
+        bool raw;
+        if (uart_ok) {
+            raw = move_hit || (still_hit && recent_move);
+        } else if (s_frames == 0) {
+            raw = out;                    /* 从来没收到过帧：可能只接了 OUT，用它兜底 */
+        } else {
+            raw = false;                  /* 出过帧又断了：OUT 不可信（会被光敏/悬空带跳），判无人 */
+        }
 
         if (raw != s_last_raw) {
             s_last_raw = raw;
             s_raw_since_us = now;
         }
-
-        radar_state_t snap;
-        taskENTER_CRITICAL(&s_lock);
-        snap = s_state;
-        taskEXIT_CRITICAL(&s_lock);
 
         int64_t hold = raw ? PRESENT_HOLD_US : ABSENT_HOLD_US;
         if (raw != snap.present && now - s_raw_since_us >= hold) {
@@ -177,8 +224,12 @@ static void radar_task(void *arg)
             s_state.present = raw;
             taskEXIT_CRITICAL(&s_lock);
             snap.present = raw;
-            ESP_LOGI(TAG, "雷达 → %s（OUT=%d UART=%d 距离=%dcm）",
-                     raw ? "有人" : "无人", out, uart_ok, snap.detect_dist_cm);
+            ESP_LOGI(TAG, "雷达 → %s（运动 %dcm/%d %s，静止 %dcm/%d %s，OUT=%d UART=%d）",
+                     raw ? "有人" : "无人",
+                     snap.move_dist_cm, snap.move_energy, move_hit ? "✓" : "✗",
+                     snap.still_dist_cm, snap.still_energy,
+                     still_hit ? (recent_move ? "✓" : "✓但无近期运动") : "✗",
+                     out, uart_ok);
         }
 
         if (uart_ok != last_uart) {
@@ -192,9 +243,11 @@ static void radar_task(void *arg)
 
         if (uart_ok && now >= next_log_us) {
             next_log_us = now + 30 * 1000 * 1000LL;
-            ESP_LOGI(TAG, "目标：%s%s 距离 %dcm（移动 %dcm/%d，静止 %dcm/%d）",
+            int since_move = s_last_move_us ? (int)((now - s_last_move_us) / 1000000) : -1;
+            ESP_LOGI(TAG, "目标：%s%s 最近运动 %ds 前 → 判%s（移动 %dcm/%d，静止 %dcm/%d）",
                      snap.moving ? "移动 " : "", snap.still ? "静止" : "无",
-                     snap.detect_dist_cm, snap.move_dist_cm, snap.move_energy,
+                     since_move, s_last_raw ? "有人" : "无人",
+                     snap.move_dist_cm, snap.move_energy,
                      snap.still_dist_cm, snap.still_energy);
         }
 
