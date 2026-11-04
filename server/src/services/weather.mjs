@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const CITY_COORDS_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)), "../../data/weather-cities.json");
 let cityCoordsCache;
-function cityCoords(city) {
+export function cityCoords(city) {
   if (cityCoordsCache === undefined) {
     try { cityCoordsCache = JSON.parse(readFileSync(CITY_COORDS_PATH, "utf8")); }
     catch { cityCoordsCache = {}; }

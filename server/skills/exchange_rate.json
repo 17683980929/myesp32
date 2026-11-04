@@ -1,0 +1,7 @@
+{
+  "name": "get_exchange_rate",
+  "description": "查人民币汇率（1 元人民币等于多少外币，含美元、欧元、日元、港币、英镑、韩元）。用户问「美元多少」「日元汇率」「现在换汇合适吗」「这个多少钱人民币」时调用。",
+  "parameters": { "type": "object", "properties": {} },
+  "request": { "method": "GET", "url": "https://open.er-api.com/v6/latest/CNY" },
+  "render": "1 元人民币 ≈ {{data.rates.USD}} 美元 / {{data.rates.EUR}} 欧元 / {{data.rates.JPY}} 日元 / {{data.rates.HKD}} 港币 / {{data.rates.GBP}} 英镑 / {{data.rates.KRW}} 韩元（更新于 {{data.time_last_update_utc}}）"
+}

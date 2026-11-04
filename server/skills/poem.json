@@ -1,0 +1,7 @@
+{
+  "name": "get_poem",
+  "description": "随机取一首古诗词，带标题、朝代、作者和正文。用户说「背首诗」「念首古诗」「来点诗词」「吟一句」时调用。",
+  "parameters": { "type": "object", "properties": {} },
+  "request": { "method": "GET", "url": "https://v2.jinrishici.com/one.json" },
+  "render": "《{{data.data.origin.title}}》{{data.data.origin.dynasty}}·{{data.data.origin.author}}\n{{data.data.content}}"
+}

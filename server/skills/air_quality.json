@@ -1,0 +1,10 @@
+{
+  "name": "get_air_quality",
+  "description": "查当前空气质量：PM2.5、PM10、欧洲 AQI。用户问「空气怎么样」「今天能跑步吗」「雾霾大不大」「AQI 多少」时调用。查的是服务器配置的城市（天气栏目里那个城市）。",
+  "parameters": { "type": "object", "properties": {} },
+  "request": {
+    "method": "GET",
+    "url": "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={{@lat}}&longitude={{@lon}}&current=pm2_5,pm10,european_aqi&timezone=Asia%2FShanghai"
+  },
+  "render": "{{@city}} 实时空气：PM2.5 {{data.current.pm2_5}} μg/m³，PM10 {{data.current.pm10}} μg/m³，AQI {{data.current.european_aqi}}（0-20 优 / 20-40 良 / 40-60 中 / 60-80 差 / 80+ 很差）"
+}

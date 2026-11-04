@@ -24,7 +24,8 @@
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { ROOT } from "../config.mjs";
+import { ROOT, getConfig } from "../config.mjs";
+import { cityCoords } from "./weather.mjs";
 
 const DIR = path.join(ROOT, "skills");
 const FETCH_TIMEOUT_MS = 8000;
@@ -75,6 +76,9 @@ export function reloadSkills() {
         entryChars: Math.min(2000, Math.max(300, Number(j.entryChars) || 800)),
         minScore: Math.min(60, Math.max(2, Number(j.minScore) || 10)),
         emergency: typeof j.emergency === "string" ? j.emergency : "",
+        /* 口语 → 原文词的同义扩展：法条里不会出现"假货""押金"这种说法，
+         * 不扩的话用户怎么问都查不到 */
+        synonyms: (j.synonyms && typeof j.synonyms === "object") ? j.synonyms : null,
         /* 预检索触发词：决策语气 + 生活领域，两个都命中才自动查（避免误触发） */
         triggers: (j.triggers && typeof j.triggers === "object")
           ? {
@@ -116,7 +120,7 @@ function pick(obj, dotted) {
 }
 
 function tpl(str, data, encode) {
-  return String(str).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+  return String(str).replace(/\{\{\s*([\w.@]+)\s*\}\}/g, (_, k) => {
     const v = pick(data, k);
     const s = (v && typeof v === "object") ? JSON.stringify(v) : String(v);
     return encode ? encodeURIComponent(s) : s;
@@ -172,8 +176,20 @@ function searchDocs(s, query) {
   const entries = loadDocs(s);
   if (!entries.length) return null;
 
-  const ts = terms(query);
-  if (!ts.length) return null;
+  const ts0 = terms(query);
+  if (!ts0.length) return null;
+
+  /* 同义扩展：用户说"假货"，法条里写的是"欺诈"；说"押金"，原文写"保证金/租金"。
+   * 只做一次展开（不递归），避免越扩越偏。 */
+  let ts = ts0;
+  if (s.synonyms) {
+    const extra = [];
+    for (const t of ts0) {
+      const add = s.synonyms[t];
+      if (Array.isArray(add)) for (const x of add) if (typeof x === "string" && x) extra.push(x);
+    }
+    if (extra.length) ts = [...new Set([...ts0, ...extra])];
+  }
 
   /* IDF 加权：常见词（手机、不要）权重低，专有词（低钠盐、押金）权重高，
    * 避免一句"要不要买手机"把全书里所有提到"手机"的条目都捞出来。 */
@@ -245,6 +261,22 @@ export function preSkillFor(text) {
   return null;
 }
 
+/** 模板内置变量：{{@city}} {{@lat}} {{@lon}} {{@today}}
+ *  模型不知道今天几号、也不知道配置城市的经纬度，这两个只有服务器知道。 */
+function builtinVars() {
+  const out = { "@city": "", "@lat": "", "@lon": "" };
+  try {
+    const city = String(getConfig()?.weather?.city || "").trim();
+    out["@city"] = city;
+    const c = city ? cityCoords(city) : null;
+    if (c) { out["@lat"] = String(c.lat); out["@lon"] = String(c.lon); }
+  } catch {
+    /* 配置读不到就留空，技能请求会自己失败，不影响其它功能 */
+  }
+  out["@today"] = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  return out;
+}
+
 export async function runSkill(name, args = {}) {
   const s = cache.find((x) => x.name === name);
   if (!s) return `未知工具：${name}`;
@@ -254,16 +286,17 @@ export async function runSkill(name, args = {}) {
   }
 
   const r = s.request;
+  const vars = { ...args, ...builtinVars() };
   const method = String(r.method || "GET").toUpperCase();
-  const url = tpl(r.url, args, true);
+  const url = tpl(r.url, vars, true);
   if (!/^https?:\/\//i.test(url)) return "技能配置错误：只允许 http/https 地址";
 
   const headers = {};
-  for (const [k, v] of Object.entries(r.headers || {})) headers[k] = tpl(v, args, false);
+  for (const [k, v] of Object.entries(r.headers || {})) headers[k] = tpl(v, vars, false);
 
   let body;
   if (method !== "GET" && method !== "HEAD" && r.body != null) {
-    body = typeof r.body === "string" ? tpl(r.body, args, false) : JSON.stringify(r.body);
+    body = typeof r.body === "string" ? tpl(r.body, vars, false) : JSON.stringify(r.body);
     if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type"))
       headers["Content-Type"] = "application/json";
   }
@@ -277,7 +310,7 @@ export async function runSkill(name, args = {}) {
 
     let data;
     try { data = JSON.parse(text); } catch { data = text; }
-    if (s.render) return tpl(s.render, { data, value: data }, false).trim();
+    if (s.render) return tpl(s.render, { ...vars, data, value: data }, false).trim();
     return typeof data === "string" ? data.slice(0, 500) : JSON.stringify(data).slice(0, 900);
   } catch (e) {
     return `技能 ${name} 执行失败：${e.name === "AbortError" ? "请求超时" : e.message}`;

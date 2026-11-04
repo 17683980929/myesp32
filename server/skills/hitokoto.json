@@ -1,0 +1,7 @@
+{
+  "name": "get_hitokoto",
+  "description": "随机取一句中文短句（动漫台词、文学作品、网络金句、网易云热评风格）。用户说「说句话」「来句鸡汤」「念句台词」「讲个金句」「随便说点什么」时调用。句子由社区投稿，模型自己编不出来。",
+  "parameters": { "type": "object", "properties": {} },
+  "request": { "method": "GET", "url": "https://v1.hitokoto.cn/" },
+  "render": "「{{data.hitokoto}}」——{{data.from}}"
+}
