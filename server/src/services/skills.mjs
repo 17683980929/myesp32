@@ -28,6 +28,7 @@ import { ROOT, getConfig } from "../config.mjs";
 import { cityCoords } from "./weather.mjs";
 import { calendarAnswer } from "./calendar.mjs";
 import { menuAnswer } from "./menu.mjs";
+import { expressAnswer } from "./express.mjs";
 
 const DIR = path.join(ROOT, "skills");
 const FETCH_TIMEOUT_MS = 8000;
@@ -38,6 +39,7 @@ const MAX_BODY = 8192;
 const BUILTINS = {
   calendar: calendarAnswer,
   menu: menuAnswer,
+  express: expressAnswer,
 };
 
 let cache = [];

@@ -83,6 +83,13 @@ export const DEFAULT_CONFIG = {
     /** 多久拉一次天气（秒） */
     refreshSec: 600,
   },
+  /** 快递查询（快递100 正式 API）。customer/key 在 api.kuaidi100.com 注册后获取；
+   *  没配置时技能会明确提示去配置，不会用免 key 的野接口瞎编轨迹。 */
+  express: {
+    provider: "kuaidi100",
+    customer: "",
+    key: "",
+  },
   news: {
     enabled: true,
     /** 新闻源：auto=头条主源、微博兜底；也可写 toutiao / weibo */
@@ -244,6 +251,7 @@ export function maskedConfig() {
   c.server.uploadToken = mask(c.server.uploadToken);
   c.server.adminPassword = mask(c.server.adminPassword);
   c.wifi.password = mask(c.wifi.password);
+  c.express.key = mask(c.express.key);
   return c;
 }
 

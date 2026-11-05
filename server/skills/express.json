@@ -1,0 +1,24 @@
+{
+  "name": "get_express",
+  "type": "builtin",
+  "handler": "express",
+  "description": "查快递物流轨迹。用户说「我的快递到哪了」「查一下单号 XXX」「顺丰/圆通 XXX 到哪了」「快递签收了吗」时调用。必须传单号；知道快递公司就传 carrier（中文名即可），不知道会自动识别。回答只依据返回的轨迹，不要编造物流节点；查不到就说没查到，并让用户确认单号或快递公司；如果返回「还没配置」，照实告诉用户去管理页填快递100 的 customer/key。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "number": {
+        "type": "string",
+        "description": "快递单号，字母数字，不要带空格或横线"
+      },
+      "carrier": {
+        "type": "string",
+        "description": "可选。快递公司：顺丰/圆通/中通/韵达/申通/京东/极兔/EMS/邮政/德邦/百世等；不填会按单号前缀自动判断"
+      },
+      "phone": {
+        "type": "string",
+        "description": "可选。收件人手机号后四位（顺丰等个别公司需要）"
+      }
+    },
+    "required": ["number"]
+  }
+}

@@ -927,7 +927,11 @@ export class DeviceSession {
         if (!calls.length) break;
         if (++toolRounds > 3) break;
 
-        log(`[${this.sid}] 工具调用: ${calls.map((c) => `${c.name}(${(c.args || "").slice(0, 60)})`).join(" ")}`);
+        /* 快递单号和轨迹里有地址/电话，日志里只记"查了"，不落原文 */
+        const callBrief = calls.map((c) => c.name === "get_express"
+          ? "get_express(单号已隐藏)"
+          : `${c.name}(${(c.args || "").slice(0, 60)})`).join(" ");
+        log(`[${this.sid}] 工具调用: ${callBrief}`);
         const asstCalls = calls.map((c, i) => ({
           id: c.id || `call_${toolRounds}_${i}`,
           type: "function",
@@ -946,7 +950,10 @@ export class DeviceSession {
           } catch (e) {
             result = `工具执行失败：${e.message}`;
           }
-          log(`[${this.sid}] 工具结果 ${c.function.name} → ${String(result).replace(/\s+/g, " ").slice(0, 100)}`);
+          const resultBrief = c.function.name === "get_express"
+            ? "快递轨迹（含地址，日志不落原文）"
+            : String(result).replace(/\s+/g, " ").slice(0, 100);
+          log(`[${this.sid}] 工具结果 ${c.function.name} → ${resultBrief}`);
           msgs.push({ role: "tool", tool_call_id: c.id, content: String(result) });
           if (this.stale(myTurn)) break;
         }

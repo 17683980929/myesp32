@@ -197,6 +197,16 @@
       </div>
     </div>
 
+    <!-- 快递查询 -->
+    <div class="card">
+      <h2>快递查询 <span class="tag">快递100</span></h2>
+      <label>授权码 customer</label>
+      <input id="ex_customer" placeholder="快递100 的 customer">
+      <label>密钥 key<span class="hint"> 留空 = 未配置</span></label>
+      <input id="ex_key" type="password" placeholder="快递100 的 key">
+      <p class="hint">在 api.kuaidi100.com 注册后获取，额度以官网为准。不配置时语音会提示去配置，不会瞎编轨迹。</p>
+    </div>
+
     <!-- 信息推送 -->
     <div class="card">
       <h2>信息栏推送</h2>
@@ -471,6 +481,8 @@ async function loadConfig() {
   $("wt_city").value = cfg.weather.city;
   $("wt_refresh").value = cfg.weather.refreshSec;
   $("wt_enabled").value = cfg.weather.enabled ? "1" : "0";
+  $("ex_customer").value = cfg.express?.customer || "";
+  $("ex_key").value = cfg.express?.key || "";
 
   $("i_push").value = cfg.info.pushSec;
 
@@ -536,6 +548,11 @@ async function saveAll() {
       city: $("wt_city").value,
       refreshSec: +$("wt_refresh").value,
       enabled: $("wt_enabled").value === "1",
+    },
+    express: {
+      provider: "kuaidi100",
+      customer: $("ex_customer").value.trim(),
+      key: $("ex_key").value,
     },
     info: { pushSec: +$("i_push").value },
     llm: {
