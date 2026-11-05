@@ -22,7 +22,7 @@
  * 约束：只允许 http/https；超时 8 秒；返回文本截断，避免污染上下文。
  */
 
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { ROOT, getConfig } from "../config.mjs";
 import { cityCoords } from "./weather.mjs";
@@ -98,6 +98,59 @@ export function reloadSkills() {
   lastError = errs.join("；");
   loadedAt = Date.now();
   return list;
+}
+
+/* ── 网页导入 / 删除（管理页「技能」卡片用）────────────────────────
+ * 只允许写 server/skills/<name>.json，文件名由 name 派生，不接受任何路径。
+ * 校验规则和 reloadSkills 保持一致，写文件之前先挡掉坏数据。
+ */
+
+function validateSkill(j) {
+  if (!j || typeof j !== "object") throw new Error("不是一个 JSON 对象");
+  const name = String(j.name || "");
+  if (!/^[a-zA-Z0-9_]{2,40}$/.test(name)) throw new Error("name 只能字母数字下划线（2~40）");
+  if (!j.description) throw new Error("缺 description");
+
+  const type = j.type === "docs" ? "docs" : "http";
+  if (type === "http") {
+    const url = String(j.request?.url || "");
+    if (!url) throw new Error("http 技能缺 request.url");
+    if (!/^https?:\/\//i.test(url)) throw new Error("request.url 只允许 http/https");
+  } else {
+    if (!j.dir) throw new Error("docs 技能缺 dir");
+    if (!existsSync(path.resolve(ROOT, String(j.dir))))
+      throw new Error(`docs 目录不存在：${j.dir}`);
+  }
+  return { j, name, type };
+}
+
+/** 写入一个技能 JSON 并立即重载。overwrite=false 时同名文件会被拒绝。 */
+export function saveSkill(text, { overwrite = false } = {}) {
+  let raw;
+  try {
+    raw = JSON.parse(String(text || ""));
+  } catch (e) {
+    throw new Error(`JSON 解析失败：${e.message}`);
+  }
+  const { j, name } = validateSkill(raw);
+  const file = path.join(DIR, `${name}.json`);
+  if (existsSync(file) && !overwrite) throw new Error(`已存在同名技能 ${name}（勾选“覆盖同名”再提交）`);
+
+  writeFileSync(file, JSON.stringify(j, null, 2) + "\n", "utf8");
+  reloadSkills();
+  if (!cache.some((s) => s.name === name)) throw new Error(lastError || "写入后仍未加载");
+  return { name, file, count: cache.length };
+}
+
+/** 删除 server/skills/<name>.json 并重载 */
+export function deleteSkill(name) {
+  const n = String(name || "");
+  if (!/^[a-zA-Z0-9_]{2,40}$/.test(n)) throw new Error("技能名不合法");
+  const file = path.join(DIR, `${n}.json`);
+  if (!existsSync(file)) throw new Error(`没有这个技能文件：${n}.json`);
+  unlinkSync(file);
+  reloadSkills();
+  return { name: n, count: cache.length };
 }
 
 /** 合并进 LLM 的 tools 数组 */

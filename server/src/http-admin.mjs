@@ -24,7 +24,7 @@ import { execFileSync } from "node:child_process";
 import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
-import { reloadSkills, loadedSkills, skillsError, skillsDir } from "./services/skills.mjs";
+import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 import { opusStatus } from "./services/tts.mjs";
@@ -894,6 +894,30 @@ export async function handleHttp(req, res, ctx) {
           ok: true, count: list.length, error: skillsError(),
           skills: list.map((s) => ({ name: s.name, description: s.description, file: s.file })),
         });
+      }
+
+      /* 网页里粘贴一个技能 JSON 直接写进 server/skills/ 并热重载。
+       * 只写 <name>.json，文件名由 name 派生，不碰别的路径。 */
+      if (p === "/api/skills/import" && req.method === "POST") {
+        try {
+          const body = JSON.parse(await readBody(req));
+          const r = saveSkill(String(body.json || ""), { overwrite: !!body.overwrite });
+          log(`导入技能 ${r.name} → 共 ${r.count} 个`);
+          return json(res, 200, { ok: true, ...r });
+        } catch (e) {
+          return json(res, 400, { ok: false, msg: e.message });
+        }
+      }
+
+      if (p === "/api/skills/delete" && req.method === "POST") {
+        try {
+          const { name } = JSON.parse(await readBody(req));
+          const r = deleteSkill(name);
+          log(`删除技能 ${r.name} → 共 ${r.count} 个`);
+          return json(res, 200, { ok: true, ...r });
+        } catch (e) {
+          return json(res, 400, { ok: false, msg: e.message });
+        }
       }
 
       if (p === "/api/ota" && req.method === "GET") {

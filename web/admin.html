@@ -54,6 +54,18 @@
   .kv span:first-child{color:var(--muted)}
   code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
   .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .skill-row{display:flex;align-items:center;gap:8px;padding:7px 0;
+             border-bottom:1px dashed var(--line);font-size:13px}
+  .skill-row:last-child{border-bottom:0}
+  .skill-kind{flex:none;font-size:10px;padding:1px 6px;border-radius:4px;
+              border:1px solid var(--line);background:var(--bg);color:var(--muted)}
+  .skill-kind.docs{color:#0a7c5a;border-color:#bfe8d8;background:#eefaf4}
+  .skill-name{flex:none;font-weight:600}
+  .skill-src{flex:1;min-width:0;font-size:11px;color:var(--muted);
+             overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .skill-del{flex:none;padding:2px 8px;font-size:11px;color:var(--err)}
+  .chk{display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;color:var(--muted)}
+  .chk input{width:auto}
   #aiSteps{font-size:12px;color:var(--muted);margin:8px 0 0;min-height:18px}
   #aiDiff{background:var(--bg);border:1px solid var(--line);border-radius:6px;
           padding:10px;max-height:320px;overflow:auto;margin-top:6px;
@@ -333,13 +345,21 @@
   <!-- 技能 -->
   <div class="card">
     <h2>技能 <span class="tag">server/skills</span></h2>
-    <div class="actions">
-      <span class="msg" id="skillInfo">读取中…</span>
-    </div>
+    <div id="skillList" style="margin-top:2px"><span class="msg">读取中…</span></div>
     <div class="actions">
       <button onclick="reloadSkills()">重载技能</button>
       <span class="msg" id="skillMsg"></span>
     </div>
+
+    <label style="margin-top:18px">导入技能<span class="hint" style="display:inline;margin-left:6px">粘贴一个 JSON，直接写进服务器 server/skills/ 并热重载</span></label>
+    <textarea id="skillJson" rows="6" placeholder='{"name":"get_xxx","description":"…什么时候该调用…","parameters":{"type":"object","properties":{}},"request":{"method":"GET","url":"https://api.example.com/x"},"render":"{{data.value}}"}'></textarea>
+    <div class="actions" style="margin-top:10px">
+      <button class="primary" onclick="importSkill()">写入并重载</button>
+      <label class="chk"><input type="checkbox" id="skillOverwrite"> 覆盖同名</label>
+      <span class="msg" id="skillImportMsg"></span>
+    </div>
+    <p class="hint">http 类型要填 <code>request.url</code>；docs 类型要填 <code>dir</code>（服务器上的 Markdown 目录）。
+      导入的只存在服务器本地，重新部署会被仓库里的版本覆盖。</p>
   </div>
 
   <!-- 课表编排 -->
@@ -1151,19 +1171,44 @@ async function pushOta() {
   }
 }
 
+/* 技能来源显示成短一点的形式：http 显示 host+path，docs 只留最后两段目录 */
+function shortSrc(u) {
+  const s = String(u || "");
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const x = new URL(s);
+      return x.host + (x.pathname === "/" ? "" : x.pathname);
+    } catch {
+      return s;
+    }
+  }
+  const parts = s.replace(/\\/g, "/").split("/").filter(Boolean);
+  return "…/" + parts.slice(-2).join("/");
+}
+
 async function refreshSkills() {
+  const box = $("skillList");
   try {
     const r = await fetch("api/skills");
     const j = await r.json();
     const list = j.skills || [];
     if (!list.length) {
-      $("skillInfo").textContent = `还没有技能（把 JSON 放到 ${j.dir}）`;
+      box.innerHTML = `<span class="msg">还没有技能（把 JSON 放到 ${escHtml(j.dir)}）</span>`;
       return;
     }
-    $("skillInfo").textContent = list.map((s) => `${s.name}（${s.method} ${s.url}）`).join("　");
-    if (j.error) $("skillInfo").textContent += `  ⚠ ${j.error}`;
+    box.innerHTML = list.map((s) => {
+      const kind = s.method === "docs" ? "docs" : "http";
+      return `<div class="skill-row">
+        <span class="skill-kind ${kind}">${escHtml(s.method)}</span>
+        <span class="skill-name">${escHtml(s.name)}</span>
+        <span class="skill-src" title="${escHtml(s.url)}">${escHtml(shortSrc(s.url))}</span>
+        <button class="skill-del" onclick="deleteSkill('${escHtml(s.name)}')">删除</button>
+      </div>`;
+    }).join("");
+    if (j.error) box.innerHTML += `<div class="msg warn" style="margin-top:8px">⚠ ${escHtml(j.error)}</div>`;
   } catch (e) {
-    $("skillInfo").textContent = "读取技能失败";
+    box.innerHTML = '<span class="msg err">读取技能失败</span>';
   }
 }
 
@@ -1176,6 +1221,46 @@ async function reloadSkills() {
     refreshSkills();
   } catch (e) {
     setMsg($("skillMsg"), "重载失败", "err");
+  }
+}
+
+async function importSkill() {
+  const text = $("skillJson").value.trim();
+  if (!text) return setMsg($("skillImportMsg"), "先粘贴一个技能 JSON", "warn");
+  setMsg($("skillImportMsg"), "写入中…", "");
+  try {
+    const r = await fetch("api/skills/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ json: text, overwrite: $("skillOverwrite").checked }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      setMsg($("skillImportMsg"), `已导入 ${j.name}，现在共 ${j.count} 个`, "ok");
+      $("skillJson").value = "";
+      refreshSkills();
+    } else {
+      setMsg($("skillImportMsg"), j.msg || "导入失败", "err");
+    }
+  } catch (e) {
+    setMsg($("skillImportMsg"), "导入失败", "err");
+  }
+}
+
+async function deleteSkill(name) {
+  if (!confirm(`删除技能 ${name}？\n只删服务器上的文件，重新部署会恢复仓库里的版本。`)) return;
+  setMsg($("skillMsg"), "删除中…", "");
+  try {
+    const r = await fetch("api/skills/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const j = await r.json();
+    setMsg($("skillMsg"), j.ok ? `已删除 ${name}` : `删除失败：${j.msg || ""}`, j.ok ? "ok" : "err");
+    refreshSkills();
+  } catch (e) {
+    setMsg($("skillMsg"), "删除失败", "err");
   }
 }
 
