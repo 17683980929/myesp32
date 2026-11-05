@@ -19,6 +19,13 @@ import { startReminders } from "./services/reminders.mjs";
 
 /* 进程级兜底：单个异步/定时错误不能直接带走服务（否则 nginx 立刻 502）。
  * 未捕获异常记录后退出，交给 run-loop/schtasks 拉起；unhandledRejection 只记日志。 */
+process.on("exit", (code) => {
+  try {
+    console.log(`[exit] code=${code} at=${new Date().toISOString()}`);
+  } catch {
+    /* 退出阶段 stdout 可能已关闭 */
+  }
+});
 process.on("unhandledRejection", (e) => {
   console.error("[fatal] unhandledRejection:", e?.stack || e?.message || e);
 });
@@ -30,6 +37,17 @@ process.on("uncaughtException", (e) => {
 const config = getConfig();
 const weather = new WeatherCache();
 const devices = new Set();
+
+/* 崩溃排查：每次启动记一行，之后每 10 分钟记一次内存。
+ * 如果服务半夜挂掉，日志里最后一条 [health] 能看出是不是内存涨爆。 */
+console.log(`[boot] pid=${process.pid} node=${process.version} at=${new Date().toISOString()}`);
+setInterval(() => {
+  const m = process.memoryUsage();
+  console.log(
+    `[health] uptime=${Math.round(process.uptime())}s ` +
+    `rss=${Math.round(m.rss / 1048576)}MB heap=${Math.round(m.heapUsed / 1048576)}MB`
+  );
+}, 10 * 60 * 1000).unref();
 
 const ctx = { config, weather, devices };
 

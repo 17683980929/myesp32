@@ -72,6 +72,9 @@
   .parcel-label{flex:1;min-width:0;color:var(--muted);
                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .parcel-del{flex:none;padding:1px 7px;font-size:11px;color:var(--err)}
+  .logbox{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;
+          max-height:320px;overflow:auto;font-size:11px;line-height:1.5;
+          white-space:pre-wrap;word-break:break-all;margin-top:8px}
   .chk{display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;color:var(--muted)}
   .chk input{width:auto}
   #aiSteps{font-size:12px;color:var(--muted);margin:8px 0 0;min-height:18px}
@@ -271,6 +274,22 @@
       <input id="i_push" type="number" min="10">
       <p class="hint">服务器按这个间隔把时间/日期/天气推给设备。温湿度和电量由设备本地读取，不走网络。</p>
     </div>
+  </div>
+
+  <!-- 运行日志 -->
+  <div class="card">
+    <h2>运行日志 <span class="tag">server.log / server.err.log</span></h2>
+    <div class="row">
+      <div>
+        <label>文件</label>
+        <select id="logFile" onchange="showLog()"></select>
+      </div>
+      <div style="flex:none;align-self:flex-end">
+        <button onclick="refreshLogs()">刷新</button>
+      </div>
+    </div>
+    <pre class="logbox" id="logBox">点「刷新」读取最后 200 行</pre>
+    <p class="hint" id="logMeta">服务端挂掉时先看 server.err.log 和 supervisor.log。</p>
   </div>
 
   <!-- LLM -->
@@ -482,6 +501,7 @@
         <button class="primary" onclick="saveTt()">保存并下发</button>
         <span class="msg" id="ttMsg"></span>
       </div>
+      <p class="hint" id="ttMeta">—</p>
       <p class="hint">格子里点开下拉选班级；保存会同时更新提醒/问答用的数据，并把新脚本下发给在线设备。</p>
     </div>
   </div>
@@ -595,6 +615,7 @@ async function loadConfig() {
   }
 
   refreshParcels();
+  refreshLogs();
 }
 
 async function saveAll() {
@@ -750,6 +771,33 @@ async function testHook() {
   } catch {
     setMsg($("hookMsg"), "请求失败", "err");
   }
+}
+
+let logFiles = [];
+
+async function refreshLogs() {
+  try {
+    const r = await fetch("api/logs?lines=200");
+    const j = await r.json();
+    logFiles = j.files || [];
+    const sel = $("logFile");
+    const prev = sel.value;
+    sel.innerHTML = logFiles.map((f, i) => `<option value="${i}">${escHtml(f.name)}</option>`).join("");
+    if (prev && +prev < logFiles.length) sel.value = prev;
+    $("logMeta").textContent =
+      `PID ${j.pid} · 已运行 ${Math.floor(j.uptimeSec / 3600)}h ${Math.floor(j.uptimeSec % 3600 / 60)}m` +
+      " · 服务端挂掉时先看 server.err.log 和 supervisor.log";
+    showLog();
+  } catch {
+    $("logBox").textContent = "读取日志失败（服务可能没在跑）";
+  }
+}
+
+function showLog() {
+  const i = Number($("logFile").value || 0);
+  const f = logFiles[i];
+  $("logBox").textContent = f ? (f.text || "(空)") : "(没有日志)";
+  $("logBox").scrollTop = $("logBox").scrollHeight;
 }
 
 function radarText(d) {
@@ -1181,6 +1229,8 @@ async function loadTt() {
     TTR = await r.json();
     TTSEL = TTR.round || 1;
     $("ttClasses").value = (TTR.classes || []).join(",");
+    const src = { lua: "设备脚本恢复", seed: "出厂模板", runtime: "运行时保存" }[TTR.source] || TTR.source || "未知";
+    $("ttMeta").textContent = `服务端课表更新：${TTR.updated || "未知"} · 来源：${src}`;
     drawPeriods();
     drawTt();
   } catch { $("ttMsg").textContent = "读取课表失败"; }

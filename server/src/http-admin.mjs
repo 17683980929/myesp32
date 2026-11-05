@@ -27,6 +27,7 @@ import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
 import { listParcels, addParcel, removeParcel } from "./services/parcels.mjs";
 import { parseSms } from "./services/parcel-sms.mjs";
+import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 import { opusStatus } from "./services/tts.mjs";
@@ -40,6 +41,42 @@ const UPD_DIR = path.join(ROOT, ".update");
 const UPD_ZIP = path.join(UPD_DIR, "server.zip");
 const UPD_META = path.join(UPD_DIR, "pending.json");
 const VERSION_FILE = path.join(ROOT, "VERSION");
+
+/* 运行日志：run-loop.cmd 把 stdout/stderr 重定向到 server 根目录。
+ * 管理页只读最后 256KB，避免日志涨到几十 MB 时把内存打满。 */
+const LOG_FILES = [
+  { name: "server.log", file: path.join(ROOT, "server.log") },
+  { name: "server.err.log", file: path.join(ROOT, "server.err.log") },
+  { name: "supervisor.log", file: path.join(ROOT, "supervisor.log") },
+];
+
+function tailLog(file, maxLines) {
+  if (!existsSync(file)) return "(没有这个日志文件)";
+  try {
+    const st = statSync(file);
+    const maxBytes = 256 * 1024;
+    const fd = openSync(file, "r");
+    let text;
+    try {
+      const head = Buffer.alloc(2);
+      readSync(fd, head, 0, 2, 0);
+      const utf16 = head[0] === 0xff && head[1] === 0xfe;
+      let start = Math.max(0, st.size - maxBytes);
+      if (utf16 && start % 2) start++;          /* UTF-16 从奇数字节开始会乱码 */
+      const len = st.size - start;
+      if (len <= 0) return "";
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      text = utf16 ? buf.toString("utf16le") : buf.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+    text = text.replace(/^\uFEFF/, "");
+    return text.split(/\r?\n/).slice(-maxLines).join("\n");
+  } catch (e) {
+    return `读取失败：${e.message}`;
+  }
+}
 
 /** 同一台设备可能残留多个 WS 会话（半开 TCP/重连）：按 MAC 去重，保留最近有上行的 */
 function uniqueDevices(devices) {
@@ -382,6 +419,15 @@ export async function handleHttp(req, res, ctx) {
         return json(res, 200, { ok: true, config: maskedConfig() });
       }
 
+      if (p === "/api/logs" && req.method === "GET") {
+        const n = Math.min(500, Math.max(20, Number(url.searchParams.get("lines")) || 200));
+        return json(res, 200, {
+          pid: process.pid,
+          uptimeSec: Math.round(process.uptime()),
+          files: LOG_FILES.map((x) => ({ name: x.name, path: x.file, text: tailLog(x.file, n) })),
+        });
+      }
+
       if (p === "/api/status" && req.method === "GET") {
         return json(res, 200, {
           uptimeSec: Math.round(process.uptime()),
@@ -476,7 +522,24 @@ export async function handleHttp(req, res, ctx) {
         try {
           ["server/src", "server/skills", "web"].forEach(swapDir);
           const dataFrom = path.join(stage, "server/data");
-          if (existsSync(dataFrom)) cpSync(dataFrom, path.join(ROOT, "data"), { recursive: true, force: true });
+          if (existsSync(dataFrom)) {
+            /* 部署包里的 data/timetable.json 是 git 里的出厂模板，会覆盖云端课表。
+             * 如果 runtime 还没有课表、设备脚本里也没有 DATA 段可恢复，
+             * 先把当前云端课表落到 runtime，避免这次部署把它冲掉。 */
+            const liveTT = path.join(ROOT, "data", "timetable.json");
+            const runtimeTT = path.join(ROOT, "runtime", "timetable.json");
+            const luaCode = String(getConfig()?.lua?.activeScript || "");
+            if (!existsSync(runtimeTT) && existsSync(liveTT) && !/local RS=\{/.test(luaCode)) {
+              try {
+                mkdirSync(path.dirname(runtimeTT), { recursive: true });
+                cpSync(liveTT, runtimeTT);
+                log("已把当前课表保存到 runtime（部署不覆盖）");
+              } catch (e) {
+                log("保存当前课表到 runtime 失败：" + e.message);
+              }
+            }
+            cpSync(dataFrom, path.join(ROOT, "data"), { recursive: true, force: true });
+          }
           for (const f of ["package.json", "package-lock.json"]) {
             const from = path.join(stage, "server", f);
             if (existsSync(from)) cpSync(from, path.join(ROOT, f), { force: true });
@@ -497,10 +560,12 @@ export async function handleHttp(req, res, ctx) {
 
       /* 课表：读 / 存（存完重写 Lua 的 DATA 段并下发） */
       if (p === "/api/timetable" && req.method === "GET") {
-        const tt = JSON.parse(readFileSync(path.join(ROOT, "data/timetable.json"), "utf8"));
+        const tt = loadTimetableRaw();
+        if (!tt) return json(res, 500, { ok: false, msg: "课表数据缺失" });
         return json(res, 200, {
           days: tt.days, periods: tt.periods, classes: tt.classes,
           rounds: tt.rounds, round: getConfig().timetable?.round || 1,
+          source: tt.source || "runtime", updated: tt.updated || "",
         });
       }
 
@@ -526,11 +591,13 @@ export async function handleHttp(req, res, ctx) {
             r.some((x) => typeof x !== "string" || x.length !== 7 || [...x].some((ch) => !valid.has(ch)))))
           return json(res, 400, { ok: false, msg: "格子非法（可能有超出班级列表的字母）" });
 
-        const ttPath = path.join(ROOT, "data/timetable.json");
-        const tt = JSON.parse(readFileSync(ttPath, "utf8"));
+        const ttPath = timetablePath();
+        const tt = loadTimetableRaw() || {};
         tt.classes = classes;
         tt.periods = periods;
         tt.rounds = rounds;
+        tt.updated = new Date().toISOString().slice(0, 10);
+        tt.source = "runtime";
         writeFileSync(ttPath, JSON.stringify(tt, null, 2) + "\n");
 
         const q = (arr) => "{" + arr.map((x) => '"' + x + '"').join(",") + "}";

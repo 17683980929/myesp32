@@ -126,13 +126,15 @@ export function startReminders(ctx) {
         fired.add(key);
         const tt = loadTimetable();
         const col = (b.wd + 6) % 7;
-        let line = "今天没有课。";
+        let line = "课表数据还没准备好。";
         if (tt?.grid) {
           const cells = [];
           tt.grid.forEach((row, r) => {
             if (row[col]) cells.push(`${tt.periods[r].time} ${row[col]} 班`);
           });
-          if (cells.length) line = `今天 ${cells.length} 节课，第一节 ${cells[0]}。`;
+          line = cells.length
+            ? `今天 ${cells.length} 节课，第一节 ${cells[0]}。`
+            : "今天没有课。";
         }
         const w = ctx.weather?.data;
         const wtxt = (w && w.text && Number.isFinite(w.temp)) ? `今天${w.text}，${w.temp} 度。` : "";

@@ -13,6 +13,9 @@ firmware/managed_components/
 
 # ── 服务器本地配置（以后会有密钥，绝不进仓库）────────────────
 server/config.json
+# 运行时课表（管理页保存，部署不覆盖）
+server/runtime/
+
 # 「我的快递」清单：含用户单号，只存服务器本地
 server/parcels.json
 server/parcels.json.tmp
