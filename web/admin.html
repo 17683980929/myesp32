@@ -237,6 +237,31 @@
         </div>
         <p class="hint">查过一次的单号会自动进来；问「我的快递到哪了」会逐个播报。</p>
       </div>
+
+      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+        <b style="font-size:13px">短信自动导入</b>
+        <label>Webhook 密钥<span class="hint"> 手机转发时带这个 token</span></label>
+        <div class="row">
+          <div>
+            <input id="ex_hookToken" placeholder="点右侧生成" oninput="updateHookUrl()">
+          </div>
+          <div style="flex:none">
+            <button type="button" onclick="genHookToken()">随机生成</button>
+          </div>
+        </div>
+        <div class="hint" id="hookUrl" style="word-break:break-all">保存后显示转发地址</div>
+        <div class="row" style="margin-top:6px">
+          <div>
+            <label>测试一条短信</label>
+            <input id="hookTest" placeholder="【菜鸟驿站】您的圆通快递YT...已到">
+          </div>
+        </div>
+        <div class="actions">
+          <button onclick="testHook()">测试解析</button>
+          <span class="msg" id="hookMsg"></span>
+        </div>
+        <p class="hint">安卓用 SmsForwarder / 短信转发器，iOS 用快捷指令：收到含「快递」的短信时 POST JSON {"text":"短信内容"} 到这个地址。只存单号，不存原文。</p>
+      </div>
     </div>
 
     <!-- 信息推送 -->
@@ -516,6 +541,8 @@ async function loadConfig() {
   $("ex_customer").value = cfg.express?.customer || "";
   $("ex_key").value = cfg.express?.key || "";
   $("ex_phone").value = cfg.express?.phone || "";
+  $("ex_hookToken").value = cfg.express?.hookToken || "";
+  updateHookUrl();
 
   $("i_push").value = cfg.info.pushSec;
 
@@ -589,6 +616,7 @@ async function saveAll() {
       customer: $("ex_customer").value.trim(),
       key: $("ex_key").value,
       phone: $("ex_phone").value.trim(),
+      hookToken: $("ex_hookToken").value.trim(),
     },
     info: { pushSec: +$("i_push").value },
     llm: {
@@ -682,6 +710,45 @@ async function delParcel(number) {
     refreshParcels();
   } catch {
     setMsg($("parcelMsg"), "删除失败", "err");
+  }
+}
+
+function hookBase() {
+  return location.origin + location.pathname.replace(/\/admin\/?$/, "");
+}
+
+function updateHookUrl() {
+  const t = $("ex_hookToken").value.trim();
+  $("hookUrl").textContent = t
+    ? `${hookBase()}/api/parcel-hook?token=${encodeURIComponent(t)}`
+    : "先填/生成 token 并保存";
+}
+
+function genHookToken() {
+  const a = new Uint8Array(12);
+  crypto.getRandomValues(a);
+  $("ex_hookToken").value = [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+  updateHookUrl();
+  $("hookUrl").textContent += "（记得点保存）";
+}
+
+async function testHook() {
+  const token = $("ex_hookToken").value.trim();
+  const text = $("hookTest").value.trim();
+  if (!token) return setMsg($("hookMsg"), "先生成 token", "err");
+  if (!text) return setMsg($("hookMsg"), "先填一条短信", "err");
+  try {
+    const r = await fetch(`api/parcel-hook?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const j = await r.json();
+    if (!j.ok) return setMsg($("hookMsg"), j.msg || "失败", "err");
+    setMsg($("hookMsg"), j.added ? `识别到 ${j.added} 个，已加入` : (j.msg || "没识别到"), j.added ? "ok" : "warn");
+    if (j.added) refreshParcels();
+  } catch {
+    setMsg($("hookMsg"), "请求失败", "err");
   }
 }
 

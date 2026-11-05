@@ -91,6 +91,8 @@ export const DEFAULT_CONFIG = {
     key: "",
     /** 绑定的手机号：只作「我的快递」的标识，不用来向快递公司查（那需要企业授权） */
     phone: "",
+    /** 短信转发 webhook 的密钥（只允许加单号，不能读配置） */
+    hookToken: "",
   },
   news: {
     enabled: true,

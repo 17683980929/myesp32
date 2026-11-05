@@ -26,6 +26,7 @@ import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mj
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
 import { listParcels, addParcel, removeParcel } from "./services/parcels.mjs";
+import { parseSms } from "./services/parcel-sms.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 import { opusStatus } from "./services/tts.mjs";
@@ -317,6 +318,38 @@ export async function handleHttp(req, res, ctx) {
       const info = otaInfo();
       log(`固件已更新：${info.version} ${(buf.length / 1048576).toFixed(2)}MB ${info.built}`);
       return json(res, 200, { ok: true, ...info });
+    }
+
+    /* ── 快递短信转发（手机端 SmsForwarder / 快捷指令，独立 token）──
+     * 不走网页密码：手机转发器塞不进登录态。token 只允许"加单号"，不能读配置。 */
+    if (p === "/api/parcel-hook" && req.method === "POST") {
+      const want = String(getConfig().express?.hookToken || "");
+      if (!want) return json(res, 403, { ok: false, msg: "未配置 hookToken" });
+      const token = String(url.searchParams.get("token") || req.headers["x-parcel-token"] || "");
+      if (token !== want) return json(res, 403, { ok: false, msg: "token 不对" });
+
+      const raw = await readBody(req);
+      let text = raw;
+      try {
+        const j = JSON.parse(raw);
+        text = String(j.text || j.content || j.msg || j.message || j.sms || raw);
+      } catch {
+        /* 有些转发器发的是表单：text=...&from=... */
+        if (/^(text|content|msg|message|sms)=/i.test(raw.trim())) {
+          const q = new URLSearchParams(raw);
+          text = q.get("text") || q.get("content") || q.get("msg") || q.get("message") || q.get("sms") || raw;
+        }
+      }
+      const list = parseSms(text);
+      if (!list.length) return json(res, 200, { ok: true, added: 0, msg: "没有识别到快递单号" });
+
+      let added = 0;
+      for (const it of list) if (addParcel(it.number, it.carrier, "短信")) added++;
+      log(`短信导入快递 ${added} 个`);
+      return json(res, 200, {
+        ok: true, added, total: listParcels().length,
+        numbers: list.map((x) => x.number),
+      });
     }
 
     /* ── API ──────────────────────────────────────────────────────── */
