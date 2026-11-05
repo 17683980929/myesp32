@@ -8,24 +8,83 @@
   :root{
     --bg:#f5f6f8; --card:#fff; --line:#e4e7ec; --text:#1f2328;
     --muted:#6b7280; --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+    --side-w:238px; --nav-hover:#f3f5f9; --nav-active:#eef4ff;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
        font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+
+  /* ── 骨架 ───────────────────────────────────────────────────── */
+  .app{display:flex;min-height:100vh;align-items:stretch}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
   header{background:var(--card);border-bottom:1px solid var(--line);
-         padding:14px 22px;display:flex;align-items:center;gap:14px;
-         position:sticky;top:0;z-index:10}
-  header h1{font-size:16px;margin:0;font-weight:600}
-  header .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
-  header .dot.on{background:var(--ok)}
-  header .spacer{flex:1}
-  main{max-width:1080px;margin:0 auto;padding:22px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+         padding:11px 24px;display:flex;align-items:center;gap:12px;
+         position:sticky;top:0;z-index:20}
+  header .htitle{display:flex;flex-direction:column;min-width:0}
+  header h1{font-size:15px;margin:0;font-weight:600;line-height:1.35}
+  header .sub{font-size:11px;color:var(--muted);line-height:1.35;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hact{margin-left:auto;display:flex;align-items:center;gap:9px;
+        flex-wrap:wrap;justify-content:flex-end}
+  .content{width:100%;max-width:1180px;margin:0 auto;padding:22px 26px 72px;flex:1}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);
+       flex:none;transition:background .2s}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(22,163,74,.13)}
+
+  /* ── 侧边栏 ─────────────────────────────────────────────────── */
+  .sidebar{width:var(--side-w);flex:none;position:sticky;top:0;height:100vh;
+           background:var(--card);border-right:1px solid var(--line);
+           display:flex;flex-direction:column;z-index:30}
+  .brand{display:flex;align-items:center;gap:10px;padding:17px 18px 15px;
+         border-bottom:1px solid var(--line)}
+  .brand b{display:block;font-size:14px;letter-spacing:.3px}
+  .brand small{display:block;font-size:11px;color:var(--muted);line-height:1.25}
+  .nav{flex:1;overflow:auto;padding:8px 12px 18px}
+  .nav-group{font-size:10px;font-weight:600;color:#9aa3af;letter-spacing:.12em;
+             padding:14px 8px 6px}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:8px 10px;margin-bottom:1px;
+            border-radius:7px;color:var(--text);text-decoration:none;font-size:13px;
+            position:relative;transition:background .12s,color .12s}
+  .nav-item:hover{background:var(--nav-hover)}
+  .nav-item.active{background:var(--nav-active);color:var(--accent);font-weight:600}
+  .nav-item.active::before{content:"";position:absolute;left:-12px;top:50%;
+     transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;
+     background:var(--accent)}
+  .nav-item svg{width:16px;height:16px;flex:none;opacity:.72}
+  .nav-item.active svg{opacity:1}
+  .nav-badge{margin-left:auto;font-size:10px;color:var(--muted);background:var(--bg);
+             border:1px solid var(--line);border-radius:20px;padding:0 6px;
+             min-width:18px;text-align:center;line-height:16px}
+  .nav-badge:empty{display:none}
+  .nav-item.active .nav-badge{color:var(--accent);border-color:#c7dcff;background:#fff}
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding:12px 18px;
+             font-size:11px;color:var(--muted);line-height:1.9}
+  .side-foot b{color:var(--text);font-weight:600}
+
+  /* ── 页面切换 ───────────────────────────────────────────────── */
+  .page{display:none}
+  .page.active{display:block;animation:pageIn .16s ease-out}
+  @keyframes pageIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+         gap:14px;margin-bottom:16px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:13px 15px}
+  .stat span{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
+  .stat b{display:block;font-size:15px;font-weight:600;line-height:1.35;
+          word-break:break-all}
+  .stat code{background:none;padding:0;font-size:12.5px}
+  .table-wrap{overflow-x:auto}
+
+  /* ── 卡片与表单 ─────────────────────────────────────────────── */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .grid .card{margin-bottom:0}
+  .card.wide{grid-column:1/-1}
+  .col{display:flex;flex-direction:column;gap:16px}
+  .col .card{margin-bottom:0}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
         padding:18px 20px;margin-bottom:16px}
   .card h2{font-size:14px;margin:0 0 14px;font-weight:600;
-           display:flex;align-items:center;gap:8px}
+           display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .card h2 .tag{font-size:11px;font-weight:400;color:var(--muted);
                 background:var(--bg);border:1px solid var(--line);
                 padding:1px 7px;border-radius:20px}
@@ -36,24 +95,27 @@
   textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px}
   .row{display:flex;gap:12px}
   .row>*{flex:1}
-  button{padding:8px 16px;border-radius:6px;border:1px solid var(--line);
-         background:#fff;color:var(--text);font:inherit;cursor:pointer}
+  button{padding:7px 14px;border-radius:6px;border:1px solid var(--line);
+         background:#fff;color:var(--text);font:inherit;cursor:pointer;
+         transition:background .12s,border-color .12s}
   button:hover{background:#f9fafb}
   button:disabled{opacity:.45;cursor:not-allowed}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button.primary:hover{background:#1d4ed8}
-  .actions{display:flex;gap:10px;align-items:center;margin-top:16px}
+  .actions{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
   .msg{font-size:12px}
   .msg.ok{color:var(--ok)} .msg.err{color:var(--err)} .msg.warn{color:var(--warn)}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
-  th{color:var(--muted);font-weight:500;font-size:12px}
-  .kv{display:flex;justify-content:space-between;padding:5px 0;
+  th{color:var(--muted);font-weight:500;font-size:12px;white-space:nowrap}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
       border-bottom:1px dashed var(--line);font-size:13px}
   .kv:last-child{border-bottom:0}
-  .kv span:first-child{color:var(--muted)}
+  .kv span:first-child{color:var(--muted);flex:none}
+  .kv span:last-child{text-align:right;min-width:0;word-break:break-all}
   code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
   .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .hint:empty{display:none}
   .skill-row{display:flex;align-items:center;gap:8px;padding:7px 0;
              border-bottom:1px dashed var(--line);font-size:13px}
   .skill-row:last-child{border-bottom:0}
@@ -73,7 +135,7 @@
                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .parcel-del{flex:none;padding:1px 7px;font-size:11px;color:var(--err)}
   .logbox{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;
-          max-height:320px;overflow:auto;font-size:11px;line-height:1.5;
+          max-height:420px;overflow:auto;font-size:11px;line-height:1.5;
           white-space:pre-wrap;word-break:break-all;margin-top:8px}
   .chk{display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;color:var(--muted)}
   .chk input{width:auto}
@@ -89,6 +151,8 @@
   #aiErrors:empty,#aiWarn:empty{display:none}
   .banner{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;
           padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+
+  /* ── 课表弹窗 ───────────────────────────────────────────────── */
   .modal-mask{display:none;position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.45);
               align-items:center;justify-content:center;padding:18px}
   .modal-mask.open{display:flex}
@@ -104,377 +168,482 @@
   .tt-cols{display:flex;gap:18px;align-items:flex-start;margin-top:4px}
   .tt-periods{flex:0 0 230px}
   .tt-grid-wrap{flex:1;min-width:0}
-  @media(max-width:900px){.tt-cols{display:block}.tt-periods{width:100%}}
+
+  /* ── 窄屏：侧边栏变顶部横条 ─────────────────────────────────── */
+  @media(max-width:960px){
+    .stats{grid-template-columns:1fr 1fr}
+  }
+  @media(max-width:900px){
+    .app{display:block}
+    .sidebar{position:sticky;top:0;width:auto;height:auto;
+             border-right:0;border-bottom:1px solid var(--line)}
+    .brand{padding:10px 14px 4px;border-bottom:0}
+    .brand small{display:none}
+    .nav{display:flex;overflow-x:auto;gap:4px;padding:0 10px 8px;flex:none}
+    .nav::-webkit-scrollbar{height:0}
+    .nav-group{display:none}
+    .nav-item{padding:5px 11px;margin:0;border-radius:16px;white-space:nowrap;font-size:12px}
+    .nav-item.active::before{display:none}
+    .nav-item svg{display:none}
+    .nav-badge{margin-left:5px}
+    .side-foot{display:none}
+    header{position:static;padding:10px 14px;flex-wrap:wrap}
+    header .sub{display:none}
+    .hact{width:100%;justify-content:flex-end;margin-top:2px}
+    .content{padding:14px 14px 56px}
+    .stats .stat:last-child{grid-column:1/-1}
+    .stats .stat:last-child b{font-size:13px}
+    .grid{grid-template-columns:1fr;gap:12px}
+    .card{padding:14px 15px}
+    .tt-cols{display:block}
+    .tt-periods{width:100%}
+  }
 </style>
 </head>
 <body>
-<header>
-  <span class="dot" id="dot"></span>
-  <h1>MyEsp32 · 配置</h1>
-  <span class="spacer"></span>
-  <span class="msg" id="hdrMsg"></span>
-  <button onclick="refreshStatus()">刷新状态</button>
-</header>
-
-<main>
-  <div class="banner" id="warnBanner" style="display:none"></div>
-
-  <!-- 状态 -->
-  <div class="card">
-    <h2>运行状态</h2>
-    <div class="grid" style="gap:20px">
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="dot" id="dot"></span>
       <div>
-        <div class="kv"><span>运行时长</span><span id="stUptime">—</span></div>
-        <div class="kv"><span>在线设备</span><span id="stDevCount">—</span></div>
-        <div class="kv"><span>天气</span><span id="stWeather">—</span></div>
-      </div>
-      <div>
-        <div class="kv"><span>天气错误</span><span id="stWeatherErr">—</span></div>
-        <div class="kv"><span>设备连接地址</span><span><code id="stWsUrl">—</code></span></div>
-      </div>
-    </div>
-    <div style="margin-top:14px">
-      <table>
-        <thead><tr><th>会话</th><th>MAC</th><th>固件</th><th>页面</th><th>状态</th><th>雷达</th><th>电量</th><th>室温/湿度</th></tr></thead>
-        <tbody id="devTable"><tr><td colspan="8" style="color:var(--muted)">暂无设备</td></tr></tbody>
-      </table>
-    </div>
-    <div id="radarCard" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px;display:none">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <b style="font-size:13px">雷达</b><span class="tag">有人/无人 · 不记身份</span>
-      </div>
-      <div class="grid" style="gap:6px 20px">
-        <div>
-          <div class="kv"><span>当前</span><span id="radarNow">—</span></div>
-          <div class="kv"><span>今日首次/最后</span><span id="radarDay">—</span></div>
-        </div>
-        <div>
-          <div class="kv"><span>今日在座</span><span id="radarToday">—</span></div>
-          <div class="kv"><span>最近进出</span><span id="radarLog">—</span></div>
-        </div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <label style="font-size:12px"><input type="checkbox" id="pGate"> 定时提醒只在有人时播</label>
-        <button type="button" id="radarTestBtn">测试门控播报</button>
-        <span class="msg" id="radarMsg"></span>
-      </div>
-      <p class="hint">只统计有人/无人、距离和时间，不记身份；数据在服务器内存，重启清空。</p>
-    </div>
-  </div>
-
-  <div class="grid">
-    <!-- 服务器 -->
-    <div class="card">
-      <h2>服务器 <span class="tag">安全</span></h2>
-      <label>监听端口</label>
-      <input id="s_port" type="number" min="1" max="65535">
-      <label>公网地址<span class="hint"> OTA 下发用；必须是 http://0929.site 这种形式，不能 https</span></label>
-      <input id="s_publicUrl" placeholder="http://0929.site（留空则用内网地址，云上会连不上）">
-      <label>设备鉴权 Token<span class="hint"> 留空则不鉴权（公网必须设置）</span></label>
-      <input id="s_token" placeholder="留空 = 不鉴权">
-      <label>配置网页密码<span class="hint"> 留空则不设密码（公网必须设置）</span></label>
-      <input id="s_adminPwd" type="password" placeholder="留空 = 不设密码">
-    </div>
-
-    <!-- WiFi -->
-    <div class="card">
-      <h2>WiFi <span class="tag">下发给设备</span></h2>
-      <label>SSID</label>
-      <input id="w_ssid" placeholder="2.4GHz 网络名">
-      <label>密码</label>
-      <input id="w_pwd" type="password" placeholder="留空表示无密码">
-      <p class="hint">设备通过 SoftAP 配网时以此为准；改完需要设备重新配网。</p>
-    </div>
-
-    <!-- 天气 -->
-    <div class="card">
-      <h2>天气 <span class="tag">wttr.in / Open-Meteo</span></h2>
-      <label>城市</label>
-      <input id="wt_city" placeholder="例如 北京">
-      <div class="row">
-        <div>
-          <label>刷新间隔（秒）</label>
-          <input id="wt_refresh" type="number" min="60">
-        </div>
-        <div>
-          <label>启用</label>
-          <select id="wt_enabled"><option value="1">开启</option><option value="0">关闭</option></select>
-        </div>
-      </div>
-      <div class="actions">
-        <button onclick="refreshWeather()">立即刷新天气</button>
-        <span class="msg" id="weatherMsg"></span>
+        <b>MyEsp32</b>
+        <small>桌宠配置台</small>
       </div>
     </div>
 
-    <!-- 快递查询 -->
-    <div class="card">
-      <h2>快递查询 <span class="tag">快递100</span></h2>
-      <label>授权码 customer</label>
-      <input id="ex_customer" placeholder="快递100 的 customer">
-      <label>密钥 key<span class="hint"> 留空 = 未配置</span></label>
-      <input id="ex_key" type="password" placeholder="快递100 的 key">
-      <label>绑定手机号<span class="hint"> 只作清单标识，不会用手机号向快递公司查</span></label>
-      <input id="ex_phone" placeholder="13800138000">
-      <p class="hint">在 api.kuaidi100.com 注册后获取，额度以官网为准。不配置时语音会提示去配置，不会瞎编轨迹。</p>
+    <nav class="nav" id="nav">
+      <div class="nav-group">监控</div>
+      <a class="nav-item" href="#/overview" data-page="overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>
+        <span>概览</span>
+      </a>
 
-      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <b style="font-size:13px">我的快递</b>
-          <span class="tag" id="parcelCount">0 个</span>
-          <span class="msg" id="parcelMsg"></span>
+      <div class="nav-group">设备</div>
+      <a class="nav-item" href="#/device" data-page="device">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12.5" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></svg>
+        <span>设备与屏幕</span>
+      </a>
+      <a class="nav-item" href="#/create" data-page="create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l1.7 4.4 4.4 1.7-4.4 1.7L12 15.4l-1.7-4.4L5.9 9.3l4.4-1.7z"/><path d="M18.4 15.6l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+        <span>创造模式</span>
+      </a>
+
+      <div class="nav-group">内容</div>
+      <a class="nav-item" href="#/voice" data-page="voice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.8" width="6" height="11" rx="3"/><path d="M5.2 11a6.8 6.8 0 0013.6 0M12 17.8V21"/></svg>
+        <span>语音对话</span>
+      </a>
+      <a class="nav-item" href="#/skills" data-page="skills">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l8.5 4.7L12 12.4 3.5 7.7z"/><path d="M3.5 12.2l8.5 4.7 8.5-4.7"/><path d="M3.5 16.6L12 21.3l8.5-4.7"/></svg>
+        <span>技能</span><span class="nav-badge" id="navSkills"></span>
+      </a>
+      <a class="nav-item" href="#/express" data-page="express">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M21 8.2L12 3.4 3 8.2v7.6l9 4.8 9-4.8z"/><path d="M3 8.2l9 4.8 9-4.8M12 13v8"/></svg>
+        <span>快递与包裹</span><span class="nav-badge" id="navParcels"></span>
+      </a>
+
+      <div class="nav-group">系统</div>
+      <a class="nav-item" href="#/service" data-page="service">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7.5h8.3M17.7 7.5H20M4 16.5h3.3M12.7 16.5H20"/><circle cx="15" cy="7.5" r="2.2"/><circle cx="10" cy="16.5" r="2.2"/></svg>
+        <span>服务设置</span>
+      </a>
+      <a class="nav-item" href="#/ops" data-page="ops">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.2"/><path d="M6.8 9.2l2.9 2.9-2.9 2.9M12.6 15.4h4.6"/></svg>
+        <span>运维</span>
+      </a>
+    </nav>
+
+    <div class="side-foot">
+      <div id="sideOnline">连接中…</div>
+      <div>设备 <b id="sideDev">—</b> · 已运行 <span id="sideUp">—</span></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header>
+      <div class="htitle">
+        <h1 id="hdrTitle">概览</h1>
+        <span class="sub" id="hdrSub"></span>
+      </div>
+      <div class="hact">
+        <span class="msg" id="hdrMsg"></span>
+        <span class="msg" id="saveMsg"></span>
+        <button onclick="refreshStatus()">刷新状态</button>
+        <button class="primary" onclick="saveAll()">保存配置</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="banner" id="warnBanner" style="display:none"></div>
+
+      <!-- ── 概览 ─────────────────────────────────────────────── -->
+      <section class="page" id="page-overview">
+        <div class="stats">
+          <div class="stat"><span>运行时长</span><b id="stUptime">—</b></div>
+          <div class="stat"><span>在线设备</span><b id="stDevCount">—</b></div>
+          <div class="stat"><span>天气</span><b id="stWeather">—</b></div>
+          <div class="stat"><span>设备连接地址</span><b><code id="stWsUrl">—</code></b></div>
         </div>
-        <div id="parcelList" style="margin-top:6px"></div>
-        <div class="row" style="margin-top:6px">
-          <div>
-            <label>单号</label>
-            <input id="p_number" placeholder="SF...">
+
+        <div class="card">
+          <h2>在线设备 <span class="tag">5 秒自动刷新</span></h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>会话</th><th>MAC</th><th>固件</th><th>页面</th><th>状态</th><th>雷达</th><th>电量</th><th>室温/湿度</th></tr></thead>
+              <tbody id="devTable"><tr><td colspan="8" style="color:var(--muted)">暂无设备</td></tr></tbody>
+            </table>
           </div>
-          <div>
-            <label>备注（可空）</label>
-            <input id="p_label" placeholder="耳机 / 妈妈寄的">
+          <p class="hint" id="stWeatherErr"></p>
+
+          <div id="radarCard" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px;display:none">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <b style="font-size:13px">雷达</b><span class="tag">有人/无人 · 不记身份</span>
+            </div>
+            <div class="grid" style="gap:6px 20px">
+              <div>
+                <div class="kv"><span>当前</span><span id="radarNow">—</span></div>
+                <div class="kv"><span>今日首次/最后</span><span id="radarDay">—</span></div>
+              </div>
+              <div>
+                <div class="kv"><span>今日在座</span><span id="radarToday">—</span></div>
+                <div class="kv"><span>最近进出</span><span id="radarLog">—</span></div>
+              </div>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+              <label style="font-size:12px"><input type="checkbox" id="pGate"> 定时提醒只在有人时播</label>
+              <button type="button" id="radarTestBtn">测试门控播报</button>
+              <span class="msg" id="radarMsg"></span>
+            </div>
+            <p class="hint">只统计有人/无人、距离和时间，不记身份；数据在服务器内存，重启清空。</p>
           </div>
         </div>
-        <div class="actions">
-          <button onclick="addParcel()">加入清单</button>
-        </div>
-        <p class="hint">查过一次的单号会自动进来；问「我的快递到哪了」会逐个播报。</p>
-      </div>
+      </section>
 
-      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
-        <b style="font-size:13px">短信自动导入</b>
-        <label>Webhook 密钥<span class="hint"> 手机转发时带这个 token</span></label>
-        <div class="row">
-          <div>
-            <input id="ex_hookToken" placeholder="点右侧生成" oninput="updateHookUrl()">
+      <!-- ── 设备与屏幕 ───────────────────────────────────────── -->
+      <section class="page" id="page-device">
+        <div class="grid">
+          <div class="card">
+            <h2>WiFi <span class="tag">下发给设备</span></h2>
+            <label>SSID</label>
+            <input id="w_ssid" placeholder="2.4GHz 网络名">
+            <label>密码</label>
+            <input id="w_pwd" type="password" placeholder="留空表示无密码">
+            <p class="hint">设备通过 SoftAP 配网时以此为准；改完需要设备重新配网。</p>
           </div>
-          <div style="flex:none">
-            <button type="button" onclick="genHookToken()">随机生成</button>
+
+          <div class="card">
+            <h2>课表编排 <span class="tag">三轮补课</span></h2>
+            <p class="hint" style="margin-top:0">格子里选班级，保存后同时更新设备屏幕、定时提醒和语音问答用的那份数据。</p>
+            <div class="actions">
+              <button class="primary" onclick="openTt()">打开课表编排</button>
+            </div>
+            <p class="hint" id="ttBrief">—</p>
+          </div>
+
+          <div class="card wide">
+            <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
+            <textarea id="lua_code" rows="14" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()&#10;-- 事件：双击 KEY 让桌宠睡 5 秒&#10;sys.on(&quot;key_double&quot;, function()&#10;  pet.state(&quot;sleeping&quot;)&#10;  timer.after(5000, function() pet.state(&quot;auto&quot;) end)&#10;end)"></textarea>
+            <div class="actions">
+              <button class="primary" onclick="deployLua()">下发到设备</button>
+              <span class="msg" id="luaMsg"></span>
+            </div>
           </div>
         </div>
-        <div class="hint" id="hookUrl" style="word-break:break-all">保存后显示转发地址</div>
-        <div class="row" style="margin-top:6px">
-          <div>
-            <label>测试一条短信</label>
-            <input id="hookTest" placeholder="【菜鸟驿站】您的圆通快递YT...已到">
+      </section>
+
+      <!-- ── 创造模式 ─────────────────────────────────────────── -->
+      <section class="page" id="page-create">
+        <div class="card">
+          <h2>创造模式 <span class="tag">Lua AI · 预览后下发</span></h2>
+          <p class="hint">描述想改的功能，模型只改当前 Lua 脚本；生成后先看摘要、权限和差异，点“应用并下发”才生效。设备加载失败会自动回滚并重新生成；扩展能力需要对应固件（net/fs 需 0.1.38+）。</p>
+          <div id="aiBaseWarn" class="msg warn"></div>
+          <label>需求</label>
+          <textarea id="aiReq" rows="3" placeholder="例如：把状态页的“电量”两个字改成“电池”，字号再大一点；或者在状态页底部加一行今天的日期。"></textarea>
+          <div class="actions">
+            <button class="primary" id="aiGenBtn" onclick="aiGenerate()">生成修改</button>
+            <button id="aiRollbackBtn" onclick="aiRollback()">撤销上次 AI 修改</button>
+            <span class="msg" id="aiMsg"></span>
+          </div>
+          <div id="aiSteps"></div>
+          <div id="aiOut" style="display:none">
+            <label>修改摘要</label>
+            <div id="aiSummary"></div>
+            <div id="aiPerm" class="hint" style="color:var(--text);margin-top:4px"></div>
+            <div id="aiWarn" class="msg warn" style="margin-top:6px"></div>
+            <div id="aiErrors" class="msg err" style="margin-top:6px"></div>
+            <div id="aiClarify" style="display:none">
+              <label>需要补充<span class="hint"> 回答后继续生成</span></label>
+              <div id="aiQuestion" class="hint" style="color:var(--text)"></div>
+              <textarea id="aiAnswer" rows="2" placeholder="例如：改状态页，保留课表页"></textarea>
+              <div class="actions">
+                <button class="primary" onclick="aiAnswerSubmit()">带着回答继续生成</button>
+              </div>
+            </div>
+            <div id="aiResultBody">
+              <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
+              <pre id="aiDiff"></pre>
+              <details style="margin-top:8px">
+                <summary>查看 / 编辑完整脚本（<span id="aiLen"></span> 字符）</summary>
+                <textarea id="aiCode" rows="14" style="margin-top:6px"></textarea>
+              </details>
+              <div class="actions">
+                <button class="primary" id="aiApplyBtn" onclick="aiApply()">应用并下发</button>
+                <span class="msg" id="aiApplyMsg"></span>
+              </div>
+            </div>
+          </div>
+          <div id="aiHistory" class="hint" style="margin-top:12px"></div>
+        </div>
+      </section>
+
+      <!-- ── 语音对话 ─────────────────────────────────────────── -->
+      <section class="page" id="page-voice">
+        <div class="grid">
+          <div class="card wide">
+            <h2>大模型 <span class="tag">LLM</span></h2>
+            <div class="row">
+              <div>
+                <label>Base URL</label>
+                <input id="l_base" placeholder="https://api.deepseek.com">
+              </div>
+              <div>
+                <label>模型</label>
+                <input id="l_model" placeholder="deepseek-flash">
+              </div>
+            </div>
+            <label>API Key</label>
+            <input id="l_key" type="password" placeholder="sk-...">
+            <label>复杂需求模型<span class="hint"> 重写/多页/动画等复杂 Lua 修改用；留空 = 同主模型</span></label>
+            <input id="l_luaModel" placeholder="deepseek-chat（留空 = 同主模型）">
+            <div class="row">
+              <div>
+                <label>最大 token</label>
+                <input id="l_max" type="number" min="32" max="4000">
+              </div>
+              <div>
+                <label>温度</label>
+                <input id="l_temp" type="number" step="0.1" min="0" max="2">
+              </div>
+            </div>
+            <label>人设（System Prompt）</label>
+            <textarea id="l_prompt" rows="4"></textarea>
+          </div>
+
+          <div class="card">
+            <h2>语音识别 <span class="tag">腾讯云</span></h2>
+            <div class="row">
+              <div><label>AppId</label><input id="a_appid" placeholder="数字 AppId"></div>
+              <div><label>引擎</label><input id="a_engine" placeholder="16k_zh"></div>
+            </div>
+            <div class="row">
+              <div><label>SecretId</label><input id="a_sid" type="password"></div>
+              <div><label>SecretKey</label><input id="a_skey" type="password"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>语音合成 <span class="tag">TTS</span></h2>
+            <div class="row">
+              <div>
+                <label>引擎</label>
+                <select id="t_provider">
+                  <option value="tencent">腾讯云（超自然 / 大模型）</option>
+                  <option value="baidu">百度（免费备用）</option>
+                </select>
+              </div>
+              <div>
+                <label>百度语速（0-15）</label>
+                <input id="t_speed" type="number" min="0" max="15">
+              </div>
+            </div>
+            <div class="row">
+              <div><label>腾讯 SecretId</label><input id="t_sid" type="password"></div>
+              <div><label>腾讯 SecretKey</label><input id="t_skey" type="password"></div>
+            </div>
+            <label>音色（超自然 / 大模型 / 普通）</label>
+            <select id="t_voice"></select>
+            <div class="row" style="margin-top:10px">
+              <div><label>腾讯语速（-2~6，0=常速）</label><input id="t_tspeed" type="number" step="0.1" min="-2" max="6"></div>
+            </div>
+            <p class="hint">音色按类别分组，✓ 表示已用当前账号实测可用；超自然/大模型音色分别消耗对应资源包，腾讯调用失败时自动回退百度。密钥与语音识别可共用同一腾讯账号。</p>
           </div>
         </div>
-        <div class="actions">
-          <button onclick="testHook()">测试解析</button>
-          <span class="msg" id="hookMsg"></span>
+      </section>
+
+      <!-- ── 技能 ─────────────────────────────────────────────── -->
+      <section class="page" id="page-skills">
+        <div class="card">
+          <h2>技能 <span class="tag">server/skills</span></h2>
+          <div id="skillList" style="margin-top:2px"><span class="msg">读取中…</span></div>
+          <div class="actions">
+            <button onclick="reloadSkills()">重载技能</button>
+            <span class="msg" id="skillMsg"></span>
+          </div>
+
+          <label style="margin-top:18px">导入技能<span class="hint" style="display:inline;margin-left:6px">粘贴一个 JSON，直接写进服务器 server/skills/ 并热重载</span></label>
+          <textarea id="skillJson" rows="6" placeholder='{"name":"get_xxx","description":"…什么时候该调用…","parameters":{"type":"object","properties":{}},"request":{"method":"GET","url":"https://api.example.com/x"},"render":"{{data.value}}"}'></textarea>
+          <div class="actions" style="margin-top:10px">
+            <button class="primary" onclick="importSkill()">写入并重载</button>
+            <label class="chk"><input type="checkbox" id="skillOverwrite"> 覆盖同名</label>
+            <span class="msg" id="skillImportMsg"></span>
+          </div>
+          <p class="hint">http 类型要填 <code>request.url</code>；docs 类型要填 <code>dir</code>（服务器上的 Markdown 目录）。
+            导入的只存在服务器本地，重新部署会被仓库里的版本覆盖。</p>
         </div>
-        <p class="hint">安卓用 SmsForwarder / 短信转发器，iOS 用快捷指令：收到含「快递」的短信时 POST JSON {"text":"短信内容"} 到这个地址。只存单号，不存原文。</p>
-      </div>
-    </div>
+      </section>
 
-    <!-- 信息推送 -->
-    <div class="card">
-      <h2>信息栏推送</h2>
-      <label>推送间隔（秒）</label>
-      <input id="i_push" type="number" min="10">
-      <p class="hint">服务器按这个间隔把时间/日期/天气推给设备。温湿度和电量由设备本地读取，不走网络。</p>
-    </div>
-  </div>
+      <!-- ── 快递与包裹 ───────────────────────────────────────── -->
+      <section class="page" id="page-express">
+        <div class="grid">
+          <div class="card">
+            <h2>快递100 <span class="tag">凭据</span></h2>
+            <label>授权码 customer</label>
+            <input id="ex_customer" placeholder="快递100 的 customer">
+            <label>密钥 key<span class="hint"> 留空 = 未配置</span></label>
+            <input id="ex_key" type="password" placeholder="快递100 的 key">
+            <label>绑定手机号<span class="hint"> 只作清单标识，不会用手机号向快递公司查</span></label>
+            <input id="ex_phone" placeholder="13800138000">
+            <p class="hint">在 api.kuaidi100.com 注册后获取，额度以官网为准。不配置时语音会提示去配置，不会瞎编轨迹。</p>
+          </div>
 
-  <!-- 运行日志 -->
-  <div class="card">
-    <h2>运行日志 <span class="tag">server.log / server.err.log</span></h2>
-    <div class="row">
-      <div>
-        <label>文件</label>
-        <select id="logFile" onchange="showLog()"></select>
-      </div>
-      <div style="flex:none;align-self:flex-end">
-        <button onclick="refreshLogs()">刷新</button>
-      </div>
-    </div>
-    <pre class="logbox" id="logBox">点「刷新」读取最后 200 行</pre>
-    <p class="hint" id="logMeta">服务端挂掉时先看 server.err.log 和 supervisor.log。</p>
-  </div>
+          <div class="card">
+            <h2>我的快递 <span class="tag" id="parcelCount">0 个</span></h2>
+            <div id="parcelList" style="margin-top:2px"></div>
+            <div class="row" style="margin-top:8px">
+              <div>
+                <label>单号</label>
+                <input id="p_number" placeholder="SF...">
+              </div>
+              <div>
+                <label>备注（可空）</label>
+                <input id="p_label" placeholder="耳机 / 妈妈寄的">
+              </div>
+            </div>
+            <div class="actions">
+              <button onclick="addParcel()">加入清单</button>
+              <span class="msg" id="parcelMsg"></span>
+            </div>
+            <p class="hint">查到轨迹的单号会自动进来；问「我的快递到哪了」会逐个播报。</p>
+          </div>
 
-  <!-- LLM -->
-  <div class="card">
-    <h2>大模型 <span class="tag">LLM</span></h2>
-    <div class="row">
-      <div>
-        <label>Base URL</label>
-        <input id="l_base" placeholder="https://api.deepseek.com">
-      </div>
-      <div>
-        <label>模型</label>
-        <input id="l_model" placeholder="deepseek-flash">
-      </div>
-    </div>
-    <label>API Key</label>
-    <input id="l_key" type="password" placeholder="sk-...">
-    <label>复杂需求模型<span class="hint"> 重写/多页/动画等复杂 Lua 修改用；留空 = 同主模型</span></label>
-    <input id="l_luaModel" placeholder="deepseek-chat（留空 = 同主模型）">
-    <div class="row">
-      <div>
-        <label>最大 token</label>
-        <input id="l_max" type="number" min="32" max="4000">
-      </div>
-      <div>
-        <label>温度</label>
-        <input id="l_temp" type="number" step="0.1" min="0" max="2">
-      </div>
-    </div>
-    <label>人设（System Prompt）</label>
-    <textarea id="l_prompt" rows="4"></textarea>
-  </div>
-
-  <!-- ASR -->
-  <div class="card">
-    <h2>语音识别 <span class="tag">腾讯云</span></h2>
-    <div class="row">
-      <div><label>AppId</label><input id="a_appid" placeholder="数字 AppId"></div>
-      <div><label>引擎</label><input id="a_engine" placeholder="16k_zh"></div>
-    </div>
-    <div class="row">
-      <div><label>SecretId</label><input id="a_sid" type="password"></div>
-      <div><label>SecretKey</label><input id="a_skey" type="password"></div>
-    </div>
-  </div>
-
-  <!-- TTS -->
-  <div class="card">
-    <h2>语音合成 <span class="tag">TTS</span></h2>
-    <div class="row">
-      <div>
-        <label>引擎</label>
-        <select id="t_provider">
-          <option value="tencent">腾讯云（超自然 / 大模型）</option>
-          <option value="baidu">百度（免费备用）</option>
-        </select>
-      </div>
-      <div>
-        <label>百度语速（0-15）</label>
-        <input id="t_speed" type="number" min="0" max="15">
-      </div>
-    </div>
-    <div class="row">
-      <div><label>腾讯 SecretId</label><input id="t_sid" type="password"></div>
-      <div><label>腾讯 SecretKey</label><input id="t_skey" type="password"></div>
-    </div>
-    <label>音色（超自然 / 大模型 / 普通）</label>
-    <select id="t_voice"></select>
-    <div class="row" style="margin-top:10px">
-      <div><label>腾讯语速（-2~6，0=常速）</label><input id="t_tspeed" type="number" step="0.1" min="-2" max="6"></div>
-    </div>
-    <p class="hint">音色按类别分组，✓ 表示已用当前账号实测可用；超自然/大模型音色分别消耗对应资源包，腾讯调用失败时自动回退百度。密钥与语音识别可共用同一腾讯账号。</p>
-  </div>
-
-  <!-- 创造模式：Lua AI -->
-  <div class="card">
-    <h2>创造模式 <span class="tag">Lua AI · 预览后下发</span></h2>
-    <p class="hint">描述想改的功能，模型只改当前 Lua 脚本；生成后先看摘要、权限和差异，点“应用并下发”才生效。设备加载失败会自动回滚并重新生成；扩展能力需要对应固件（net/fs 需 0.1.38+）。</p>
-    <div id="aiBaseWarn" class="msg warn"></div>
-    <label>需求</label>
-    <textarea id="aiReq" rows="3" placeholder="例如：把状态页的“电量”两个字改成“电池”，字号再大一点；或者在状态页底部加一行今天的日期。"></textarea>
-    <div class="actions">
-      <button class="primary" id="aiGenBtn" onclick="aiGenerate()">生成修改</button>
-      <button id="aiRollbackBtn" onclick="aiRollback()">撤销上次 AI 修改</button>
-      <span class="msg" id="aiMsg"></span>
-    </div>
-    <div id="aiSteps"></div>
-    <div id="aiOut" style="display:none">
-      <label>修改摘要</label>
-      <div id="aiSummary"></div>
-      <div id="aiPerm" class="hint" style="color:var(--text);margin-top:4px"></div>
-      <div id="aiWarn" class="msg warn" style="margin-top:6px"></div>
-      <div id="aiErrors" class="msg err" style="margin-top:6px"></div>
-      <div id="aiClarify" style="display:none">
-        <label>需要补充<span class="hint"> 回答后继续生成</span></label>
-        <div id="aiQuestion" class="hint" style="color:var(--text)"></div>
-        <textarea id="aiAnswer" rows="2" placeholder="例如：改状态页，保留课表页"></textarea>
-        <div class="actions">
-          <button class="primary" onclick="aiAnswerSubmit()">带着回答继续生成</button>
+          <div class="card wide">
+            <h2>短信自动导入 <span class="tag">手机转发 → 服务器</span></h2>
+            <label>Webhook 密钥<span class="hint"> 手机转发时带这个 token</span></label>
+            <div class="row">
+              <div>
+                <input id="ex_hookToken" placeholder="点右侧生成" oninput="updateHookUrl()">
+              </div>
+              <div style="flex:none">
+                <button type="button" onclick="genHookToken()">随机生成</button>
+              </div>
+            </div>
+            <div class="hint" id="hookUrl" style="word-break:break-all">保存后显示转发地址</div>
+            <div class="row" style="margin-top:6px">
+              <div>
+                <label>测试一条短信</label>
+                <input id="hookTest" placeholder="【菜鸟驿站】您的圆通快递YT...已到">
+              </div>
+            </div>
+            <div class="actions">
+              <button onclick="testHook()">测试解析</button>
+              <span class="msg" id="hookMsg"></span>
+            </div>
+            <p class="hint">安卓用 SmsForwarder / 短信转发器，iOS 用快捷指令：收到含「快递」的短信时 POST JSON {"text":"短信内容"} 到这个地址。只存单号，不存原文。</p>
+          </div>
         </div>
-      </div>
-      <div id="aiResultBody">
-        <label>脚本差异<span class="hint"> 已隐藏课表 DATA 段；红色为删除，绿色为新增</span></label>
-        <pre id="aiDiff"></pre>
-        <details style="margin-top:8px">
-          <summary>查看 / 编辑完整脚本（<span id="aiLen"></span> 字符）</summary>
-          <textarea id="aiCode" rows="14" style="margin-top:6px"></textarea>
-        </details>
-        <div class="actions">
-          <button class="primary" id="aiApplyBtn" onclick="aiApply()">应用并下发</button>
-          <span class="msg" id="aiApplyMsg"></span>
+      </section>
+
+      <!-- ── 服务设置 ─────────────────────────────────────────── -->
+      <section class="page" id="page-service">
+        <div class="grid">
+          <div class="card">
+            <h2>服务器 <span class="tag">安全</span></h2>
+            <label>监听端口</label>
+            <input id="s_port" type="number" min="1" max="65535">
+            <label>公网地址<span class="hint"> OTA 下发用；必须是 http://0929.site 这种形式，不能 https</span></label>
+            <input id="s_publicUrl" placeholder="http://0929.site（留空则用内网地址，云上会连不上）">
+            <label>设备鉴权 Token<span class="hint"> 留空则不鉴权（公网必须设置）</span></label>
+            <input id="s_token" placeholder="留空 = 不鉴权">
+            <label>配置网页密码<span class="hint"> 留空则不设密码（公网必须设置）</span></label>
+            <input id="s_adminPwd" type="password" placeholder="留空 = 不设密码">
+          </div>
+
+          <div class="col">
+            <div class="card">
+              <h2>天气 <span class="tag">wttr.in / Open-Meteo</span></h2>
+              <label>城市</label>
+              <input id="wt_city" placeholder="例如 北京">
+              <div class="row">
+                <div>
+                  <label>刷新间隔（秒）</label>
+                  <input id="wt_refresh" type="number" min="60">
+                </div>
+                <div>
+                  <label>启用</label>
+                  <select id="wt_enabled"><option value="1">开启</option><option value="0">关闭</option></select>
+                </div>
+              </div>
+              <div class="actions">
+                <button onclick="refreshWeather()">立即刷新天气</button>
+                <span class="msg" id="weatherMsg"></span>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>信息栏推送</h2>
+              <label>推送间隔（秒）</label>
+              <input id="i_push" type="number" min="10">
+              <p class="hint">服务器按这个间隔把时间/日期/天气推给设备。温湿度和电量由设备本地读取，不走网络。</p>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-    <div id="aiHistory" class="hint" style="margin-top:12px"></div>
-  </div>
+      </section>
 
-  <!-- Lua -->
-  <div class="card">
-    <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
-    <textarea id="lua_code" rows="12" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()&#10;-- 事件：双击 KEY 让桌宠睡 5 秒&#10;sys.on(&quot;key_double&quot;, function()&#10;  pet.state(&quot;sleeping&quot;)&#10;  timer.after(5000, function() pet.state(&quot;auto&quot;) end)&#10;end)"></textarea>
-    <div class="actions">
-      <button class="primary" onclick="deployLua()">下发到设备</button>
-      <span class="msg" id="luaMsg"></span>
-    </div>
-  </div>
+      <!-- ── 运维 ─────────────────────────────────────────────── -->
+      <section class="page" id="page-ops">
+        <div class="grid">
+          <div class="card">
+            <h2>固件 OTA <span class="tag">推送到设备</span></h2>
+            <div class="actions" style="margin-top:0">
+              <span class="msg" id="otaInfo">读取中…</span>
+            </div>
+            <div class="actions">
+              <button class="primary" id="otaPushBtn" onclick="pushOta()">推送到设备</button>
+              <span class="msg" id="otaMsg"></span>
+            </div>
+          </div>
 
-  <!-- 固件 OTA -->
-  <div class="card">
-    <h2>固件 OTA <span class="tag">推送到设备</span></h2>
-    <div class="actions">
-      <span class="msg" id="otaInfo">读取中…</span>
-    </div>
-    <div class="actions">
-      <button class="primary" id="otaPushBtn" onclick="pushOta()">推送到设备</button>
-      <span class="msg" id="otaMsg"></span>
-    </div>
-  </div>
+          <div class="card">
+            <h2>服务端更新 <span class="tag">CI 打包</span></h2>
+            <div class="actions" style="margin-top:0">
+              <span class="msg" id="updInfo">读取中…</span>
+            </div>
+            <div class="actions">
+              <button class="primary" onclick="applyServerUpdate()">应用并重启</button>
+              <span class="msg" id="updMsg"></span>
+            </div>
+            <p class="hint">push 后 CI 会把 server/src、skills、data、web 打成包传上来；点按钮才会真正替换并重启服务。</p>
+          </div>
 
-  <!-- 技能 -->
-  <div class="card">
-    <h2>技能 <span class="tag">server/skills</span></h2>
-    <div id="skillList" style="margin-top:2px"><span class="msg">读取中…</span></div>
-    <div class="actions">
-      <button onclick="reloadSkills()">重载技能</button>
-      <span class="msg" id="skillMsg"></span>
-    </div>
-
-    <label style="margin-top:18px">导入技能<span class="hint" style="display:inline;margin-left:6px">粘贴一个 JSON，直接写进服务器 server/skills/ 并热重载</span></label>
-    <textarea id="skillJson" rows="6" placeholder='{"name":"get_xxx","description":"…什么时候该调用…","parameters":{"type":"object","properties":{}},"request":{"method":"GET","url":"https://api.example.com/x"},"render":"{{data.value}}"}'></textarea>
-    <div class="actions" style="margin-top:10px">
-      <button class="primary" onclick="importSkill()">写入并重载</button>
-      <label class="chk"><input type="checkbox" id="skillOverwrite"> 覆盖同名</label>
-      <span class="msg" id="skillImportMsg"></span>
-    </div>
-    <p class="hint">http 类型要填 <code>request.url</code>；docs 类型要填 <code>dir</code>（服务器上的 Markdown 目录）。
-      导入的只存在服务器本地，重新部署会被仓库里的版本覆盖。</p>
-  </div>
-
-  <!-- 课表编排 -->
-  <div class="card">
-    <h2>课表编排 <span class="tag">三轮补课</span></h2>
-    <div class="actions">
-      <button class="primary" onclick="openTt()">打开课表编排</button>
+          <div class="card wide">
+            <h2>运行日志 <span class="tag">server.log / server.err.log</span></h2>
+            <div class="row">
+              <div>
+                <label>文件</label>
+                <select id="logFile" onchange="showLog()"></select>
+              </div>
+              <div style="flex:none;align-self:flex-end">
+                <button onclick="refreshLogs()">刷新</button>
+              </div>
+            </div>
+            <pre class="logbox" id="logBox">点「刷新」读取最后 200 行</pre>
+            <p class="hint" id="logMeta">服务端挂掉时先看 server.err.log 和 supervisor.log。</p>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
-
-  <!-- 服务端更新 -->
-  <div class="card">
-    <h2>服务端更新 <span class="tag">CI 打包</span></h2>
-    <div class="actions">
-      <span class="msg" id="updInfo">读取中…</span>
-    </div>
-    <div class="actions">
-      <button class="primary" onclick="applyServerUpdate()">应用并重启</button>
-      <span class="msg" id="updMsg"></span>
-    </div>
-    <p class="hint">push 后 CI 会把 server/src、skills、data、web 打成包传上来；点按钮才会真正替换并重启服务。</p>
-  </div>
-
-  <div class="actions" style="justify-content:flex-end">
-    <span class="msg" id="saveMsg"></span>
-    <button class="primary" onclick="saveAll()">保存全部配置</button>
-  </div>
-</main>
+</div>
 
 <!-- 课表编排模态框 -->
 <div class="modal-mask" id="ttModal" onclick="if(event.target===this)closeTt()">
@@ -511,6 +680,49 @@
 const $ = (id) => document.getElementById(id);
 let cfg = null;
 let aiProposal = null, aiPollTimer = null, aiCurrent = "";
+
+/* ── 侧边栏路由：hash 决定显示哪一页，刷新/前进后退都能留住 ────────── */
+const PAGES = {
+  overview: { t: "概览", s: "设备状态 · 雷达 · 今日在座" },
+  device:   { t: "设备与屏幕", s: "WiFi · 课表编排 · Lua 脚本" },
+  create:   { t: "创造模式", s: "用一句话修改屏幕" },
+  voice:    { t: "语音对话", s: "大模型 · 语音识别 · 语音合成" },
+  skills:   { t: "技能", s: "工具与数据源" },
+  express:  { t: "快递与包裹", s: "快递100 · 我的快递 · 短信导入" },
+  service:  { t: "服务设置", s: "端口 · 鉴权 · 天气 · 信息栏推送" },
+  ops:      { t: "运维", s: "固件 OTA · 服务端更新 · 运行日志" },
+};
+
+function currentPage() {
+  const k = location.hash.replace(/^#\/?/, "");
+  return PAGES[k] ? k : "overview";
+}
+
+function showPage(name) {
+  if (!PAGES[name]) name = "overview";
+  document.querySelectorAll(".page").forEach((p) => {
+    p.classList.toggle("active", p.id === "page-" + name);
+  });
+  document.querySelectorAll(".nav-item").forEach((a) => {
+    const on = a.dataset.page === name;
+    a.classList.toggle("active", on);
+    if (on) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  });
+  $("hdrTitle").textContent = PAGES[name].t;
+  $("hdrSub").textContent = PAGES[name].s;
+  document.title = `MyEsp32 · ${PAGES[name].t}`;
+  /* 窄屏时菜单是横向滚动的，切页后把当前项滚进可视区 */
+  const nav = $("nav");
+  const cur = document.querySelector(".nav-item.active");
+  if (nav && cur && nav.scrollWidth > nav.clientWidth) {
+    const nr = nav.getBoundingClientRect(), cr = cur.getBoundingClientRect();
+    if (cr.left < nr.left || cr.right > nr.right) {
+      nav.scrollLeft += cr.left - nr.left - 12;
+    }
+  }
+  window.scrollTo(0, 0);
+}
 
 function setMsg(el, text, kind) {
   el.textContent = text;
@@ -683,6 +895,7 @@ async function refreshParcels() {
     const j = await r.json();
     const items = j.items || [];
     $("parcelCount").textContent = items.length + " 个";
+    $("navParcels").textContent = items.length ? String(items.length) : "";
     if (!items.length) {
       $("parcelList").innerHTML = '<div class="hint">还没有记录。查一次单号会自动记住。</div>';
       return;
@@ -774,6 +987,7 @@ async function testHook() {
 }
 
 let logFiles = [];
+let logMetaBase = "";
 
 async function refreshLogs() {
   try {
@@ -784,9 +998,7 @@ async function refreshLogs() {
     const prev = sel.value;
     sel.innerHTML = logFiles.map((f, i) => `<option value="${i}">${escHtml(f.name)}</option>`).join("");
     if (prev && +prev < logFiles.length) sel.value = prev;
-    $("logMeta").textContent =
-      `PID ${j.pid} · 已运行 ${Math.floor(j.uptimeSec / 3600)}h ${Math.floor(j.uptimeSec % 3600 / 60)}m` +
-      " · 服务端挂掉时先看 server.err.log 和 supervisor.log";
+    logMetaBase = `PID ${j.pid} · 已运行 ${Math.floor(j.uptimeSec / 3600)}h ${Math.floor(j.uptimeSec % 3600 / 60)}m`;
     showLog();
   } catch {
     $("logBox").textContent = "读取日志失败（服务可能没在跑）";
@@ -798,6 +1010,8 @@ function showLog() {
   const f = logFiles[i];
   $("logBox").textContent = f ? (f.text || "(空)") : "(没有日志)";
   $("logBox").scrollTop = $("logBox").scrollHeight;
+  /* 同名日志可能有两份（server/ 与 firmware/build/），把实际读的路径标出来 */
+  $("logMeta").textContent = [logMetaBase, f && f.path].filter(Boolean).join(" · ");
 }
 
 function radarText(d) {
@@ -822,13 +1036,16 @@ async function refreshStatus() {
     $("stWeather").textContent = s.weather
       ? `${s.weather.city} ${s.weather.text} ${s.weather.temp}℃`
       : "无数据";
-    $("stWeatherErr").textContent = s.weatherError || "—";
+    $("stWeatherErr").textContent = s.weatherError ? "天气接口错误：" + s.weatherError : "";
     $("stWsUrl").textContent = `ws://${location.host}/device`;
     $("dot").className = "dot on";
+    $("sideOnline").textContent = "服务在线";
+    $("sideDev").textContent = s.devices.length;
+    $("sideUp").textContent = `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m`;
 
     const tb = $("devTable");
     if (!s.devices.length) {
-      tb.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">暂无设备</td></tr>';
+      tb.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">暂无设备</td></tr>';
     } else {
       tb.innerHTML = s.devices.map((d) => `
         <tr>
@@ -867,6 +1084,7 @@ async function refreshStatus() {
     }
   } catch (e) {
     $("dot").className = "dot";
+    $("sideOnline").textContent = "无法连接";
     setMsg($("hdrMsg"), "无法连接服务器", "err");
   }
 }
@@ -1223,6 +1441,20 @@ function ttClasses() {
   return $("ttClasses").value.split(/[,，s]+/).map((x) => x.trim().replace(/班$/, "")).filter(Boolean).slice(0, 20);
 }
 
+/* 设备页卡片上的一句课表摘要：班级数 / 节数 / 更新时间 / 来源 */
+async function refreshTtBrief() {
+  try {
+    const r = await fetch("api/timetable");
+    const t = await r.json();
+    const src = { lua: "设备脚本恢复", seed: "出厂模板", runtime: "运行时保存" }[t.source] || t.source || "未知";
+    $("ttBrief").textContent =
+      `当前 ${(t.classes || []).length} 个班级 · ${(t.periods || []).length} 节 · ` +
+      `更新于 ${t.updated || "未知"}（来源：${src}）`;
+  } catch {
+    $("ttBrief").textContent = "课表数据读取失败";
+  }
+}
+
 async function loadTt() {
   try {
     const r = await fetch("api/timetable");
@@ -1316,6 +1548,7 @@ async function saveTt() {
     if (!j.ok) { setMsg($("ttMsg"), j.msg || "保存失败", "err"); return; }
     const ok = (j.results || []).filter((x) => x && x.ok).length;
     setMsg($("ttMsg"), j.sent ? `已保存并下发（${ok}/${j.sent} 台回执正常）` : "已保存，但当前没有在线设备", j.sent ? "ok" : "warn");
+    refreshTtBrief();
   } catch { setMsg($("ttMsg"), "请求失败", "err"); }
 }
 
@@ -1421,6 +1654,7 @@ async function refreshSkills() {
     const r = await fetch("api/skills");
     const j = await r.json();
     const list = j.skills || [];
+    $("navSkills").textContent = list.length ? String(list.length) : "";
     if (!list.length) {
       box.innerHTML = `<span class="msg">还没有技能（把 JSON 放到 ${escHtml(j.dir)}）</span>`;
       return;
@@ -1527,6 +1761,9 @@ setInterval(refreshOta, 3000);
 refreshSkills();
 refreshUpd();
 setInterval(refreshUpd, 10000);
+refreshTtBrief();
+showPage(currentPage());
+window.addEventListener("hashchange", () => showPage(currentPage()));
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeTt();
 });

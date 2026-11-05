@@ -43,12 +43,28 @@ const UPD_META = path.join(UPD_DIR, "pending.json");
 const VERSION_FILE = path.join(ROOT, "VERSION");
 
 /* 运行日志：run-loop.cmd 把 stdout/stderr 重定向到 server 根目录。
- * 管理页只读最后 256KB，避免日志涨到几十 MB 时把内存打满。 */
+ * 管理页只读最后 256KB，避免日志涨到几十 MB 时把内存打满。
+ *
+ * 仓库里那份 run-loop.cmd 是写 firmware/build/ 的，云上部署版写 server/ 旁边，
+ * 两种都可能出现。同名文件取**较新的那份**——否则面板会一直停在几个月前的旧日志上。 */
 const LOG_FILES = [
   { name: "server.log", file: path.join(ROOT, "server.log") },
   { name: "server.err.log", file: path.join(ROOT, "server.err.log") },
   { name: "supervisor.log", file: path.join(ROOT, "supervisor.log") },
+  { name: "server.log", file: path.join(ROOT, "..", "firmware", "build", "server.log") },
+  { name: "supervisor.log", file: path.join(ROOT, "..", "firmware", "build", "supervisor.log") },
 ];
+
+function pickLogFiles() {
+  const byName = new Map();
+  for (const c of LOG_FILES) {
+    let mtime = -1;
+    try { mtime = statSync(c.file).mtimeMs; } catch { /* 不存在 */ }
+    const prev = byName.get(c.name);
+    if (!prev || mtime > prev.mtime) byName.set(c.name, { ...c, mtime });
+  }
+  return [...byName.values()];
+}
 
 function tailLog(file, maxLines) {
   if (!existsSync(file)) return "(没有这个日志文件)";
@@ -58,16 +74,42 @@ function tailLog(file, maxLines) {
     const fd = openSync(file, "r");
     let text;
     try {
-      const head = Buffer.alloc(2);
-      readSync(fd, head, 0, 2, 0);
-      const utf16 = head[0] === 0xff && head[1] === 0xfe;
       let start = Math.max(0, st.size - maxBytes);
-      if (utf16 && start % 2) start++;          /* UTF-16 从奇数字节开始会乱码 */
       const len = st.size - start;
       if (len <= 0) return "";
       const buf = Buffer.alloc(len);
       readSync(fd, buf, 0, len, start);
-      text = utf16 ? buf.toString("utf16le") : buf.toString("utf8");
+
+      /* 编码判定：NSSM / PowerShell 重定向写出来的日志是 UTF-16LE 且**没有 BOM**，
+       * 只按 BOM 判断会把中文全解成乱码（面板上就是一堆方块）。
+       * 取开头 4KB 统计奇/偶字节里的 0：UTF-16LE 的 ASCII 字符高字节恒为 0，
+       * 偶数字节里几乎没有 0，据此区分。命中后按 2 字节对齐再解码。 */
+      const n = Math.min(buf.length, 4096);
+      let oddZero = 0, evenZero = 0;
+      for (let i = 0; i < n; i++) {
+        if (buf[i] === 0) { if (i % 2) oddZero++; else evenZero++; }
+      }
+      const bom16 = buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe;
+      const utf16 = bom16 || (oddZero > n * 0.25 && evenZero < n * 0.05);
+
+      let body = buf;
+      if (utf16) {
+        if (body[0] === 0xff && body[1] === 0xfe) body = body.subarray(2);
+        if (start % 2) body = body.subarray(1);   /* 切在半个字符上会整体错位 */
+        text = body.toString("utf16le");
+      } else {
+        text = body.toString("utf8");
+        /* cmd 的 >> 重定向按系统代码页（中文 Windows 是 GBK）原样写入，
+         * 用 UTF-8 解会变成一堆 �；这时改按 GBK 再试一次，谁的错误少用谁。
+         * supervisor.log 里的“周一”就是这么来的。 */
+        if (text.includes("\uFFFD")) {
+          const bad = (s) => (s.match(/\uFFFD/g) || []).length;
+          try {
+            const g = new TextDecoder("gbk").decode(body);
+            if (bad(g) < bad(text)) text = g;
+          } catch { /* 环境没有 ICU：维持 UTF-8 */ }
+        }
+      }
     } finally {
       closeSync(fd);
     }
@@ -424,7 +466,7 @@ export async function handleHttp(req, res, ctx) {
         return json(res, 200, {
           pid: process.pid,
           uptimeSec: Math.round(process.uptime()),
-          files: LOG_FILES.map((x) => ({ name: x.name, path: x.file, text: tailLog(x.file, n) })),
+          files: pickLogFiles().map((x) => ({ name: x.name, path: x.file, text: tailLog(x.file, n) })),
         });
       }
 
