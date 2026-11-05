@@ -26,14 +26,24 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, unlinkSync } from
 import path from "node:path";
 import { ROOT, getConfig } from "../config.mjs";
 import { cityCoords } from "./weather.mjs";
+import { calendarAnswer } from "./calendar.mjs";
+import { menuAnswer } from "./menu.mjs";
 
 const DIR = path.join(ROOT, "skills");
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY = 8192;
 
+/* 内置 handler：需要计算的技能（节假日倒计时之类）没法用「一次 HTTP + 模板」表达，
+ * 放在服务端实现，JSON 里只写 type:"builtin" + handler 名字。 */
+const BUILTINS = {
+  calendar: calendarAnswer,
+  menu: menuAnswer,
+};
+
 let cache = [];
 let lastError = "";
 let loadedAt = 0;
+const docCache = new Map();   /* skill.name → [{file, title, body}] */
 
 export const skillsDir = () => DIR;
 export const skillsError = () => lastError;
@@ -44,6 +54,7 @@ export const loadedSkills = () => cache;
 export function reloadSkills() {
   const list = [];
   const errs = [];
+  docCache.clear();   /* 重载时把已解析的文档也丢掉，否则改了语料还读旧内容 */
   let files = [];
   try {
     files = readdirSync(DIR).filter((f) => f.toLowerCase().endsWith(".json")).sort();
@@ -57,9 +68,11 @@ export function reloadSkills() {
       if (j.enabled === false) continue;
       if (!j.name || !/^[a-zA-Z0-9_]{2,40}$/.test(j.name)) throw new Error("name 只能字母数字下划线（2~40）");
       if (!j.description) throw new Error("缺 description");
-      const type = j.type === "docs" ? "docs" : "http";
+      const type = j.type === "docs" ? "docs" : j.type === "builtin" ? "builtin" : "http";
       if (type === "http" && !j.request?.url) throw new Error("缺 request.url");
       if (type === "docs" && !j.dir) throw new Error("docs 技能缺 dir");
+      if (type === "builtin" && !BUILTINS[j.handler])
+        throw new Error(`内置技能缺 handler 或 handler 未知：${j.handler || "(空)"}`);
       if (list.some((s) => s.name === j.name)) throw new Error(`工具名重复：${j.name}`);
       list.push({
         type,
@@ -70,11 +83,16 @@ export function reloadSkills() {
           : { type: "object", properties: {} },
         request: j.request || {},
         render: typeof j.render === "string" ? j.render : "",
+        /* builtin：服务端实现的 handler 名 */
+        handler: type === "builtin" ? String(j.handler) : "",
         /* docs：本地 Markdown 检索 */
         dir: j.dir ? path.resolve(ROOT, j.dir) : "",
         maxEntries: Math.min(6, Math.max(1, Number(j.maxEntries) || 3)),
         entryChars: Math.min(2000, Math.max(300, Number(j.entryChars) || 800)),
         minScore: Math.min(60, Math.max(2, Number(j.minScore) || 10)),
+        /* 菜谱这类"标题就是答案"的资料：查询开头必须命中菜名，
+         * 否则"可乐鸡翅"会被"鸡翅"带到"空气炸锅鸡翅中" */
+        headMatch: Boolean(j.headMatch),
         emergency: typeof j.emergency === "string" ? j.emergency : "",
         /* 口语 → 原文词的同义扩展：法条里不会出现"假货""押金"这种说法，
          * 不扩的话用户怎么问都查不到 */
@@ -111,11 +129,13 @@ function validateSkill(j) {
   if (!/^[a-zA-Z0-9_]{2,40}$/.test(name)) throw new Error("name 只能字母数字下划线（2~40）");
   if (!j.description) throw new Error("缺 description");
 
-  const type = j.type === "docs" ? "docs" : "http";
+  const type = j.type === "docs" ? "docs" : j.type === "builtin" ? "builtin" : "http";
   if (type === "http") {
     const url = String(j.request?.url || "");
     if (!url) throw new Error("http 技能缺 request.url");
     if (!/^https?:\/\//i.test(url)) throw new Error("request.url 只允许 http/https");
+  } else if (type === "builtin") {
+    if (!BUILTINS[j.handler]) throw new Error(`内置技能缺 handler 或 handler 未知：${j.handler || "(空)"}`);
   } else {
     if (!j.dir) throw new Error("docs 技能缺 dir");
     if (!existsSync(path.resolve(ROOT, String(j.dir))))
@@ -182,8 +202,6 @@ function tpl(str, data, encode) {
 
 /* ── 本地文档检索（docs 类型）────────────────────────────────────── */
 
-const docCache = new Map();   /* skill.name → [{file, title, body}] */
-
 function loadDocs(s) {
   if (docCache.has(s.name)) return docCache.get(s.name);
   const out = [];
@@ -225,9 +243,24 @@ function terms(q) {
   return [...new Set(t)];
 }
 
+/** 菜谱类查询的"菜名头"：去掉疑问词和"需要什么材料"之类的尾缀，
+ *  取前两个字（"番茄炒蛋怎么做" → 番茄）。headMatch 技能靠它挡掉
+ *  "可乐鸡翅"被"鸡翅"带到"空气炸锅鸡翅中"这类误配。 */
+function queryHead(q, synonyms) {
+  let s = String(q).toLowerCase()
+    .replace(/[？?！!。，,、\s]/g, "")
+    .replace(/^(怎么做|如何做|怎样做)/, "")
+    .replace(/^(我想|我要|想做|想吃|帮我|请问|今天|晚上|中午|早上|做|来|吃)+/, "");
+  s = s.replace(/(怎么做|怎么烧|如何做|怎样做|的做法|做法|需要什么材料|需要什么|要什么材料|要什么|放多少.*|怎么弄|教程)$/, "");
+  if (!s) return [];
+  const head = s.slice(0, 2);
+  const list = [head, ...(synonyms?.[head] || [])];
+  return list.filter((x) => typeof x === "string" && x.length >= 2);
+}
+
 function searchDocs(s, query) {
-  const entries = loadDocs(s);
-  if (!entries.length) return null;
+  const all = loadDocs(s);
+  if (!all.length) return null;
 
   const ts0 = terms(query);
   if (!ts0.length) return null;
@@ -244,18 +277,36 @@ function searchDocs(s, query) {
     if (extra.length) ts = [...new Set([...ts0, ...extra])];
   }
 
+  /* 菜谱：先按菜名头过滤候选，并要求查询里至少两个二元组命中标题。
+   * 只卡"头两个字"不够——"番茄炒蛋"会靠别名"番茄"匹配到"西红柿牛腩（番茄牛腩）"。
+   * 注意 IDF 仍要用全量语料算：在过滤后的小集合里算，df 接近 N，权重会被压成 0。 */
+  let candidates = all;
+  if (s.headMatch) {
+    const heads = queryHead(query, s.synonyms);
+    if (!heads.length) return null;
+    const need = Math.min(2, ts0.length);
+    candidates = all.filter((e) => {
+      const title = e.title.toLowerCase();
+      if (!heads.some((h) => title.includes(h))) return false;
+      let hit = 0;
+      for (const t of ts0) if (title.includes(t)) hit++;
+      return hit >= need;
+    });
+    if (!candidates.length) return null;
+  }
+
   /* IDF 加权：常见词（手机、不要）权重低，专有词（低钠盐、押金）权重高，
    * 避免一句"要不要买手机"把全书里所有提到"手机"的条目都捞出来。 */
-  const N = entries.length;
+  const N = all.length;
   const idf = {};
   for (const t of ts) {
     let df = 0;
-    for (const e of entries) if (e.title.includes(t) || e.body.includes(t)) df++;
+    for (const e of all) if (e.title.includes(t) || e.body.includes(t)) df++;
     idf[t] = Math.log(1 + N / (1 + df));
   }
 
   const scored = [];
-  for (const e of entries) {
+  for (const e of candidates) {
     const title = e.title.toLowerCase();
     const body = e.body.toLowerCase();
     let score = 0;
@@ -333,6 +384,13 @@ function builtinVars() {
 export async function runSkill(name, args = {}) {
   const s = cache.find((x) => x.name === name);
   if (!s) return `未知工具：${name}`;
+  if (s.type === "builtin") {
+    try {
+      return await BUILTINS[s.handler](args);
+    } catch (e) {
+      return `技能 ${name} 执行失败：${e?.message || e}`;
+    }
+  }
   if (s.type === "docs") {
     return searchDocs(s, args.query || args.q || args.keyword || "")
         || `技能 ${s.name}：书里没有检索到相关条目（可以换个说法再问，或检查文档是否已下载）。`;

@@ -1,0 +1,19 @@
+{
+  "name": "pick_menu",
+  "type": "builtin",
+  "handler": "menu",
+  "description": "不知道吃什么时，从家常菜谱里随机配一餐（荤菜 + 素菜 + 汤/主食）。用户说「今天吃什么」「中午吃什么」「随便推荐个菜」「有什么家常菜」时调用。用户说「换一个」时再调用一次。回答里只报菜名和类别，不要编造做法；用户问怎么做再调用 recipe_lookup。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer",
+        "description": "推荐几道，默认 3，最多 6"
+      },
+      "category": {
+        "type": "string",
+        "description": "可选：只想吃某一类（荤菜/素菜/汤羹/主食/水产/早餐/甜品/饮品）"
+      }
+    }
+  }
+}

@@ -881,8 +881,8 @@ export async function handleHttp(req, res, ctx) {
           error: skillsError(),
           skills: loadedSkills().map((s) => ({
             name: s.name, description: s.description, file: s.file,
-            method: s.type === "docs" ? "docs" : String(s.request.method || "GET").toUpperCase(),
-            url: s.type === "docs" ? s.dir : s.request.url,
+            method: s.type === "docs" ? "docs" : s.type === "builtin" ? "builtin" : String(s.request.method || "GET").toUpperCase(),
+            url: s.type === "docs" ? s.dir : s.type === "builtin" ? `内置：${s.handler}` : s.request.url,
           })),
         });
       }
