@@ -89,6 +89,8 @@ export const DEFAULT_CONFIG = {
     provider: "kuaidi100",
     customer: "",
     key: "",
+    /** 绑定的手机号：只作「我的快递」的标识，不用来向快递公司查（那需要企业授权） */
+    phone: "",
   },
   news: {
     enabled: true,
@@ -252,6 +254,7 @@ export function maskedConfig() {
   c.server.adminPassword = mask(c.server.adminPassword);
   c.wifi.password = mask(c.wifi.password);
   c.express.key = mask(c.express.key);
+  c.express.phone = mask(c.express.phone);
   return c;
 }
 

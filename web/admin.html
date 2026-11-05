@@ -65,6 +65,13 @@
   .skill-src{flex:1;min-width:0;font-size:11px;color:var(--muted);
              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .skill-del{flex:none;padding:2px 8px;font-size:11px;color:var(--err)}
+  .parcel-row{display:flex;align-items:center;gap:8px;padding:5px 0;
+              border-bottom:1px dashed var(--line);font-size:12px}
+  .parcel-row:last-child{border-bottom:0}
+  .parcel-num{flex:none;font-family:ui-monospace,Consolas,monospace}
+  .parcel-label{flex:1;min-width:0;color:var(--muted);
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .parcel-del{flex:none;padding:1px 7px;font-size:11px;color:var(--err)}
   .chk{display:inline-flex;align-items:center;gap:5px;margin:0;font-size:12px;color:var(--muted)}
   .chk input{width:auto}
   #aiSteps{font-size:12px;color:var(--muted);margin:8px 0 0;min-height:18px}
@@ -204,7 +211,32 @@
       <input id="ex_customer" placeholder="快递100 的 customer">
       <label>密钥 key<span class="hint"> 留空 = 未配置</span></label>
       <input id="ex_key" type="password" placeholder="快递100 的 key">
+      <label>绑定手机号<span class="hint"> 只作清单标识，不会用手机号向快递公司查</span></label>
+      <input id="ex_phone" placeholder="13800138000">
       <p class="hint">在 api.kuaidi100.com 注册后获取，额度以官网为准。不配置时语音会提示去配置，不会瞎编轨迹。</p>
+
+      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <b style="font-size:13px">我的快递</b>
+          <span class="tag" id="parcelCount">0 个</span>
+          <span class="msg" id="parcelMsg"></span>
+        </div>
+        <div id="parcelList" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:6px">
+          <div>
+            <label>单号</label>
+            <input id="p_number" placeholder="SF...">
+          </div>
+          <div>
+            <label>备注（可空）</label>
+            <input id="p_label" placeholder="耳机 / 妈妈寄的">
+          </div>
+        </div>
+        <div class="actions">
+          <button onclick="addParcel()">加入清单</button>
+        </div>
+        <p class="hint">查过一次的单号会自动进来；问「我的快递到哪了」会逐个播报。</p>
+      </div>
     </div>
 
     <!-- 信息推送 -->
@@ -483,6 +515,7 @@ async function loadConfig() {
   $("wt_enabled").value = cfg.weather.enabled ? "1" : "0";
   $("ex_customer").value = cfg.express?.customer || "";
   $("ex_key").value = cfg.express?.key || "";
+  $("ex_phone").value = cfg.express?.phone || "";
 
   $("i_push").value = cfg.info.pushSec;
 
@@ -533,6 +566,8 @@ async function loadConfig() {
     $("warnBanner").style.display = "block";
     $("warnBanner").textContent = "⚠ " + warns.join("；") + "。公网部署请务必设置。";
   }
+
+  refreshParcels();
 }
 
 async function saveAll() {
@@ -553,6 +588,7 @@ async function saveAll() {
       provider: "kuaidi100",
       customer: $("ex_customer").value.trim(),
       key: $("ex_key").value,
+      phone: $("ex_phone").value.trim(),
     },
     info: { pushSec: +$("i_push").value },
     llm: {
@@ -590,6 +626,63 @@ async function saveAll() {
   const j = await r.json();
   setMsg($("saveMsg"), j.ok ? "已保存" : "保存失败", j.ok ? "ok" : "err");
   if (j.ok) loadConfig();
+}
+
+async function refreshParcels() {
+  try {
+    const r = await fetch("api/parcels");
+    const j = await r.json();
+    const items = j.items || [];
+    $("parcelCount").textContent = items.length + " 个";
+    if (!items.length) {
+      $("parcelList").innerHTML = '<div class="hint">还没有记录。查一次单号会自动记住。</div>';
+      return;
+    }
+    $("parcelList").innerHTML = items.map((it) => `
+      <div class="parcel-row">
+        <span class="parcel-num">${escHtml(it.number)}</span>
+        <span class="parcel-label">${escHtml(it.label || "")}</span>
+        <button class="parcel-del" data-number="${escHtml(it.number)}"
+                onclick="delParcel(this.dataset.number)">删除</button>
+      </div>`).join("");
+  } catch {
+    $("parcelList").innerHTML = '<div class="hint">读取清单失败。</div>';
+  }
+}
+
+async function addParcel() {
+  const number = $("p_number").value.trim();
+  if (!number) return setMsg($("parcelMsg"), "先填单号", "err");
+  try {
+    const r = await fetch("api/parcels/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number, label: $("p_label").value.trim() }),
+    });
+    const j = await r.json();
+    if (!j.ok) return setMsg($("parcelMsg"), j.error || "添加失败", "err");
+    $("p_number").value = "";
+    $("p_label").value = "";
+    setMsg($("parcelMsg"), "已加入", "ok");
+    refreshParcels();
+  } catch {
+    setMsg($("parcelMsg"), "添加失败", "err");
+  }
+}
+
+async function delParcel(number) {
+  try {
+    const r = await fetch("api/parcels/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number }),
+    });
+    const j = await r.json();
+    setMsg($("parcelMsg"), j.ok ? "已删除" : (j.error || "删除失败"), j.ok ? "ok" : "err");
+    refreshParcels();
+  } catch {
+    setMsg($("parcelMsg"), "删除失败", "err");
+  }
 }
 
 function radarText(d) {

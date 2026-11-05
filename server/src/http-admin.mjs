@@ -25,6 +25,7 @@ import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
+import { listParcels, addParcel, removeParcel } from "./services/parcels.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 import { opusStatus } from "./services/tts.mjs";
@@ -894,6 +895,27 @@ export async function handleHttp(req, res, ctx) {
           ok: true, count: list.length, error: skillsError(),
           skills: list.map((s) => ({ name: s.name, description: s.description, file: s.file })),
         });
+      }
+
+      /* 「我的快递」清单：语音查过的单号会自动进来，也可以在网页删/补 */
+      if (p === "/api/parcels" && req.method === "GET") {
+        return json(res, 200, { items: listParcels() });
+      }
+
+      if (p === "/api/parcels/add" && req.method === "POST") {
+        const b = JSON.parse(await readBody(req));
+        const item = addParcel(b.number, b.carrier, b.label);
+        if (!item) return json(res, 400, { ok: false, error: "单号不合法" });
+        log(`记录快递 ${item.number}`);
+        return json(res, 200, { ok: true, item });
+      }
+
+      if (p === "/api/parcels/delete" && req.method === "POST") {
+        const b = JSON.parse(await readBody(req));
+        const ok = removeParcel(b.number);
+        return json(res, 200, ok
+          ? { ok: true }
+          : { ok: false, error: "清单里没有这个单号" });
       }
 
       /* 网页里粘贴一个技能 JSON 直接写进 server/skills/ 并热重载。

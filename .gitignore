@@ -13,6 +13,9 @@ firmware/managed_components/
 
 # ── 服务器本地配置（以后会有密钥，绝不进仓库）────────────────
 server/config.json
+# 「我的快递」清单：含用户单号，只存服务器本地
+server/parcels.json
+server/parcels.json.tmp
 server/*.log
 
 # ── AI 助手工作区记忆（本地会话数据，不进仓库）───────────────

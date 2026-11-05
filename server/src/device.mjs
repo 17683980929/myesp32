@@ -928,8 +928,8 @@ export class DeviceSession {
         if (++toolRounds > 3) break;
 
         /* 快递单号和轨迹里有地址/电话，日志里只记"查了"，不落原文 */
-        const callBrief = calls.map((c) => c.name === "get_express"
-          ? "get_express(单号已隐藏)"
+        const callBrief = calls.map((c) => ["get_express", "my_parcels"].includes(c.name)
+          ? `${c.name}(单号已隐藏)`
           : `${c.name}(${(c.args || "").slice(0, 60)})`).join(" ");
         log(`[${this.sid}] 工具调用: ${callBrief}`);
         const asstCalls = calls.map((c, i) => ({
@@ -950,7 +950,7 @@ export class DeviceSession {
           } catch (e) {
             result = `工具执行失败：${e.message}`;
           }
-          const resultBrief = c.function.name === "get_express"
+          const resultBrief = ["get_express", "my_parcels"].includes(c.function.name)
             ? "快递轨迹（含地址，日志不落原文）"
             : String(result).replace(/\s+/g, " ").slice(0, 100);
           log(`[${this.sid}] 工具结果 ${c.function.name} → ${resultBrief}`);
