@@ -204,6 +204,10 @@ export const DEFAULT_CONFIG = {
       promptText: "",
       promptLang: "zh",
       textLang: "zh",
+      /** GPT-SoVITS 的切分方式：服务端已按句切好，cut0 最快（实测比 cut5 快 0.5s） */
+      textSplitMethod: "cut0",
+      /** 单句推理开并行只会多花调度开销（实测关掉快 0.8s） */
+      parallelInfer: false,
       /** 服务器只给裸 PCM 时按这个采样率解释（Kokoro 24k，GPT-SoVITS 32k） */
       rawSampleRate: 24000,
       timeoutMs: 20000,

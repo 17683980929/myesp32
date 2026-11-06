@@ -319,11 +319,13 @@ async function localTTS(text, cfg = {}) {
       ref_audio_path: cfg.refAudioPath || "",
       prompt_text: cfg.promptText || "",
       prompt_lang: cfg.promptLang || "zh",
-      text_split_method: "cut5",
+      /* 服务端已经按句子切好再送进来，这里不再二次切分（cut0 实测比 cut5 快 0.5s） */
+      text_split_method: cfg.textSplitMethod || "cut0",
       media_type: "wav",
       streaming_mode: false,
       speed_factor: Number(cfg.speed) || 1,
-      parallel_infer: true,
+      /* 单句推理开并行只会多花调度开销，实测关掉快 0.8s */
+      parallel_infer: cfg.parallelInfer === true,
     };
   } else {
     url = `${base}/v1/audio/speech`;
