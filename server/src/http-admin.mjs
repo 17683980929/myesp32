@@ -30,7 +30,7 @@ import { parseSms } from "./services/parcel-sms.mjs";
 import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
-import { opusStatus } from "./services/tts.mjs";
+import { opusStatus, textToOpusFrames } from "./services/tts.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -494,6 +494,27 @@ export async function handleHttp(req, res, ctx) {
         ctx.weather.fetchedAt = 0;
         const w = await ctx.weather.get(getConfig().weather);
         return json(res, 200, { ok: !!w, weather: w, error: ctx.weather.lastError });
+      }
+
+      /* 语音合成试听：只回时长/帧数，不回音频（音频要占几百 KB，页面不需要）。
+       * 用来确认本地 TTS 地址、模式、音色、参考音频是否配对了，失败把原始错误带回去。 */
+      if (p === "/api/tts/test" && req.method === "POST") {
+        let text = "你好，我是小智，这是语音合成的测试。";
+        try {
+          const j = JSON.parse(await readBody(req) || "{}");
+          if (typeof j.text === "string" && j.text.trim()) text = j.text.trim().slice(0, 80);
+        } catch { /* 用默认文本 */ }
+        const tts = getConfig().tts || {};
+        const t0 = Date.now();
+        try {
+          const r = await textToOpusFrames(text, tts);
+          return json(res, 200, {
+            ok: true, ms: Date.now() - t0, provider: tts.provider,
+            frames: r.frames.length, durationMs: Math.round(r.durationMs),
+          });
+        } catch (e) {
+          return json(res, 200, { ok: false, ms: Date.now() - t0, provider: tts.provider, msg: e.message });
+        }
       }
 
       if (p === "/api/say" && req.method === "POST") {

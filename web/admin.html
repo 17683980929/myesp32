@@ -449,6 +449,7 @@
                 <select id="t_provider">
                   <option value="tencent">腾讯云（超自然 / 大模型）</option>
                   <option value="baidu">百度（免费备用）</option>
+                  <option value="local">本地 TTS（自己部署）</option>
                 </select>
               </div>
               <div>
@@ -466,6 +467,48 @@
               <div><label>腾讯语速（-2~6，0=常速）</label><input id="t_tspeed" type="number" step="0.1" min="-2" max="6"></div>
             </div>
             <p class="hint">音色按类别分组，✓ 表示已用当前账号实测可用；超自然/大模型音色分别消耗对应资源包，腾讯调用失败时自动回退百度。密钥与语音识别可共用同一腾讯账号。</p>
+          </div>
+
+          <div class="card wide">
+            <h2>本地 TTS <span class="tag">Kokoro / GPT-SoVITS · 引擎选「本地 TTS」时生效</span></h2>
+            <div class="row">
+              <div style="flex:2">
+                <label>服务地址</label>
+                <input id="t_local_url" placeholder="http://127.0.0.1:8880">
+              </div>
+              <div>
+                <label>接口</label>
+                <select id="t_local_mode" onchange="toggleLocalMode()">
+                  <option value="openai">OpenAI 兼容 /v1/audio/speech</option>
+                  <option value="gptsovits">GPT-SoVITS /tts</option>
+                </select>
+              </div>
+              <div>
+                <label>超时（毫秒）</label>
+                <input id="t_local_timeout" type="number" min="3000" max="60000">
+              </div>
+            </div>
+            <div class="row">
+              <div><label>模型</label><input id="t_local_model" placeholder="kokoro"></div>
+              <div><label>音色</label><input id="t_local_voice" placeholder="zf_xiaobei"></div>
+              <div><label>语速倍率</label><input id="t_local_speed" type="number" step="0.1" min="0.5" max="2"></div>
+              <div><label>访问令牌（可空）</label><input id="t_local_key" type="password" placeholder="不带 Authorization 就留空"></div>
+            </div>
+            <div id="t_gptBox" style="display:none">
+              <div class="row">
+                <div><label>参考音频路径<span class="hint"> 跑 TTS 的那台机器上的路径</span></label><input id="t_local_ref" placeholder="D:\tts\ref.wav"></div>
+                <div><label>参考文本<span class="hint"> 参考音频里说的那句话</span></label><input id="t_local_prompt" placeholder="大家好，我是小智。"></div>
+              </div>
+            </div>
+            <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 本地失败时回退云端（有腾讯密钥走腾讯，否则百度）</label>
+            <div class="actions">
+              <button onclick="testTts()">测试合成</button>
+              <span class="msg" id="ttsMsg"></span>
+            </div>
+            <p class="hint">Kokoro-FastAPI 一条命令：
+              <code>docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest</code>，
+              地址填 <code>http://127.0.0.1:8880</code>，模型 <code>kokoro</code>，音色 <code>zf_xiaobei</code> / <code>zf_xiaoni</code> / <code>zf_xiaoyi</code> / <code>zm_yunjian</code>。
+              GPT-SoVITS 用 <code>python api_v2.py</code>（默认 9880），填参考音频路径和参考文本；CPU 上会比较慢，建议有显卡再选它。</p>
           </div>
         </div>
       </section>
@@ -796,9 +839,21 @@ async function loadConfig() {
   $("t_sid").value = cfg.tts.tencent?.secretId || "";
   $("t_skey").value = cfg.tts.tencent?.secretKey || "";
 
+  const lo = cfg.tts.local || {};
+  $("t_local_url").value = lo.baseUrl || "";
+  $("t_local_mode").value = lo.mode || "openai";
+  $("t_local_model").value = lo.model || "";
+  $("t_local_voice").value = lo.voice || "";
+  $("t_local_speed").value = lo.speed ?? 1;
+  $("t_local_timeout").value = lo.timeoutMs ?? 20000;
+  $("t_local_ref").value = lo.refAudioPath || "";
+  $("t_local_prompt").value = lo.promptText || "";
+  $("t_local_key").value = lo.apiKey || "";
+  $("t_local_fallback").checked = lo.fallback !== false;
+  toggleLocalMode();
+
   const vt = cfg.tts.tencent?.voiceType ?? 402000;
-  const voiceSel = $("t_voice");
-  if (![...voiceSel.options].some((o) => +o.value === vt)) {
+  const voiceSel = $("t_voice");  if (![...voiceSel.options].some((o) => +o.value === vt)) {
     const o = document.createElement("option");
     o.value = String(vt);
     o.textContent = `${vt} · 当前配置（目录中暂无）`;
@@ -828,6 +883,66 @@ async function loadConfig() {
 
   refreshParcels();
   refreshLogs();
+}
+
+/* TTS 表单 → 配置对象（saveAll 和「测试合成」共用，避免两处字段漂移） */
+function ttsForm() {
+  return {
+    provider: $("t_provider").value,
+    speed: +$("t_speed").value,
+    tencent: {
+      secretId: $("t_sid").value,
+      secretKey: $("t_skey").value,
+      voiceType: +$("t_voice").value,
+      speed: +$("t_tspeed").value,
+    },
+    local: {
+      baseUrl: $("t_local_url").value.trim(),
+      mode: $("t_local_mode").value,
+      model: $("t_local_model").value.trim(),
+      voice: $("t_local_voice").value.trim(),
+      apiKey: $("t_local_key").value,
+      speed: +$("t_local_speed").value || 1,
+      timeoutMs: +$("t_local_timeout").value || 20000,
+      refAudioPath: $("t_local_ref").value.trim(),
+      promptText: $("t_local_prompt").value.trim(),
+      fallback: $("t_local_fallback").checked,
+    },
+  };
+}
+
+function toggleLocalMode() {
+  const gpt = $("t_local_mode").value === "gptsovits";
+  $("t_gptBox").style.display = gpt ? "" : "none";
+  $("t_local_model").disabled = gpt;
+  $("t_local_voice").disabled = gpt;
+}
+
+/* 先保存 TTS 这一段，再用服务器上的新配置合成一句——否则测的是旧配置 */
+async function testTts() {
+  setMsg($("ttsMsg"), "保存并合成中…", "");
+  try {
+    await fetch("api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tts: ttsForm() }),
+    });
+    const r = await fetch("api/tts/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "你好，我是小智，这是语音合成的测试。" }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      setMsg($("ttsMsg"),
+        `成功：${j.ms}ms 合成 ${(j.durationMs / 1000).toFixed(1)}s 音频（${j.frames} 帧，${j.provider}）`,
+        "ok");
+    } else {
+      setMsg($("ttsMsg"), `失败：${j.msg || "未知错误"}`, "err");
+    }
+  } catch {
+    setMsg($("ttsMsg"), "请求失败", "err");
+  }
 }
 
 async function saveAll() {
@@ -867,16 +982,7 @@ async function saveAll() {
       secretId: $("a_sid").value,
       secretKey: $("a_skey").value,
     },
-    tts: {
-      provider: $("t_provider").value,
-      speed: +$("t_speed").value,
-      tencent: {
-        secretId: $("t_sid").value,
-        secretKey: $("t_skey").value,
-        voiceType: +$("t_voice").value,
-        speed: +$("t_tspeed").value,
-      },
-    },
+    tts: ttsForm(),
   };
 
   const r = await fetch("api/config", {

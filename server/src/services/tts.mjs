@@ -192,6 +192,83 @@ export function splitTtsText(text, limit = 100) {
   return out.length ? out : [text];
 }
 
+/** 单声道 Float32 → 16kHz Int16 PCM（线性插值重采样） */
+function resampleToPcm16k(mono, sampleRate) {
+  const n = mono.length;
+  if (sampleRate === SAMPLE_RATE) {
+    const out = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) {
+      const v = Math.max(-1, Math.min(1, mono[i]));
+      out.writeInt16LE(Math.round(v * 32767), i * 2);
+    }
+    return out;
+  }
+  const ratio = sampleRate / SAMPLE_RATE;
+  const outLen = Math.max(1, Math.floor(n / ratio));
+  const pcm = Buffer.alloc(outLen * 2);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(i0 + 1, n - 1);
+    const frac = pos - i0;
+    let v = mono[i0] * (1 - frac) + mono[i1] * frac;
+    v = Math.max(-1, Math.min(1, v));
+    pcm.writeInt16LE(Math.round(v * 32767), i * 2);
+  }
+  return pcm;
+}
+
+/** WAV（RIFF）→ 16kHz 单声道 PCM。支持 8/16/24/32 位整数与 32 位浮点。 */
+function wavToPcm16k(buf) {
+  if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE")
+    throw new Error("不是 WAV 数据");
+
+  let p = 12, fmt = null, data = null;
+  while (p + 8 <= buf.length) {
+    const id = buf.toString("ascii", p, p + 4);
+    const size = buf.readUInt32LE(p + 4);
+    const body = p + 8;
+    if (id === "fmt ") {
+      fmt = {
+        format: buf.readUInt16LE(body),
+        channels: buf.readUInt16LE(body + 2),
+        rate: buf.readUInt32LE(body + 4),
+        bits: buf.readUInt16LE(body + 14),
+      };
+    } else if (id === "data") {
+      const end = size > 0 && size !== 0xffffffff
+        ? Math.min(body + size, buf.length)
+        : buf.length;
+      data = buf.subarray(body, end);
+      if (fmt) break;
+    }
+    p = body + size + (size & 1);
+  }
+  if (!fmt || !data) throw new Error("WAV 解析失败（缺 fmt 或 data 块）");
+  if (!fmt.channels || !fmt.rate) throw new Error("WAV 参数异常");
+
+  const bytes = fmt.bits / 8;
+  if (![1, 2, 3, 4].includes(bytes)) throw new Error(`不支持的 WAV 位深 ${fmt.bits}`);
+
+  const total = Math.floor(data.length / (bytes * fmt.channels));
+  const mono = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    let sum = 0;
+    for (let c = 0; c < fmt.channels; c++) {
+      const o = (i * fmt.channels + c) * bytes;
+      let v;
+      if (fmt.format === 3 && bytes === 4) v = data.readFloatLE(o);
+      else if (bytes === 1) v = (data[o] - 128) / 128;
+      else if (bytes === 2) v = data.readInt16LE(o) / 32768;
+      else if (bytes === 3) v = (((data[o] | (data[o + 1] << 8) | (data[o + 2] << 16)) << 8) >> 8) / 8388608;
+      else v = data.readInt32LE(o) / 2147483648;
+      sum += v;
+    }
+    mono[i] = sum / fmt.channels;
+  }
+  return resampleToPcm16k(mono, fmt.rate);
+}
+
 /** MP3 → 16kHz 单声道 PCM（Int16 小端）。混单声道 + 线性重采样。 */
 async function mp3ToPcm16k(mp3) {
   const dec = new MPEGDecoder();
@@ -208,21 +285,103 @@ async function mp3ToPcm16k(mp3) {
     for (let c = 0; c < ch; c++) s += channelData[c][i] || 0;
     mono[i] = s / ch;
   }
-
-  const ratio = sampleRate / SAMPLE_RATE;
-  const outLen = Math.floor(samplesDecoded / ratio);
-  const pcm = Buffer.alloc(outLen * 2);
-  for (let i = 0; i < outLen; i++) {
-    const pos = i * ratio;
-    const i0 = Math.floor(pos);
-    const i1 = Math.min(i0 + 1, samplesDecoded - 1);
-    const frac = pos - i0;
-    let v = mono[i0] * (1 - frac) + mono[i1] * frac;
-    v = Math.max(-1, Math.min(1, v));
-    pcm.writeInt16LE(Math.round(v * 32767), i * 2);
-  }
-  return pcm;
+  return resampleToPcm16k(mono, sampleRate);
 }
+
+/**
+ * 本地 TTS（自己部署的模型）→ 音频字节。
+ *
+ * 支持两种接口：
+ *   openai    ：POST {base}/v1/audio/speech，OpenAI 兼容（Kokoro-FastAPI、openedai-speech、
+ *               Fish Speech、多数本地封装都提供这个）
+ *   gptsovits ：POST {base}/tts，GPT-SoVITS 的 api_v2.py
+ *
+ * 两种都要求返回 WAV；万一只给了裸 PCM，按 cfg.rawSampleRate 解释。
+ */
+async function localTTS(text, cfg = {}) {
+  const base = String(cfg.baseUrl || "").trim().replace(/\/+$/, "");
+  if (!base) throw new Error("本地 TTS 地址为空（管理页→语音合成→服务地址）");
+
+  const mode = cfg.mode === "gptsovits" ? "gptsovits" : "openai";
+  const timeout = Math.max(3000, Number(cfg.timeoutMs) || 20000);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+
+  const headers = { "Content-Type": "application/json" };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+
+  let url, body;
+  if (mode === "gptsovits") {
+    url = `${base}/tts`;
+    body = {
+      text,
+      text_lang: cfg.textLang || "zh",
+      ref_audio_path: cfg.refAudioPath || "",
+      prompt_text: cfg.promptText || "",
+      prompt_lang: cfg.promptLang || "zh",
+      text_split_method: "cut5",
+      media_type: "wav",
+      streaming_mode: false,
+      speed_factor: Number(cfg.speed) || 1,
+      parallel_infer: true,
+    };
+  } else {
+    url = `${base}/v1/audio/speech`;
+    body = {
+      model: cfg.model || "kokoro",
+      input: text,
+      voice: cfg.voice || "zf_xiaobei",
+      response_format: "wav",
+      speed: Number(cfg.speed) || 1,
+    };
+  }
+
+  try {
+    const r = await fetch(url, {
+      method: "POST", headers, body: JSON.stringify(body), signal: ctl.signal,
+    });
+    if (!r.ok) {
+      const detail = (await r.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160);
+      throw new Error(`HTTP ${r.status}${detail ? "：" + detail : ""}`);
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 800) throw new Error(`返回音频过小（${buf.length}B）`);
+    return buf;
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error(`本地 TTS 超时（${timeout}ms）`);
+    /* undici 把连接错误包在 cause 里，直接抛 "fetch failed" 看不出是端口没开还是地址写错 */
+    const code = e.cause?.code || e.code;
+    if (code) throw new Error(`本地 TTS 连接失败：${code}（${base}）`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 本地返回的音频 → 16k PCM：WAV 优先，其次 MP3，最后当裸 PCM 处理 */
+async function localAudioToPcm16k(buf, cfg = {}) {
+  const isWav = buf.length > 12 && buf.toString("ascii", 0, 4) === "RIFF";
+  const isMp3 = (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
+                (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0);
+  if (isWav) return wavToPcm16k(buf);
+  if (isMp3) return mp3ToPcm16k(buf);
+
+  const rate = Math.max(8000, Number(cfg.rawSampleRate) || 24000);
+  if (buf.length % 2) throw new Error("裸 PCM 长度不是偶数，无法按 s16le 解释");
+  const n = buf.length / 2;
+  const mono = new Float32Array(n);
+  for (let i = 0; i < n; i++) mono[i] = buf.readInt16LE(i * 2) / 32768;
+  return resampleToPcm16k(mono, rate);
+}
+
+/** 云端兜底：优先腾讯（有密钥时），否则百度 */
+async function cloudTTS(text, opts = {}) {
+  if (opts.tencent && opts.tencent.secretId && opts.tencent.secretKey) {
+    return tencentTTS(text, opts.tencent);
+  }
+  return baiduTTS(text, { speed: opts.speed });
+}
+
 
 /** PCM → Opus 帧数组（60ms/帧，24kbps） */
 function pcmToOpusFrames(pcm) {
@@ -244,9 +403,13 @@ function pcmToOpusFrames(pcm) {
 }
 
 /**
- * 一步到位：文字 → Opus 帧（按 provider 选引擎；腾讯失败可回退百度）
+ * 一步到位：文字 → Opus 帧（按 provider 选引擎）
+ *
+ * provider=local 时走自己部署的 TTS，失败按 local.fallback 决定是否回退云端
+ * （有腾讯密钥就回退腾讯，否则百度），这样本地服务挂了也不至于哑巴。
+ *
  * @param {string} text
- * @param {{provider?:string, speed?:number, tencent?:object}} opts 通常直接传 config.tts
+ * @param {{provider?:string, speed?:number, tencent?:object, local?:object}} opts 通常直接传 config.tts
  * @returns {Promise<{frames:Buffer[], durationMs:number}>}
  */
 export async function textToOpusFrames(text, opts = {}) {
@@ -255,20 +418,30 @@ export async function textToOpusFrames(text, opts = {}) {
 
   const parts = [];
   for (const chunk of chunks) {
-    let mp3;
-    if (provider === "tencent") {
+    let pcm;
+    if (provider === "local") {
       try {
-        mp3 = await tencentTTS(chunk, opts.tencent || {});
+        const audio = await localTTS(chunk, opts.local || {});
+        pcm = await localAudioToPcm16k(audio, opts.local || {});
+      } catch (e) {
+        const fb = opts.local ? opts.local.fallback : true;
+        if (fb === false) throw e;
+        console.error(`[tts] 本地合成失败（${e.message}），本句回退云端`);
+        pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
+      }
+    } else if (provider === "tencent") {
+      try {
+        pcm = await mp3ToPcm16k(await tencentTTS(chunk, opts.tencent || {}));
       } catch (e) {
         const fb = opts.tencent ? opts.tencent.fallbackBaidu : true;
         if (fb === false) throw e;
         console.error(`[tts] 腾讯合成失败（${e.message}），本句回退百度`);
-        mp3 = await baiduTTS(chunk, { speed: opts.speed });
+        pcm = await mp3ToPcm16k(await baiduTTS(chunk, { speed: opts.speed }));
       }
     } else {
-      mp3 = await baiduTTS(chunk, opts);
+      pcm = await mp3ToPcm16k(await baiduTTS(chunk, opts));
     }
-    parts.push(await mp3ToPcm16k(mp3));
+    parts.push(pcm);
   }
 
   const pcm = parts.length === 1 ? parts[0] : Buffer.concat(parts);

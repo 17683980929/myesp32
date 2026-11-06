@@ -159,7 +159,11 @@ export const DEFAULT_CONFIG = {
     engine: "16k_zh",
   },
   tts: {
-    /** "tencent" = 腾讯云语音合成；"baidu" = 百度翻译免费接口（备用，无密钥可用） */
+    /**
+     * "tencent" = 腾讯云语音合成
+     * "baidu"   = 百度翻译免费接口（备用，无密钥可用）
+     * "local"   = 自己部署的 TTS（Kokoro / GPT-SoVITS 等），走 HTTP
+     */
     provider: "tencent",
     /** 百度语速（0~15，5≈常速），provider=baidu 时生效 */
     speed: 5,
@@ -176,6 +180,35 @@ export const DEFAULT_CONFIG = {
       region: "ap-guangzhou",
       /** 腾讯失败时本句回退百度（口播不能哑） */
       fallbackBaidu: true,
+    },
+    /**
+     * 本地 TTS（provider=local 时生效）。
+     * 两种接口：openai = POST /v1/audio/speech；gptsovits = POST /tts。
+     * 请求的返回音频一律先解成 16k 单声道 PCM，再按设备协议切 Opus 帧。
+     */
+    local: {
+      /** 服务地址，例如 http://127.0.0.1:8880（Kokoro-FastAPI）或 http://127.0.0.1:9880（GPT-SoVITS） */
+      baseUrl: "http://127.0.0.1:8880",
+      /** openai | gptsovits */
+      mode: "openai",
+      /** OpenAI 兼容接口的 model 字段（Kokoro 固定 kokoro） */
+      model: "kokoro",
+      /** 音色：Kokoro 中文是 zf_xiaobei / zf_xiaoni / zm_yunjian 这类；GPT-SoVITS 忽略 */
+      voice: "zf_xiaobei",
+      /** 需要鉴权时填，作为 Bearer */
+      apiKey: "",
+      /** 语速倍率 0.5~2 */
+      speed: 1,
+      /** GPT-SoVITS：参考音频路径（服务端本机路径）与参考文本 */
+      refAudioPath: "",
+      promptText: "",
+      promptLang: "zh",
+      textLang: "zh",
+      /** 服务器只给裸 PCM 时按这个采样率解释（Kokoro 24k，GPT-SoVITS 32k） */
+      rawSampleRate: 24000,
+      timeoutMs: 20000,
+      /** 本地失败时回退云端（有腾讯密钥就腾讯，否则百度） */
+      fallback: true,
     },
   },
   lua: {
@@ -251,6 +284,7 @@ export function maskedConfig() {
   c.asr.secretKey = mask(c.asr.secretKey);
   c.tts.tencent.secretId = mask(c.tts.tencent.secretId);
   c.tts.tencent.secretKey = mask(c.tts.tencent.secretKey);
+  if (c.tts.local) c.tts.local.apiKey = mask(c.tts.local.apiKey);
   c.server.authToken = mask(c.server.authToken);
   c.server.uploadToken = mask(c.server.uploadToken);
   c.server.adminPassword = mask(c.server.adminPassword);
