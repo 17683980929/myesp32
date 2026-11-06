@@ -496,8 +496,31 @@
             </div>
             <div id="t_gptBox" style="display:none">
               <div class="row">
-                <div><label>参考音频路径<span class="hint"> 跑 TTS 的那台机器上的路径</span></label><input id="t_local_ref" placeholder="D:\tts\ref.wav"></div>
-                <div><label>参考文本<span class="hint"> 参考音频里说的那句话</span></label><input id="t_local_prompt" placeholder="大家好，我是小智。"></div>
+                <div><label>参考音频路径<span class="hint"> 跑 TTS 的那台机器上的绝对路径</span></label><input id="t_local_ref" placeholder="E:\GPT-SoVITS\ref\my.wav"></div>
+                <div><label>参考文本<span class="hint"> 参考音频里说的那句话，必须逐字一致</span></label><input id="t_local_prompt" placeholder="大家好，我是小智，今天想和你聊聊。"></div>
+              </div>
+              <div class="row">
+                <div>
+                  <label>合成语言</label>
+                  <select id="t_local_textlang">
+                    <option value="zh">中文</option>
+                    <option value="auto">自动（中英混排）</option>
+                    <option value="en">英文</option>
+                    <option value="ja">日文</option>
+                    <option value="ko">韩文</option>
+                    <option value="yue">粤语</option>
+                  </select>
+                </div>
+                <div>
+                  <label>参考音频语言</label>
+                  <select id="t_local_promptlang">
+                    <option value="zh">中文</option>
+                    <option value="en">英文</option>
+                    <option value="ja">日文</option>
+                    <option value="ko">韩文</option>
+                    <option value="yue">粤语</option>
+                  </select>
+                </div>
               </div>
             </div>
             <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 本地失败时回退云端（有腾讯密钥走腾讯，否则百度）</label>
@@ -505,10 +528,10 @@
               <button onclick="testTts()">测试合成</button>
               <span class="msg" id="ttsMsg"></span>
             </div>
-            <p class="hint">Kokoro-FastAPI 一条命令：
-              <code>docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest</code>，
-              地址填 <code>http://127.0.0.1:8880</code>，模型 <code>kokoro</code>，音色 <code>zf_xiaobei</code> / <code>zf_xiaoni</code> / <code>zf_xiaoyi</code> / <code>zm_yunjian</code>。
-              GPT-SoVITS 用 <code>python api_v2.py</code>（默认 9880），填参考音频路径和参考文本；CPU 上会比较慢，建议有显卡再选它。</p>
+            <p class="hint">想克隆自己的声音：用 <b>GPT-SoVITS</b>（MIT，6G 显存可推理，Windows 整合包解压即用、不用 Docker），
+              启动 <code>api_v2.py</code> 后接口选 GPT-SoVITS、地址填 <code>http://127.0.0.1:9880</code>，再填参考音频路径和参考文本。
+              只想要个快的通用音色、不克隆：<b>Kokoro-82M</b>（Apache-2.0，CPU 也能跑），接口选 OpenAI 兼容，
+              模型 <code>kokoro</code>，音色 <code>zf_xiaobei</code> / <code>zf_xiaoni</code> / <code>zm_yunjian</code>。</p>
           </div>
         </div>
       </section>
@@ -847,6 +870,8 @@ async function loadConfig() {
   $("t_local_speed").value = lo.speed ?? 1;
   $("t_local_timeout").value = lo.timeoutMs ?? 20000;
   $("t_local_ref").value = lo.refAudioPath || "";
+  $("t_local_textlang").value = lo.textLang || "zh";
+  $("t_local_promptlang").value = lo.promptLang || "zh";
   $("t_local_prompt").value = lo.promptText || "";
   $("t_local_key").value = lo.apiKey || "";
   $("t_local_fallback").checked = lo.fallback !== false;
@@ -906,6 +931,8 @@ function ttsForm() {
       timeoutMs: +$("t_local_timeout").value || 20000,
       refAudioPath: $("t_local_ref").value.trim(),
       promptText: $("t_local_prompt").value.trim(),
+      textLang: $("t_local_textlang").value,
+      promptLang: $("t_local_promptlang").value,
       fallback: $("t_local_fallback").checked,
     },
   };
