@@ -505,6 +505,7 @@
 
           <div class="card wide">
             <h2>本地 TTS <span class="tag">GPT-SoVITS / Kokoro · 引擎选「本地 TTS」时生效</span></h2>
+            <div id="ttsEngineHint" class="msg warn" style="display:none;margin-top:0"></div>
             <div class="row">
               <div style="flex:2">
                 <label>服务地址</label>
@@ -931,6 +932,7 @@ async function loadConfig() {
   $("t_local_insecure").checked = lo.insecure === true;
   $("t_local_fallback").checked = lo.fallback !== false;
   toggleLocalMode();
+  refreshTtsEngineHint();
 
   const vt = cfg.tts.tencent?.voiceType ?? 402000;
   const voiceSel = $("t_voice");  if (![...voiceSel.options].some((o) => +o.value === vt)) {
@@ -1075,12 +1077,12 @@ async function testTts() {
     const r = await fetch("api/tts/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, audio: true }),
+      body: JSON.stringify({ text, audio: true, engine: "local" }),
     });
     const ct = r.headers.get("content-type") || "";
     if (!ct.startsWith("audio/")) {
       const j = await r.json().catch(() => ({}));
-      setMsg($("ttsMsg"), `失败：${j.msg || "未知错误"}`, "err");
+      setMsg($("ttsMsg"), `本地合成失败（已禁用云端回退）：${j.msg || "未知错误"}`, "err");
       return;
     }
     const blob = await r.blob();
@@ -1092,8 +1094,10 @@ async function testTts() {
     au.style.display = "";
     au.onloadedmetadata = () => {
       const dur = isFinite(au.duration) ? au.duration.toFixed(1) : "?";
+      const strict = r.headers.get("x-tts-strict") === "1";
       setMsg($("ttsMsg"),
-        `成功：${Date.now() - t0}ms 合成 ${dur}s（${ttsProvider(r)}，${(blob.size / 1024).toFixed(0)} KB）`, "ok");
+        `${strict ? "本地 GPT-SoVITS" : ttsProvider(r)} 合成成功：${Date.now() - t0}ms / ${dur}s` +
+        `（${(blob.size / 1024).toFixed(0)} KB）`, "ok");
     };
     au.play().catch(() => { /* 浏览器拦自动播放，用户手动点 */ });
   } catch {
@@ -1106,6 +1110,18 @@ async function testTts() {
 /* 从响应头拿 provider，拿不到就回显 select 当前值 */
 function ttsProvider(r) {
   return r.headers.get("x-tts-provider") || $("t_provider").value;
+}
+
+/* 页面顶部「引擎」决定设备播报用哪个；本地 TTS 卡片只负责配本地那套 */
+function refreshTtsEngineHint() {
+  const p = $("t_provider").value;
+  const el = $("ttsEngineHint");
+  const names = { tencent: "腾讯云", baidu: "百度", local: "本地 TTS" };
+  if (p === "local") { el.style.display = "none"; return; }
+  el.style.display = "";
+  el.textContent = `当前设备用的引擎是「${names[p] || p}」，下面这组本地配置不会影响设备播报。` +
+    `「合成并试听」只测本地配置本身（强制走本地、不回退云端）；` +
+    `想让设备也用本地音色，请把上方「引擎」改成「本地 TTS」并保存。`;
 }
 
 /* 语音链路自检：TTS 合成一句 → ASR 识别回来，不用设备也能确认两端都活着 */
@@ -2085,6 +2101,8 @@ $("radarTestBtn").addEventListener("click", async () => {
     else setMsg($("radarMsg"), j.msg || "现在判定无人，没有播报", "warn");
   } catch { setMsg($("radarMsg"), "请求失败", "err"); }
 });
+
+$("t_provider").addEventListener("change", refreshTtsEngineHint);
 
 /* 配置加载失败必须让人看见——否则整页都是 placeholder，看起来像“字段选不了” */
 loadConfig().catch((e) => {

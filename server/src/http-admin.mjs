@@ -524,16 +524,27 @@ export async function handleHttp(req, res, ctx) {
 
       /* 语音合成试听。
        * 默认只回时长/帧数；带 audio:true 直接回 WAV 给浏览器播放，这样能真听到音色对不对。
+       * engine:"local" 是管理页「本地 TTS」卡片的试听专用：强制走本地并关掉回退，
+       * 否则本地服务挂了会静默用云端音色合成成功，页面却显示 local，极难排查。
        * 失败把原始错误带回去。 */
       if (p === "/api/tts/test" && req.method === "POST") {
         let text = "你好，我是小智，这是语音合成的测试。";
         let wantAudio = false;
+        let strictLocal = false;
         try {
           const j = JSON.parse(await readBody(req) || "{}");
           if (typeof j.text === "string" && j.text.trim()) text = j.text.trim().slice(0, 200);
           wantAudio = j.audio === true || j.audio === 1;
+          strictLocal = j.engine === "local";
         } catch { /* 用默认文本 */ }
-        const tts = getConfig().tts || {};
+        let tts = getConfig().tts || {};
+        if (strictLocal) {
+          tts = {
+            ...tts,
+            provider: "local",
+            local: { ...(tts.local || {}), fallback: false },
+          };
+        }
         const t0 = Date.now();
         try {
           if (wantAudio) {
@@ -545,6 +556,7 @@ export async function handleHttp(req, res, ctx) {
               "Cache-Control": "no-store",
               "X-Tts-Ms": String(Date.now() - t0),
               "X-Tts-Provider": String(tts.provider || "baidu"),
+              "X-Tts-Strict": strictLocal ? "1" : "0",
             });
             return res.end(wav);
           }
