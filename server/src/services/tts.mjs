@@ -444,8 +444,14 @@ async function localAudioToPcm16k(buf, cfg = {}) {
 
 /** 云端兜底：优先腾讯（有密钥时），否则百度 */
 async function cloudTTS(text, opts = {}) {
+  /* 云端也必须两级兜底：腾讯失败（欠费/限流/签名错）就退百度。
+   * 之前这里直接 return tencentTTS，腾讯一挂整句就没声音了。 */
   if (opts.tencent && opts.tencent.secretId && opts.tencent.secretKey) {
-    return tencentTTS(text, opts.tencent);
+    try {
+      return await tencentTTS(text, opts.tencent);
+    } catch (e) {
+      console.error(`[tts] 腾讯合成失败（${e.message}），本句回退百度`);
+    }
   }
   return baiduTTS(text, { speed: opts.speed });
 }
@@ -483,31 +489,40 @@ function pcmToOpusFrames(pcm) {
 export async function textToPcm16k(text, opts = {}) {
   const provider = opts.provider || "baidu";
   const chunks = splitTtsText(text, provider === "tencent" ? 100 : 140);
+  /* strict 只给管理页「本地 TTS 试听」用：那一处要看到本地的真实错误，不能悄悄换引擎。
+   * 设备播报永远不 strict —— 只要还有任一引擎可用就必须出声。 */
+  const strict = opts.strict === true ||
+    (provider === "local" && opts.local?.fallback === false);
 
   const parts = [];
   for (const chunk of chunks) {
     let pcm;
-    if (provider === "local") {
-      try {
-        const audio = await localTTS(chunk, opts.local || {});
-        pcm = await localAudioToPcm16k(audio, opts.local || {});
-      } catch (e) {
-        const fb = opts.local ? opts.local.fallback : true;
-        if (fb === false) throw e;
-        console.error(`[tts] 本地合成失败（${e.message}），本句回退云端`);
-        pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
+    try {
+      if (provider === "local") {
+        try {
+          const audio = await localTTS(chunk, opts.local || {});
+          pcm = await localAudioToPcm16k(audio, opts.local || {});
+        } catch (e) {
+          if (strict) throw e;
+          console.error(`[tts] 本地合成失败（${e.message}），本句回退云端`);
+          pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
+        }
+      } else if (provider === "tencent") {
+        try {
+          pcm = await mp3ToPcm16k(await tencentTTS(chunk, opts.tencent || {}));
+        } catch (e) {
+          if (strict) throw e;
+          console.error(`[tts] 腾讯合成失败（${e.message}），本句回退百度`);
+          pcm = await mp3ToPcm16k(await baiduTTS(chunk, { speed: opts.speed }));
+        }
+      } else {
+        pcm = await mp3ToPcm16k(await baiduTTS(chunk, opts));
       }
-    } else if (provider === "tencent") {
-      try {
-        pcm = await mp3ToPcm16k(await tencentTTS(chunk, opts.tencent || {}));
-      } catch (e) {
-        const fb = opts.tencent ? opts.tencent.fallbackBaidu : true;
-        if (fb === false) throw e;
-        console.error(`[tts] 腾讯合成失败（${e.message}），本句回退百度`);
-        pcm = await mp3ToPcm16k(await baiduTTS(chunk, { speed: opts.speed }));
-      }
-    } else {
-      pcm = await mp3ToPcm16k(await baiduTTS(chunk, opts));
+    } catch (e) {
+      if (strict) throw e;   /* 试听要看本地真实错误，别混入兜底日志 */
+      /* 三级全挂也不能让整轮对话一起丢：这一句放 0.3s 静音占位，其余句子照常播 */
+      console.error(`[tts] 该句所有引擎均失败（${e.message}），跳过：${chunk.slice(0, 30)}`);
+      pcm = Buffer.alloc(Math.round(SAMPLE_RATE * 2 * 0.3));
     }
     parts.push(pcm);
   }

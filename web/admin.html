@@ -596,7 +596,9 @@
                 <label class="chk" style="margin-top:6px"><input type="checkbox" id="t_local_parallel"> 并行推理（多段切分时更快，短句反而慢）</label>
               </details>
             </div>
-            <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 本地失败时回退云端（有腾讯密钥走腾讯，否则百度）</label>
+            <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 接口调试时允许回退云端（腾讯 → 百度）</label>
+            <p class="hint" style="margin-top:2px">设备播报<b>始终强制三级兜底</b>（本地 → 腾讯 → 百度），不受此项影响，避免任一环挂掉就出不了声。
+              「合成并试听」会强制只用本地，方便排错。</p>
             <label>试听文本<span class="hint"> 留空用默认句；最多 200 字</span></label>
             <input id="t_tts_text" placeholder="你好，我是小智，这是语音合成的测试。">
             <div class="actions">

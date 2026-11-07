@@ -542,6 +542,7 @@ export async function handleHttp(req, res, ctx) {
           tts = {
             ...tts,
             provider: "local",
+            strict: true,
             local: { ...(tts.local || {}), fallback: false },
           };
         }

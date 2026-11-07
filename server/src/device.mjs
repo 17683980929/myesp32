@@ -1022,7 +1022,16 @@ export class DeviceSession {
   /** 不经过 LLM，直接播一句话（沿用调用者的回合号，被打断即停） */
   async speakOne(text, myTurn = this.turn) {
     try {
-      const { frames } = await withTimeout(textToOpusFrames(text, this.ctx.config.tts), TTS_TIMEOUT_MS);
+      /* 设备播报是最后一环、没人能当场重试，绝不能因为某个 TTS 引擎挂了就整句静默。
+       * 管理页的「回退」开关只用于试听/接口调试，这里强制覆盖成完整三级兜底。 */
+      const raw = this.ctx.config.tts || {};
+      const ttsCfg = {
+        ...raw,
+        strict: false,
+        local: { ...(raw.local || {}), fallback: true },
+        tencent: { ...(raw.tencent || {}), fallbackBaidu: true },
+      };
+      const { frames } = await withTimeout(textToOpusFrames(text, ttsCfg), TTS_TIMEOUT_MS);
       if (this.stale(myTurn)) return;
       this.send(build.ttsStart());
       this.send(build.sub(text, frames.length));
