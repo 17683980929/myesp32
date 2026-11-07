@@ -123,10 +123,12 @@ static void voice_to(voice_state_t v)
      * 这里不能清画布保鲜期：清掉后主页每帧重绘、脚本动画也每帧重绘，
      * 两套画面互相盖 → 语音前后一直闪。 */
     audio_env_track(v == VOICE_IDLE); /* 只在空闲时跟踪环境底噪 */
-    /* 空闲、播报中、思考中都听唤醒词（播报/思考中命中 → 用户优先：
-     * 打断当前回答或放弃等待服务器，直接重开一轮）；
-     * 录音中不听（录音里是用户自己的声音，会自触发） */
-    wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK || v == VOICE_THINK);
+    /* 空闲、思考中听唤醒词（思考中命中 → 用户优先，放弃等待服务器直接重开一轮）。
+     * **播报中不听**：本机没有 AEC（回声消除），扬声器的声音会直接进麦克风，
+     * WakeNet 会把自己的播报听成"小宇同学"，一命中就 voice_interrupt() 清空播放队列，
+     * 表现为"讲到一半突然进倾听 + 中间整句没读"。打断只保留长按 KEY。
+     * 录音中同样不听（录音里是用户自己的声音，会自触发） */
+    wake_set_enabled(v == VOICE_IDLE || v == VOICE_THINK);
     if (v != VOICE_REC) s_rec_started_at = 0;
     switch (v) {
     case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
@@ -693,10 +695,12 @@ static void main_loop(void)
                 ui_set_sub("");
                 voice_to(VOICE_SPEAK);
                 ESP_LOGI(TAG, "唤醒词触发 → 提示音后聆听");
-            } else if (s_voice_state == VOICE_SPEAK || s_voice_state == VOICE_THINK) {
-                ESP_LOGI(TAG, "%s听到唤醒词 → 打断重听",
-                         s_voice_state == VOICE_SPEAK ?
-                         "播报中" : "思考中（放弃等待服务器）");
+            } else if (s_voice_state == VOICE_SPEAK) {
+                /* 播报中唤醒已禁用，这里只兜住"切状态瞬间已经在队列里的旧命中"，
+                 * 绝不能 voice_interrupt()：那一刀会把设备端几秒缓冲全部清掉。 */
+                ESP_LOGW(TAG, "播报中遗留唤醒命中 → 忽略（无 AEC，防自触发）");
+            } else if (s_voice_state == VOICE_THINK) {
+                ESP_LOGI(TAG, "思考中听到唤醒词 → 放弃等待服务器，直接重听");
                 voice_interrupt();
                 voice_start_rec_auto(1);
             }
