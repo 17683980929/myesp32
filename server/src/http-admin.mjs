@@ -278,6 +278,31 @@ function readBody(req, limit = 1024 * 512) {
   });
 }
 
+/** 读 WAV 头算时长（秒）；不是 WAV 或读不到返回 null */
+function wavSeconds(file) {
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(8192);
+    const n = readSync(fd, buf, 0, 8192, 0);
+    if (n < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return null;
+    let off = 12, byteRate = 0, dataSize = 0;
+    while (off + 8 <= n) {
+      const id = buf.toString("ascii", off, off + 4);
+      const sz = buf.readUInt32LE(off + 4);
+      if (id === "fmt " && off + 20 <= n) byteRate = buf.readUInt32LE(off + 16);
+      else if (id === "data") { dataSize = sz; break; }
+      off += 8 + sz + (sz & 1);
+    }
+    if (!byteRate || !dataSize) return null;
+    return Math.round((dataSize / byteRate) * 10) / 10;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* 已关 */ } }
+  }
+}
+
 /** HTTP Basic 校验 */
 function checkAuth(req, res) {
   const cfg = getConfig();
@@ -530,6 +555,39 @@ export async function handleHttp(req, res, ctx) {
         } catch (e) {
           return json(res, 200, { ok: false, ms: Date.now() - t0, provider: tts.provider, msg: e.message });
         }
+      }
+
+      /* 参考音频列表：扫当前 refAudioPath 所在目录，给管理页做下拉用。
+       * GPT-SoVITS 的音色就是靠这个文件决定的，选文件比手打绝对路径靠谱。 */
+      if (p === "/api/tts/refs" && req.method === "GET") {
+        const q = new URL(req.url, "http://x").searchParams;
+        const lo = getConfig().tts?.local || {};
+        const cur = String(lo.refAudioPath || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+        let dir = (q.get("dir") || "").trim();
+        if (!dir && cur) dir = path.dirname(cur);
+        if (!dir) return json(res, 200, { ok: true, dir: "", files: [], msg: "还没填参考音频路径" });
+        if (!existsSync(dir)) {
+          return json(res, 200, {
+            ok: false, dir, files: [],
+            msg: "目录不存在——管理页要在跑 TTS 的那台机器上打开",
+          });
+        }
+        const exts = [".wav", ".mp3", ".flac", ".ogg", ".m4a"];
+        let files = [];
+        try {
+          files = readdirSync(dir)
+            .filter((f) => exts.includes(path.extname(f).toLowerCase()))
+            .map((f) => {
+              const full = path.join(dir, f);
+              let size = 0;
+              try { size = statSync(full).size; } catch { /* 可能没权限 */ }
+              return { name: f, path: full, size, dur: wavSeconds(full) };
+            })
+            .sort((a, b) => a.name.localeCompare(b.name));
+        } catch (e) {
+          return json(res, 200, { ok: false, dir, files: [], msg: `读目录失败：${e.message}` });
+        }
+        return json(res, 200, { ok: true, dir, files });
       }
 
       /* 屏幕预览：复用 tools/preview_ui.mjs 在服务端画一张 400×300 的 PNG。

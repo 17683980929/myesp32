@@ -512,14 +512,23 @@
               </div>
             </div>
             <div class="row">
-              <div><label>模型</label><input id="t_local_model" placeholder="kokoro"></div>
-              <div><label>音色</label><input id="t_local_voice" placeholder="zf_xiaobei"></div>
+              <div><label>模型<span class="hint" id="t_modelHint"> GPT-SoVITS 用不到</span></label><input id="t_local_model" placeholder="kokoro"></div>
+              <div><label>音色<span class="hint" id="t_voiceHint"> GPT-SoVITS 用不到</span></label><input id="t_local_voice" placeholder="zf_xiaobei"></div>
               <div><label>语速倍率</label><input id="t_local_speed" type="number" step="0.1" min="0.5" max="2"></div>
               <div><label>访问令牌（可空）</label><input id="t_local_key" type="password" placeholder="不带 Authorization 就留空"></div>
             </div>
             <div id="t_gptBox" style="display:none">
               <div class="row">
-                <div><label>参考音频路径<span class="hint"> 跑 TTS 的那台机器上的绝对路径；必须是 3~10 秒干净人声</span></label><input id="t_local_ref" placeholder="E:\GPT-SoVITS\ref\my.wav"></div>
+                <div>
+                  <label>参考音频<span class="hint"> 3~10 秒干净人声；换它就等于换音色</span></label>
+                  <div style="display:flex;gap:6px">
+                    <select id="t_local_ref_sel" onchange="pickRef()" style="flex:1;min-width:0">
+                      <option value="">（点“扫描”列出该目录的音频）</option>
+                    </select>
+                    <button type="button" onclick="scanRefs()" style="flex:0 0 auto;white-space:nowrap">扫描</button>
+                  </div>
+                  <input id="t_local_ref" placeholder="E:\GPT-SoVITS\ref\my.wav" style="margin-top:6px">
+                </div>
                 <div><label>参考文本<span class="hint"> 参考音频里说的那句话，必须逐字一致</span></label><input id="t_local_prompt" placeholder="大家好，我是小智，今天想和你聊聊。"></div>
               </div>
               <div class="row">
@@ -950,7 +959,8 @@ function ttsForm() {
       speed: +$("t_tspeed").value,
     },
     local: {
-      baseUrl: $("t_local_url").value.trim(),
+      /* 空值不覆盖：页面配置没加载成功时，避免把服务器上正确的地址写没了 */
+      baseUrl: $("t_local_url").value.trim() || (cfg?.tts?.local?.baseUrl || ""),
       mode: $("t_local_mode").value,
       model: $("t_local_model").value.trim(),
       voice: $("t_local_voice").value.trim(),
@@ -969,8 +979,53 @@ function ttsForm() {
 function toggleLocalMode() {
   const gpt = $("t_local_mode").value === "gptsovits";
   $("t_gptBox").style.display = gpt ? "" : "none";
-  $("t_local_model").disabled = gpt;
-  $("t_local_voice").disabled = gpt;
+  /* GPT-SoVITS 的 /tts 请求里没有 model/voice，音色完全由参考音频决定，
+   * 所以这两项在 GPT 模式下置灰，并把原因写在 label 上 */
+  for (const id of ["t_local_model", "t_local_voice"]) {
+    const el = $(id);
+    el.disabled = gpt;
+    el.style.opacity = gpt ? "0.4" : "";
+    el.title = gpt ? "GPT-SoVITS 由参考音频决定音色，这两项不参与请求" : "";
+  }
+  for (const id of ["t_modelHint", "t_voiceHint"]) $(id).style.display = gpt ? "" : "none";
+  if (gpt && !$("t_local_ref_sel").dataset.loaded) scanRefs();
+}
+
+/* 扫参考音频目录：GPT-SoVITS 换音色就是换这个文件 */
+async function scanRefs() {
+  const sel = $("t_local_ref_sel");
+  const cur = $("t_local_ref").value.trim().replace(/\\/g, "/");
+  sel.innerHTML = '<option value="">扫描中…</option>';
+  try {
+    const r = await fetch("api/tts/refs");
+    const j = await r.json();
+    if (!j.ok) {
+      sel.innerHTML = `<option value="">${j.msg || "扫描失败"}</option>`;
+      return;
+    }
+    if (!j.files.length) {
+      sel.innerHTML = `<option value="">${j.dir} 下没有音频文件</option>`;
+      return;
+    }
+    sel.innerHTML = '<option value="">（选择文件）</option>';
+    for (const f of j.files) {
+      const o = document.createElement("option");
+      o.value = f.path;
+      const hasDur = typeof f.dur === "number";
+      const bad = hasDur && (f.dur < 3 || f.dur > 10);
+      o.textContent = `${f.name}${hasDur ? ` · ${f.dur}s` : ""}${bad ? " ⚠ 需 3~10 秒" : ""}`;
+      if (cur && f.path.replace(/\\/g, "/").toLowerCase() === cur.toLowerCase()) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.dataset.loaded = "1";
+  } catch {
+    sel.innerHTML = '<option value="">扫描失败（服务端没响应）</option>';
+  }
+}
+
+function pickRef() {
+  const v = $("t_local_ref_sel").value;
+  if (v) $("t_local_ref").value = v;
 }
 
 /* 先保存 TTS 这一段，再用服务器上的新配置合成一句——否则测的是旧配置 */
@@ -1971,7 +2026,15 @@ $("radarTestBtn").addEventListener("click", async () => {
   } catch { setMsg($("radarMsg"), "请求失败", "err"); }
 });
 
-loadConfig();
+/* 配置加载失败必须让人看见——否则整页都是 placeholder，看起来像“字段选不了” */
+loadConfig().catch((e) => {
+  console.error("配置加载失败", e);
+  const bar = document.createElement("div");
+  bar.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:99;padding:10px 16px;" +
+    "background:#c0392b;color:#fff;font:14px/1.5 system-ui;text-align:center";
+  bar.textContent = `配置加载失败：${e.message}。页面上显示的是示例值，请刷新页面重试。`;
+  document.body.appendChild(bar);
+});
 refreshStatus();
 setInterval(refreshStatus, 5000);
 refreshOta();
