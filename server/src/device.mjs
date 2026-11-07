@@ -808,8 +808,10 @@ export class DeviceSession {
       const t0s = Date.now();
       let audioMs = 0;                         /* 累计已发音频时长 */
       let cur = null, ci = 0;                  /* 当前句 / 句内帧指针 */
+      let prevSent = null;                     /* 最近一句已发完的（打断后补回去） */
       let resend = true;                       /* 是否整句重发（首次 & 挂起恢复） */
       let wasHeld = false;
+      let heldCi = 0;                          /* 被打断那一刻当前句已发到第几帧 */
       while (producing || queue.length || cur) {
         if (this.stale(myTurn)) break;
         if (!cur) {
@@ -821,6 +823,7 @@ export class DeviceSession {
         if (this.hold === myTurn) {
           /* 被打断挂起：不发帧；恢复时整句重发（设备端缓冲已清，
            * 字幕与声音重新对齐，最多重听一句） */
+          if (!wasHeld) heldCi = ci;
           if (!this.holdAt || Date.now() - this.holdAt > HOLD_TIMEOUT_MS) {
             log(`[${this.sid}] 等用户说话超时 → 继续播报`);
             this.clearHold();
@@ -835,6 +838,21 @@ export class DeviceSession {
             continue;
           }
         }
+        if (wasHeld && this.hold !== myTurn) {
+          /* 恢复续播：设备在 rec_start 那一刻就 audio_play_stop() 清空了播放队列，
+           * 而我们这边领先设备约 TARGET_LEAD_MS。若打断时当前句才刚发了几帧，
+           * 这段"已发未播"的音频就有相当一部分落在上一句上——短句（"嗯。""好的。"）
+           * 甚至整句都在缓冲里，于是听起来就是中间凭空跳过一句。
+           * 这种情况把上一句补到当前句之前重放；否则当前句从头发一遍就够覆盖。 */
+          if (prevSent && heldCi * FRAME_MS < TARGET_LEAD_MS) {
+            const redo = cur;
+            cur = prevSent;
+            ci = 0;
+            if (redo) queue.unshift(redo);
+            prevSent = null;
+            log(`[${this.sid}] 打断恢复 → 补发上一句，避免漏读`);
+          }
+        }
         if (resend) {
           if (wasHeld) {                       /* 挂起恢复：重开设备端播放流 */
             this.send(build.ttsStart());
@@ -847,7 +865,7 @@ export class DeviceSession {
         this.sendBin(cur.frames[ci]);
         audioMs += FRAME_MS;
         ci++;
-        if (ci >= cur.frames.length) cur = null;
+        if (ci >= cur.frames.length) { prevSent = cur; cur = null; }
         const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
         await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
