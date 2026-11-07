@@ -819,6 +819,7 @@ export class DeviceSession {
           cur = queue.shift();
           ci = 0;
           resend = true;
+          if (!cur.frames || !cur.frames.length) { cur = null; continue; }  /* 双保险 */
         }
         if (this.hold === myTurn) {
           /* 被打断挂起：不发帧；恢复时整句重发（设备端缓冲已清，
@@ -905,6 +906,13 @@ export class DeviceSession {
         return false;                 /* 已有内容 → 干净收尾，设备播完队列自然结束 */
       }
       sent++;
+      /* 纯标点/空白的片段会合成出 0 帧（见 tts.mjs stripUnspeakable）。
+       * 空帧不能入队：sender 会去取 cur.frames[0] 得到 undefined，
+       * ws.send(undefined) 抛错会让整个发送循环挂掉，后半段回答全丢。 */
+      if (!frames.length) {
+        log(`[${this.sid}] 句子无可念内容，跳过播报：${JSON.stringify(sentence.slice(0, 20))}`);
+        return true;
+      }
       queue.push({ frames, text: sentence.trim() });
       return true;
     };
