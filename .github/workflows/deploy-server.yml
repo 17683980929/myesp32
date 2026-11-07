@@ -29,9 +29,19 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          # screen preview runs preview_ui.mjs on the server and needs the firmware fonts
+          # Screen preview needs preview_ui.mjs + firmware fonts on the server.
+          # Put them under server/data/preview/: that is the ONLY extra tree the
+          # already-deployed updater copies, and its unzip whitelist REJECTS
+          # tools/ and firmware/ (bootstrap problem - the whitelist fix itself
+          # has to travel through this very same updater).
+          mkdir -p server/data/preview
+          cp tools/preview_ui.mjs server/data/preview/
+          cp firmware/components/ui/font5x7.c \
+             firmware/components/ui/font_cjk.c \
+             firmware/components/ui/pet_frames.c \
+             firmware/components/ui/pet_frames.h \
+             server/data/preview/
           zip -qr /tmp/server.zip server/src server/skills server/data web \
-            tools/preview_ui.mjs firmware/components/ui \
             -x 'server/data/life-guide/*'
           ls -lh /tmp/server.zip
           code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 90 \

@@ -677,13 +677,30 @@ export async function handleHttp(req, res, ctx) {
             : "未接入",
         };
 
+        /* 本地开发用仓库里的 tools/；云端只有 CI 平铺到 server/data/preview/ 的那份。
+         * 云端没有 firmware/ 目录，所以字体要从 PREVIEW_DATA_DIR 所在目录读。 */
+        const projRoot = path.join(ROOT, "..");
+        const localScript = path.join(projRoot, "tools", "preview_ui.mjs");
+        const deployedDir = path.join(ROOT, "data", "preview");
+        const deployedScript = path.join(deployedDir, "preview_ui.mjs");
+        const script = existsSync(localScript) ? localScript : deployedScript;
+        const dataDir = script === deployedScript ? deployedDir : "";
+        if (!existsSync(script)) {
+          return json(res, 200, {
+            ok: false, msg: "预览脚本未部署：重新上传并应用服务端包（需含 server/data/preview/）",
+          });
+        }
         const tmp = path.join(ROOT, ".preview.png");
         try {
           execFileSync(process.execPath,
-            [path.join(ROOT, "..", "tools", "preview_ui.mjs"), tmp, String(h), String(m), day],
+            [script, tmp, String(h), String(m), day],
             {
-              cwd: path.join(ROOT, ".."), timeout: 20000, stdio: "pipe",
-              env: { ...process.env, PREVIEW_DATA: JSON.stringify({ env, st }) },
+              cwd: projRoot, timeout: 20000, stdio: "pipe",
+              env: {
+                ...process.env,
+                PREVIEW_DATA: JSON.stringify({ env, st }),
+                PREVIEW_DATA_DIR: dataDir,
+              },
             });
           const png = readFileSync(tmp);
           res.writeHead(200, {
@@ -729,13 +746,10 @@ export async function handleHttp(req, res, ctx) {
         const bak = path.join(UPD_DIR, "bak");
         rmSync(stage, { recursive: true, force: true });
         rmSync(bak, { recursive: true, force: true });
+        /* 白名单保持旧版一致即可：渲染依赖由 CI 平铺进 server/data/preview/，
+         * 走的是 server/data/ 这条本来就被放行的路径，不需要放宽白名单。 */
         const files = unzipTo(readFileSync(UPD_ZIP), stage, {
-          /* tools/ 与 firmware/components/ui/ 是 /api/screen-preview 的渲染依赖：
-           * preview_ui.mjs 在服务端跑，直接读固件里的点阵字体和桌宠帧数据 */
-          allowPrefix: [
-            "server/src/", "server/skills/", "server/data/", "web/", "server/package",
-            "tools/", "firmware/components/ui/",
-          ],
+          allowPrefix: ["server/src/", "server/skills/", "server/data/", "web/", "server/package"],
         });
         const js = files.filter((f) => f.endsWith(".mjs"));
         if (!js.length) return json(res, 400, { ok: false, msg: "包里没有 .mjs，拒绝应用" });
@@ -770,7 +784,7 @@ export async function handleHttp(req, res, ctx) {
           }
         };
         try {
-          ["server/src", "server/skills", "web", "tools", "firmware/components/ui"].forEach(swapDir);
+          ["server/src", "server/skills", "web"].forEach(swapDir);
           const dataFrom = path.join(stage, "server/data");
           if (existsSync(dataFrom)) {
             /* 部署包里的 data/timetable.json 是 git 里的出厂模板，会覆盖云端课表。

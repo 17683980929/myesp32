@@ -9,6 +9,13 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
+import path from "node:path";
+
+/* 本地开发：从仓库的 firmware/components/ui 读源码。
+ * 云端部署：CI 把这些文件平铺到 server/data/preview/，用 PREVIEW_DATA_DIR 指过来。 */
+const DATA_DIR = process.env.PREVIEW_DATA_DIR || "";
+const readAsset = (rel) =>
+  readFileSync(DATA_DIR ? path.join(DATA_DIR, path.basename(rel)) : rel, "utf8");
 
 const W = 400, H = 300;
 const fb = new Uint8Array(W * H);          /* 1 = 墨 */
@@ -32,7 +39,7 @@ function numbersIn(text, startMarker, endMarker) {
   return (text.slice(a, b).match(/0x[0-9A-Fa-f]+/g) || []).map((h) => parseInt(h, 16));
 }
 
-const f5 = readFileSync("firmware/components/ui/font5x7.c", "utf8");
+const f5 = readAsset("firmware/components/ui/font5x7.c");
 const glyphFlat = numbersIn(f5, "glyphs[][7]", "};");
 const glyphs = [];
 for (let i = 0; i + 6 < glyphFlat.length; i += 7) glyphs.push(glyphFlat.slice(i, i + 7));
@@ -45,7 +52,7 @@ const glyphOf = (ch) => {
   return glyphs[i === 0xff ? 83 : i];
 };
 
-const fc = readFileSync("firmware/components/ui/font_cjk.c", "utf8");
+const fc = readAsset("firmware/components/ui/font_cjk.c");
 const cjkFlat = numbersIn(fc, "cjk_rows[][16]", "};");
 const cjkRows = [];
 for (let i = 0; i + 15 < cjkFlat.length; i += 16) cjkRows.push(cjkFlat.slice(i, i + 16));
@@ -254,8 +261,8 @@ function iconWeather(x, y, s, kind, ink = 1) {
 
 /* ── 桌宠帧 ───────────────────────────────────────────────────────── */
 
-const cFrames = readFileSync("firmware/components/ui/pet_frames.c", "utf8");
-const cHeader = readFileSync("firmware/components/ui/pet_frames.h", "utf8");
+const cFrames = readAsset("firmware/components/ui/pet_frames.c");
+const cHeader = readAsset("firmware/components/ui/pet_frames.h");
 const LAYERED = /#define PET_LAYERED\s+1/.test(cHeader);
 const frameArrays = new Map();
 {
