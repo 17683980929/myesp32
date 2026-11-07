@@ -11,6 +11,7 @@
  */
 
 import crypto from "node:crypto";
+import https from "node:https";
 import { MPEGDecoder } from "mpg123-decoder";
 import OpusScript from "opusscript";
 
@@ -298,6 +299,36 @@ async function mp3ToPcm16k(mp3) {
  *
  * 两种都要求返回 WAV；万一只给了裸 PCM，按 cfg.rawSampleRate 解释。
  */
+/**
+ * 只对「显式勾选了忽略证书」的本地 TTS 请求走这条路。
+ *
+ * frp 一类内网穿透常给 *.xxx.nyat.app 的泛域名证书，用自有域名访问会报
+ * ERR_TLS_CERT_ALTNAME_INVALID；全局 fetch(undici) 无法只给单个请求关校验，
+ * 所以改用 node:https 并单独设 rejectUnauthorized:false。
+ * 作用域仅限本次请求，ASR / LLM / 天气等其它 HTTPS 调用不受影响。
+ */
+function postHttpsInsecure(url, raw, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.request({
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: `${u.pathname}${u.search}`,
+      method: "POST",
+      headers: { ...headers, "Content-Length": Buffer.byteLength(raw) },
+      rejectUnauthorized: false,
+      timeout: timeoutMs,
+    }, (res) => {
+      const parts = [];
+      res.on("data", (c) => parts.push(c));
+      res.on("end", () => resolve({ status: res.statusCode || 0, buf: Buffer.concat(parts) }));
+    });
+    req.on("timeout", () => req.destroy(new Error(`本地 TTS 超时（${timeoutMs}ms）`)));
+    req.on("error", reject);
+    req.end(raw);
+  });
+}
+
 async function localTTS(text, cfg = {}) {
   const base = String(cfg.baseUrl || "").trim().replace(/\/+$/, "");
   if (!base) throw new Error("本地 TTS 地址为空（管理页→语音合成→服务地址）");
@@ -338,21 +369,33 @@ async function localTTS(text, cfg = {}) {
     };
   }
 
+  const raw = JSON.stringify(body);
   try {
-    const r = await fetch(url, {
-      method: "POST", headers, body: JSON.stringify(body), signal: ctl.signal,
-    });
-    if (!r.ok) {
-      const detail = (await r.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160);
-      throw new Error(`HTTP ${r.status}${detail ? "：" + detail : ""}`);
+    let status, buf;
+    if (cfg.insecure === true && url.startsWith("https:")) {
+      ({ status, buf } = await postHttpsInsecure(url, raw, headers, timeout));
+    } else {
+      const r = await fetch(url, {
+        method: "POST", headers, body: raw, signal: ctl.signal,
+      });
+      status = r.status;
+      buf = Buffer.from(await r.arrayBuffer());
     }
-    const buf = Buffer.from(await r.arrayBuffer());
+    if (status < 200 || status >= 300) {
+      const detail = buf.toString("utf8").replace(/\s+/g, " ").slice(0, 160);
+      throw new Error(`HTTP ${status}${detail ? "：" + detail : ""}`);
+    }
     if (buf.length < 800) throw new Error(`返回音频过小（${buf.length}B）`);
     return buf;
   } catch (e) {
     if (e.name === "AbortError") throw new Error(`本地 TTS 超时（${timeout}ms）`);
     /* undici 把连接错误包在 cause 里，直接抛 "fetch failed" 看不出是端口没开还是地址写错 */
     const code = e.cause?.code || e.code;
+    if (code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+        code === "SELF_SIGNED_CERT_IN_CHAIN" || code === "CERT_HAS_EXPIRED") {
+      throw new Error(`本地 TTS 证书校验失败（${code}）：地址与证书域名不匹配。` +
+        `请在管理页本地 TTS 勾选「忽略 HTTPS 证书错误」，或改用证书匹配的域名`);
+    }
     if (code) throw new Error(`本地 TTS 连接失败：${code}（${base}）`);
     throw e;
   } finally {

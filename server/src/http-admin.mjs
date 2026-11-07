@@ -598,6 +598,18 @@ export async function handleHttp(req, res, ctx) {
         const cur = String(lo.refAudioPath || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
         let dir = (q.get("dir") || "").trim();
         if (!dir && cur) dir = path.dirname(cur);
+        /* TTS 在另一台机器时（frp / Tailscale），这里扫的是本机目录，列出来的文件没有意义 */
+        let remote = "";
+        try {
+          const u = new URL(lo.baseUrl || "");
+          if (u.hostname && !["127.0.0.1", "localhost", "[::1]", "::1"].includes(u.hostname)) remote = u.hostname;
+        } catch { /* 地址为空或写错，按本机处理 */ }
+        if (remote) {
+          return json(res, 200, {
+            ok: false, remote: true, dir, files: [],
+            msg: `TTS 跑在另一台机器（${remote}），这里扫不到它的目录；请手填那台机器上的绝对路径`,
+          });
+        }
         if (!dir) return json(res, 200, { ok: true, dir: "", files: [], msg: "还没填参考音频路径" });
         if (!existsSync(dir)) {
           return json(res, 200, {
