@@ -50,3 +50,6 @@ assets/adm_*.png
 
 # 屏幕预览临时输出（server/.preview.png）
 server/.preview.png
+
+# 临时试听样本（用 ffmpeg/管理页合成，可随时重出）
+tts_sample_*.wav
