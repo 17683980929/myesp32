@@ -498,7 +498,11 @@ export async function textToPcm16k(text, opts = {}) {
     (provider === "local" && opts.local?.fallback === false);
 
   const parts = [];
-  for (const chunk of chunks) {
+  for (const rawChunk of chunks) {
+    const chunk = stripUnspeakable(rawChunk);
+    /* 没有可念内容（纯标点/破折号/空白）→ 直接跳过。
+     * 送给 GPT-SoVITS 会得到 1.00 秒全零音频，设备播出来就是一段死寂。 */
+    if (!chunk) continue;
     let pcm;
     try {
       if (provider === "local") {
@@ -540,10 +544,34 @@ export async function textToPcm16k(text, opts = {}) {
       console.error(`[tts-skip] 该句所有引擎均失败（${e.message}），跳过：${chunk.slice(0, 40)}`);
       pcm = Buffer.alloc(Math.round(SAMPLE_RATE * 2 * 0.3));
     }
+    /* 最后一道闸：模型偶尔仍会吐出全零音频（例如文本归一化后没有音素），
+     * 这种"有长度但没声音"的结果播出来就是凭空少一句，直接丢掉更安全。 */
+    if (!strict && isAllZeroPcm(pcm)) {
+      console.error(`[tts-skip] 全零音频，跳过本句：${chunk.slice(0, 30)}`);
+      continue;
+    }
     parts.push(pcm);
   }
 
   return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+}
+
+/** 去掉 GPT-SoVITS 会直接 400 的字符（emoji 等）；返回 "" = 这段没有可念内容。
+ *  实测纯标点/破折号/空格会让模型固定输出 1.00 秒全零音频，必须提前拦住。 */
+function stripUnspeakable(s) {
+  const t = String(s)
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{27BF}\u{FE0F}\u{200D}\u{2B00}-\u{2BFF}]/gu, "")
+    .replace(/[ \t]+/g, " ");
+  return /[\p{L}\p{N}]/u.test(t) ? t.trim() : "";
+}
+
+/** PCM 是否全零（= 模型输出的"空音频"） */
+function isAllZeroPcm(buf) {
+  if (!buf || !buf.length) return true;
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    if (buf.readInt16LE(i) !== 0) return false;
+  }
+  return true;
 }
 
 /** 文字 → Opus 帧（下发设备用） */
