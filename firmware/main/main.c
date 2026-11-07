@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -87,6 +88,8 @@ static char s_sub_cur[SUB_MAX] = "";
 static int  s_sub_cur_at = 0;           /* 该句首帧序号 */
 static int  s_sub_cur_frames = 0;       /* 该句总帧数（0=不翻页） */
 static int  s_sub_played0 = 0;          /* 该句开始时的已播帧数（诊断用） */
+static double s_sub_e0 = 0;             /* 该句开始时的累计能量（诊断用） */
+static long   s_sub_n0 = 0;             /* 该句开始时的累计样本数（诊断用） */
 static int  s_sub_cur_page = 0;         /* 当前显示到第几页 */
 static void sub_cur_clear(void)
 {
@@ -503,6 +506,7 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_TTS_START:
         s_followup = 0;                  /* 新一轮回答开始：上一次的连续对话标记作废 */
         audio_play_reset();
+        s_sub_e0 = 0; s_sub_n0 = 0;      /* 能量统计跟着 audio_play_reset 一起归零 */
         subq_clear();
         sub_cur_clear();
         s_sub_clear_at = 0;
@@ -799,10 +803,19 @@ static void main_loop(void)
                  * 差得多 → 该句的帧在设备侧被丢了（流被关/队列满/解码失败） */
                 if (s_sub_cur[0] && s_sub_cur_frames > 0) {
                     int actual = played - s_sub_played0;
-                    if (actual < s_sub_cur_frames - 2 || actual > s_sub_cur_frames + 2)
-                        ESP_LOGW(TAG, "句丢帧: 实播=%d 应播=%d", actual, s_sub_cur_frames);
+                    /* 这一句实际解码出来的平均电平：正常语音约 -25~-30dB，
+                     * 低于 -45dB 基本就是"这一句是哑的" */
+                    double e1 = 0; long n1 = 0;
+                    audio_play_energy(&e1, &n1);
+                    double de = e1 - s_sub_e0;
+                    long dn = n1 - s_sub_n0;
+                    int db = (dn > 0 && de > 0) ? (int)(10.0 * log10(de / dn)) : -99;
+                    s_sub_e0 = e1;
+                    s_sub_n0 = n1;
+                    if (actual < s_sub_cur_frames - 2 || actual > s_sub_cur_frames + 2 || db < -45)
+                        ESP_LOGW(TAG, "句丢帧/静音: 实播=%d 应播=%d 电平=%ddB", actual, s_sub_cur_frames, db);
                     else
-                        ESP_LOGI(TAG, "句完整: 实播=%d 应播=%d", actual, s_sub_cur_frames);
+                        ESP_LOGI(TAG, "句完整: 实播=%d 应播=%d 电平=%ddB", actual, s_sub_cur_frames, db);
                 }
                 snprintf(s_sub_cur, sizeof(s_sub_cur), "%s", it->text);
                 s_sub_cur_at     = it->at_frame;

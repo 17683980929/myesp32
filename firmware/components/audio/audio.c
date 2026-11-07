@@ -77,6 +77,8 @@ static volatile int   s_stream_open    = 0;   /* tts_start 后开闸；结束后
 static volatile int   s_stream_act_ms  = 0;   /* 最近一次帧活动时刻（看门狗用） */
 static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步，tts_start 清零） */
 static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
+static double         s_energy_ss      = 0;   /* 播放能量平方和（诊断用） */
+static long           s_energy_n       = 0;   /* 参与统计的样本数 */
 static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放任务消费） */
 static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放任务消费） */
 static volatile int   s_alarm_req      = 0;   /* 闹钟提示音请求 */
@@ -480,7 +482,13 @@ static void play_task(void *arg)
 
         int n = opus_decode(dec, f.data, f.len, pcm, FRAME_SAMPLES, 0);
         if (n > 0) {
-            for (int i = 0; i < n; i++) { st[i * 2] = pcm[i]; st[i * 2 + 1] = pcm[i]; }
+            for (int i = 0; i < n; i++) {
+                /* 诊断：累加平方和，main 里按句算平均电平，用来判断"这一句是不是哑的" */
+                float v = pcm[i] / 32768.0f;
+                s_energy_ss += (double)v * v;
+                s_energy_n++;
+                st[i * 2] = pcm[i]; st[i * 2 + 1] = pcm[i];
+            }
             esp_codec_dev_write(s_play, st, n * 4);
             s_frames_played++;
             s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -542,6 +550,8 @@ void audio_play_reset(void)
     s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_frames_pushed = 0;
     s_frames_played = 0;
+    s_energy_ss = 0;
+    s_energy_n = 0;
     xQueueReset(s_playq);
 }
 
@@ -599,6 +609,13 @@ void audio_play_stats(int *pushed, int *played)
 {
     if (pushed) *pushed = s_frames_pushed;
     if (played) *played = s_frames_played;
+}
+
+/* 诊断：取累计播放能量（平方和 + 样本数），调用方做差分即可得到某段的平均电平 */
+void audio_play_energy(double *sum_sq, long *nsamples)
+{
+    if (sum_sq) *sum_sq = s_energy_ss;
+    if (nsamples) *nsamples = s_energy_n;
 }
 
 void audio_set_volume(int vol)

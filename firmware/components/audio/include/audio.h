@@ -25,6 +25,7 @@ void audio_play_finish(void);                           /* tts_stop：队列播�
 void audio_play_stop(void);                             /* 立即停止（断线/用户打断） */
 int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
 void audio_play_stats(int *pushed, int *played);        /* 帧计数（tts_start 清零）：已入队 / 已播 */
+void audio_play_energy(double *sum_sq, long *nsamples); /* 累计播放能量（诊断：判断某句是否静音） */
 
 /* ── 唤醒提示音（本地合成的"叮咚"，不经过网络；播完走 audio_play_finished()）── */
 void audio_play_wake_chime(void);
