@@ -805,7 +805,7 @@ export class DeviceSession {
 
     const sender = (async () => {
       this.send(build.ttsStart());
-      const t0s = Date.now();
+      let t0s = 0;
       let audioMs = 0;                         /* 累计已发音频时长 */
       let cur = null, ci = 0;                  /* 当前句 / 句内帧指针 */
       let prevSent = null;                     /* 最近一句已发完的（打断后补回去） */
@@ -862,6 +862,11 @@ export class DeviceSession {
           resend = false;
         }
         if (this.stale(myTurn)) break;
+        /* 起算点放在**第一帧真正要发的时候**：首句合成要 2~5 秒，
+         * 那段时间 audioMs 还是 0、elapsed 已经在涨，lead 变成很大的负数，
+         * 之后会一路快发追赶，把设备端缓冲堆到 6 秒以上（实测 inflight=105 帧）。
+         * 缓冲越厚，一旦被打断/清队列，丢的音频越多 —— 整句整句地消失就是这么来的。 */
+        if (!t0s) t0s = Date.now();
         this.sendBin(cur.frames[ci]);
         audioMs += FRAME_MS;
         ci++;
