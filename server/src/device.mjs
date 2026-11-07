@@ -805,13 +805,11 @@ export class DeviceSession {
 
     const sender = (async () => {
       this.send(build.ttsStart());
-      let t0s = 0;
+      const t0s = Date.now();
       let audioMs = 0;                         /* 累计已发音频时长 */
       let cur = null, ci = 0;                  /* 当前句 / 句内帧指针 */
-      let prevSent = null;                     /* 最近一句已发完的（打断后补回去） */
       let resend = true;                       /* 是否整句重发（首次 & 挂起恢复） */
       let wasHeld = false;
-      let heldCi = 0;                          /* 被打断那一刻当前句已发到第几帧 */
       while (producing || queue.length || cur) {
         if (this.stale(myTurn)) break;
         if (!cur) {
@@ -819,12 +817,10 @@ export class DeviceSession {
           cur = queue.shift();
           ci = 0;
           resend = true;
-          if (!cur.frames || !cur.frames.length) { cur = null; continue; }  /* 双保险 */
         }
         if (this.hold === myTurn) {
           /* 被打断挂起：不发帧；恢复时整句重发（设备端缓冲已清，
            * 字幕与声音重新对齐，最多重听一句） */
-          if (!wasHeld) heldCi = ci;
           if (!this.holdAt || Date.now() - this.holdAt > HOLD_TIMEOUT_MS) {
             log(`[${this.sid}] 等用户说话超时 → 继续播报`);
             this.clearHold();
@@ -839,21 +835,6 @@ export class DeviceSession {
             continue;
           }
         }
-        if (wasHeld && this.hold !== myTurn) {
-          /* 恢复续播：设备在 rec_start 那一刻就 audio_play_stop() 清空了播放队列，
-           * 而我们这边领先设备约 TARGET_LEAD_MS。若打断时当前句才刚发了几帧，
-           * 这段"已发未播"的音频就有相当一部分落在上一句上——短句（"嗯。""好的。"）
-           * 甚至整句都在缓冲里，于是听起来就是中间凭空跳过一句。
-           * 这种情况把上一句补到当前句之前重放；否则当前句从头发一遍就够覆盖。 */
-          if (prevSent && heldCi * FRAME_MS < TARGET_LEAD_MS) {
-            const redo = cur;
-            cur = prevSent;
-            ci = 0;
-            if (redo) queue.unshift(redo);
-            prevSent = null;
-            log(`[${this.sid}] 打断恢复 → 补发上一句，避免漏读`);
-          }
-        }
         if (resend) {
           if (wasHeld) {                       /* 挂起恢复：重开设备端播放流 */
             this.send(build.ttsStart());
@@ -863,15 +844,10 @@ export class DeviceSession {
           resend = false;
         }
         if (this.stale(myTurn)) break;
-        /* 起算点放在**第一帧真正要发的时候**：首句合成要 2~5 秒，
-         * 那段时间 audioMs 还是 0、elapsed 已经在涨，lead 变成很大的负数，
-         * 之后会一路快发追赶，把设备端缓冲堆到 6 秒以上（实测 inflight=105 帧）。
-         * 缓冲越厚，一旦被打断/清队列，丢的音频越多 —— 整句整句地消失就是这么来的。 */
-        if (!t0s) t0s = Date.now();
         this.sendBin(cur.frames[ci]);
         audioMs += FRAME_MS;
         ci++;
-        if (ci >= cur.frames.length) { prevSent = cur; cur = null; }
+        if (ci >= cur.frames.length) cur = null;
         const lead = audioMs - (Date.now() - t0s);  /* 设备端缓冲估计 */
         await sleep(lead < TARGET_LEAD_MS ? FRAME_SEND_FAST_MS : FRAME_SEND_RT_MS);
       }
@@ -906,13 +882,6 @@ export class DeviceSession {
         return false;                 /* 已有内容 → 干净收尾，设备播完队列自然结束 */
       }
       sent++;
-      /* 纯标点/空白的片段会合成出 0 帧（见 tts.mjs stripUnspeakable）。
-       * 空帧不能入队：sender 会去取 cur.frames[0] 得到 undefined，
-       * ws.send(undefined) 抛错会让整个发送循环挂掉，后半段回答全丢。 */
-      if (!frames.length) {
-        log(`[${this.sid}] 句子无可念内容，跳过播报：${JSON.stringify(sentence.slice(0, 20))}`);
-        return true;
-      }
       queue.push({ frames, text: sentence.trim() });
       return true;
     };

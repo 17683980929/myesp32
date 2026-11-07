@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -87,9 +86,6 @@ static void subq_clear(void) { s_subq_head = s_subq_tail = 0; }
 static char s_sub_cur[SUB_MAX] = "";
 static int  s_sub_cur_at = 0;           /* 该句首帧序号 */
 static int  s_sub_cur_frames = 0;       /* 该句总帧数（0=不翻页） */
-static int  s_sub_played0 = 0;          /* 该句开始时的已播帧数（诊断用） */
-static double s_sub_e0 = 0;             /* 该句开始时的累计能量（诊断用） */
-static long   s_sub_n0 = 0;             /* 该句开始时的累计样本数（诊断用） */
 static int  s_sub_cur_page = 0;         /* 当前显示到第几页 */
 static void sub_cur_clear(void)
 {
@@ -127,12 +123,10 @@ static void voice_to(voice_state_t v)
      * 这里不能清画布保鲜期：清掉后主页每帧重绘、脚本动画也每帧重绘，
      * 两套画面互相盖 → 语音前后一直闪。 */
     audio_env_track(v == VOICE_IDLE); /* 只在空闲时跟踪环境底噪 */
-    /* 空闲、思考中听唤醒词（思考中命中 → 用户优先，放弃等待服务器直接重开一轮）。
-     * **播报中不听**：本机没有 AEC（回声消除），扬声器的声音会直接进麦克风，
-     * WakeNet 会把自己的播报听成"小宇同学"，一命中就 voice_interrupt() 清空播放队列，
-     * 表现为"讲到一半突然进倾听 + 中间整句没读"。打断只保留长按 KEY。
-     * 录音中同样不听（录音里是用户自己的声音，会自触发） */
-    wake_set_enabled(v == VOICE_IDLE || v == VOICE_THINK);
+    /* 空闲、播报中、思考中都听唤醒词（播报/思考中命中 → 用户优先：
+     * 打断当前回答或放弃等待服务器，直接重开一轮）；
+     * 录音中不听（录音里是用户自己的声音，会自触发） */
+    wake_set_enabled(v == VOICE_IDLE || v == VOICE_SPEAK || v == VOICE_THINK);
     if (v != VOICE_REC) s_rec_started_at = 0;
     switch (v) {
     case VOICE_REC:   ui_set_voice(UI_VOICE_LISTENING); break;
@@ -236,7 +230,7 @@ static void voice_interrupt(void)
 {
     s_wake_greet = 0;
     s_followup = 0;
-    audio_play_pause();        /* 只清队列、不关播放流：否则服务端后续帧全被丢弃 */
+    audio_play_stop();
     audio_rec_stop();
     subq_clear();
     sub_cur_clear();
@@ -398,9 +392,6 @@ static void on_ws_event(const ws_event_t *ev)
         int pushed = 0;
         audio_play_stats(&pushed, NULL);
         subq_push(ev->text, pushed, ev->frames);
-        /* 诊断：每句下发时记下"该句帧数 / 到这句为止已入队帧数"，
-         * 配合主循环里的"实播帧数"，就能看出哪一句被丢帧 */
-        ESP_LOGI(TAG, "sub: 应播=%d 已入队=%d", ev->frames, pushed);
         break;
     }
     case WS_EVT_STT:
@@ -506,7 +497,6 @@ static void on_ws_event(const ws_event_t *ev)
     case WS_EVT_TTS_START:
         s_followup = 0;                  /* 新一轮回答开始：上一次的连续对话标记作废 */
         audio_play_reset();
-        s_sub_e0 = 0; s_sub_n0 = 0;      /* 能量统计跟着 audio_play_reset 一起归零 */
         subq_clear();
         sub_cur_clear();
         s_sub_clear_at = 0;
@@ -703,12 +693,10 @@ static void main_loop(void)
                 ui_set_sub("");
                 voice_to(VOICE_SPEAK);
                 ESP_LOGI(TAG, "唤醒词触发 → 提示音后聆听");
-            } else if (s_voice_state == VOICE_SPEAK) {
-                /* 播报中唤醒已禁用，这里只兜住"切状态瞬间已经在队列里的旧命中"，
-                 * 绝不能 voice_interrupt()：那一刀会把设备端几秒缓冲全部清掉。 */
-                ESP_LOGW(TAG, "播报中遗留唤醒命中 → 忽略（无 AEC，防自触发）");
-            } else if (s_voice_state == VOICE_THINK) {
-                ESP_LOGI(TAG, "思考中听到唤醒词 → 放弃等待服务器，直接重听");
+            } else if (s_voice_state == VOICE_SPEAK || s_voice_state == VOICE_THINK) {
+                ESP_LOGI(TAG, "%s听到唤醒词 → 打断重听",
+                         s_voice_state == VOICE_SPEAK ?
+                         "播报中" : "思考中（放弃等待服务器）");
                 voice_interrupt();
                 voice_start_rec_auto(1);
             }
@@ -799,29 +787,10 @@ static void main_loop(void)
             audio_play_stats(&pushed, &played);
             while (s_subq && s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
                 sub_item_t *it = &s_subq[s_subq_head];
-                /* 诊断：上一句实际播了多少帧 vs 服务器声称的帧数。
-                 * 差得多 → 该句的帧在设备侧被丢了（流被关/队列满/解码失败） */
-                if (s_sub_cur[0] && s_sub_cur_frames > 0) {
-                    int actual = played - s_sub_played0;
-                    /* 这一句实际解码出来的平均电平：正常语音约 -25~-30dB，
-                     * 低于 -45dB 基本就是"这一句是哑的" */
-                    double e1 = 0; long n1 = 0;
-                    audio_play_energy(&e1, &n1);
-                    double de = e1 - s_sub_e0;
-                    long dn = n1 - s_sub_n0;
-                    int db = (dn > 0 && de > 0) ? (int)(10.0 * log10(de / dn)) : -99;
-                    s_sub_e0 = e1;
-                    s_sub_n0 = n1;
-                    if (actual < s_sub_cur_frames - 2 || actual > s_sub_cur_frames + 2 || db < -45)
-                        ESP_LOGW(TAG, "句丢帧/静音: 实播=%d 应播=%d 电平=%ddB", actual, s_sub_cur_frames, db);
-                    else
-                        ESP_LOGI(TAG, "句完整: 实播=%d 应播=%d 电平=%ddB", actual, s_sub_cur_frames, db);
-                }
                 snprintf(s_sub_cur, sizeof(s_sub_cur), "%s", it->text);
                 s_sub_cur_at     = it->at_frame;
                 s_sub_cur_frames = it->n_frames;
                 s_sub_cur_page   = 0;
-                s_sub_played0    = played;
                 ui_set_sub(s_sub_cur);
                 s_dirty = 1;
                 s_subq_head = (s_subq_head + 1) % SUBQ_MAX;

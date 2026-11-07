@@ -77,8 +77,6 @@ static volatile int   s_stream_open    = 0;   /* tts_start 后开闸；结束后
 static volatile int   s_stream_act_ms  = 0;   /* 最近一次帧活动时刻（看门狗用） */
 static volatile int   s_frames_pushed  = 0;   /* 已入队帧数（字幕同步，tts_start 清零） */
 static volatile int   s_frames_played  = 0;   /* 已播帧数（字幕同步） */
-static double         s_energy_ss      = 0;   /* 播放能量平方和（诊断用） */
-static long           s_energy_n       = 0;   /* 参与统计的样本数 */
 static volatile int   s_beep_req       = 0;   /* 音量反馈音请求（播放任务消费） */
 static volatile int   s_chime_req      = 0;   /* 唤醒提示音请求（播放任务消费） */
 static volatile int   s_alarm_req      = 0;   /* 闹钟提示音请求 */
@@ -482,13 +480,7 @@ static void play_task(void *arg)
 
         int n = opus_decode(dec, f.data, f.len, pcm, FRAME_SAMPLES, 0);
         if (n > 0) {
-            for (int i = 0; i < n; i++) {
-                /* 诊断：累加平方和，main 里按句算平均电平，用来判断"这一句是不是哑的" */
-                float v = pcm[i] / 32768.0f;
-                s_energy_ss += (double)v * v;
-                s_energy_n++;
-                st[i * 2] = pcm[i]; st[i * 2 + 1] = pcm[i];
-            }
+            for (int i = 0; i < n; i++) { st[i * 2] = pcm[i]; st[i * 2 + 1] = pcm[i]; }
             esp_codec_dev_write(s_play, st, n * 4);
             s_frames_played++;
             s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -550,8 +542,6 @@ void audio_play_reset(void)
     s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     s_frames_pushed = 0;
     s_frames_played = 0;
-    s_energy_ss = 0;
-    s_energy_n = 0;
     xQueueReset(s_playq);
 }
 
@@ -568,24 +558,6 @@ void audio_play_push(const uint8_t *opus, size_t len)
     } else {
         ESP_LOGW(TAG, "播放队列满，丢帧 (queue=%d)", (int)uxQueueMessagesWaiting(s_playq));
     }
-}
-
-/* 暂停（用户打断用）：清掉还没播的音频，但**保持播放流开着**。
- * 用 audio_play_stop() 会把 s_stream_open 置 0，只有下一次 tts_start 才重新开闸；
- * 而服务端若因为 resume 来得太快没走到"恢复补发 tts_start"，就会继续往关着的门里发帧，
- * 结果整段回答后半截全部被丢弃 —— 表现为字幕照常滚、声音全没。 */
-void audio_play_pause(void)
-{
-    if (!s_ready || !s_playq) return;
-    xQueueReset(s_playq);
-    s_frames_pushed = 0;
-    s_frames_played = 0;
-    s_energy_ss = 0;
-    s_energy_n = 0;
-    s_playing = 0;
-    s_play_finishing = 0;
-    s_stream_open = 1;               /* 关键：门留着，后续帧还能进来 */
-    s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
 void audio_play_finish(void) { if (s_ready) s_play_finishing = 1; }
@@ -627,13 +599,6 @@ void audio_play_stats(int *pushed, int *played)
 {
     if (pushed) *pushed = s_frames_pushed;
     if (played) *played = s_frames_played;
-}
-
-/* 诊断：取累计播放能量（平方和 + 样本数），调用方做差分即可得到某段的平均电平 */
-void audio_play_energy(double *sum_sq, long *nsamples)
-{
-    if (sum_sq) *sum_sq = s_energy_ss;
-    if (nsamples) *nsamples = s_energy_n;
 }
 
 void audio_set_volume(int vol)

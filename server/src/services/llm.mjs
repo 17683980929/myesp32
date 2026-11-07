@@ -14,8 +14,6 @@
  */
 
 const SENT_END = /[。！？；!?;\n]/;
-/* 至少含一个"可读"字符（字母/数字/汉字）才算能念的句子 */
-const SPEAKABLE = /[\p{L}\p{N}]/u;
 const RETRY_DELAYS_MS = [700, 1800];      /* 503/429/网络抖动：最多再试 2 次 */
 const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -164,10 +162,6 @@ export async function* chatStream(o) {
 /** 流式对话 + 按句切分，yield 完整句子 */
 export async function* chatSentences(o) {
   let acc = "";
-  /* 只有标点/空白的"句子"（模型常把 —— 单独占一行）不能单独送 TTS：
-   * GPT-SoVITS 对这类输入固定返回 1.00 秒全零音频，设备播出来就是一段死寂，
-   * 听感上像"跳过了一句"。把它们并到下一句前面。 */
-  let pending = "";
   for await (const delta of chatStream(o)) {
     acc += delta;
     let m;
@@ -175,12 +169,8 @@ export async function* chatSentences(o) {
       const end = m.index + 1;
       const sent = acc.slice(0, end);
       acc = acc.slice(end);
-      if (!sent.trim()) continue;
-      if (!SPEAKABLE.test(sent)) { pending += sent; continue; }
-      yield pending + sent;
-      pending = "";
+      if (sent.trim()) yield sent;
     }
   }
-  const tail = pending + acc;
-  if (tail.trim() && SPEAKABLE.test(tail)) yield tail;
+  if (acc.trim()) yield acc;
 }
