@@ -362,15 +362,24 @@ async function localTTS(text, cfg = {}) {
      * 这些才是影响「自然度」的旋钮，之前一直被写死在服务端默认上。 */
     const numOrNull = (v) =>
       (v === null || v === undefined || v === "" || !Number.isFinite(Number(v))) ? null : Number(v);
-    for (const [k, v] of Object.entries({
-      temperature: numOrNull(cfg.temperature),
-      top_k: numOrNull(cfg.topK),
-      top_p: numOrNull(cfg.topP),
-      repetition_penalty: numOrNull(cfg.repetitionPenalty),
-      seed: numOrNull(cfg.seed),
-      batch_size: numOrNull(cfg.batchSize),
-    })) {
-      if (v !== null) body[k] = v;
+    /* 非法值直接忽略，别把 top_p=3 这种手滑值丢给模型
+     * （GPT-SoVITS 内部是 `if top_p < 1.0` 才过滤，>1 会被静默当成 1，很难察觉） */
+    const RULES = [
+      ["temperature", cfg.temperature, 0.1, 2],
+      ["top_k", cfg.topK, 1, 100],
+      ["top_p", cfg.topP, 0.1, 1],
+      ["repetition_penalty", cfg.repetitionPenalty, 1, 2],
+      ["seed", cfg.seed, -1, 2147483647],
+      ["batch_size", cfg.batchSize, 1, 20],
+    ];
+    for (const [k, raw, lo, hi] of RULES) {
+      const v = numOrNull(raw);
+      if (v === null) continue;
+      if (v < lo || v > hi) {
+        console.warn(`[tts] ${k}=${v} 超出合法范围 ${lo}~${hi}，本次忽略`);
+        continue;
+      }
+      body[k] = v;
     }
   } else {
     url = `${base}/v1/audio/speech`;

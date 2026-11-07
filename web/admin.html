@@ -577,19 +577,19 @@
                   <div>
                     <label>文本切分</label>
                     <select id="t_local_split">
-                      <option value="cut0">cut0 · 不切（最快，长句易一口气读完）</option>
-                      <option value="cut1">cut1 · 按句号切</option>
-                      <option value="cut2">cut2 · 按标点切</option>
-                      <option value="cut3">cut3 · 按语义段切</option>
-                      <option value="cut4">cut4 · 按短句切</option>
-                      <option value="cut5">cut5 · 按标点细切（长句更自然，稍慢）</option>
+                      <option value="cut0">cut0 · 不切，整段一次合成（最快）</option>
+                      <option value="cut1">cut1 · 凑四句一切</option>
+                      <option value="cut2">cut2 · 凑 50 字一切</option>
+                      <option value="cut3">cut3 · 按中文句号「。」切</option>
+                      <option value="cut4">cut4 · 按英文句号「.」切</option>
+                      <option value="cut5">cut5 · 按所有标点细切（长句最自然，稍慢）</option>
                     </select>
                   </div>
                   <div><label>temperature<span class="hint"> 默认 1；0.7~0.9 更稳</span></label><input id="t_local_temp" type="number" step="0.05" min="0.1" max="2" placeholder="1"></div>
                   <div><label>top_k<span class="hint"> 默认 15；调小更保守</span></label><input id="t_local_topk" type="number" step="1" min="1" max="100" placeholder="15"></div>
                 </div>
                 <div class="row">
-                  <div><label>top_p<span class="hint"> 默认 1</span></label><input id="t_local_topp" type="number" step="0.05" min="0.1" max="1" placeholder="1"></div>
+                  <div><label>top_p<span class="hint"> 0~1，默认 1（1=不过滤）</span></label><input id="t_local_topp" type="number" step="0.05" min="0.1" max="1" placeholder="1"></div>
                   <div><label>repetition_penalty<span class="hint"> 默认 1.35，抑制拖音重复</span></label><input id="t_local_rep" type="number" step="0.05" min="1" max="2" placeholder="1.35"></div>
                   <div><label>seed<span class="hint"> -1 随机；填数字固定</span></label><input id="t_local_seed" type="number" step="1" placeholder="-1"></div>
                 </div>
