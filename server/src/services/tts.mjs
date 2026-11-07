@@ -537,7 +537,7 @@ export async function textToPcm16k(text, opts = {}) {
     } catch (e) {
       if (strict) throw e;   /* 试听要看本地真实错误，别混入兜底日志 */
       /* 三级全挂也不能让整轮对话一起丢：这一句放 0.3s 静音占位，其余句子照常播 */
-      console.error(`[tts] 该句所有引擎均失败（${e.message}），跳过：${chunk.slice(0, 30)}`);
+      console.error(`[tts-skip] 该句所有引擎均失败（${e.message}），跳过：${chunk.slice(0, 40)}`);
       pcm = Buffer.alloc(Math.round(SAMPLE_RATE * 2 * 0.3));
     }
     parts.push(pcm);
