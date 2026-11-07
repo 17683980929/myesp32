@@ -488,7 +488,10 @@ function pcmToOpusFrames(pcm) {
  */
 export async function textToPcm16k(text, opts = {}) {
   const provider = opts.provider || "baidu";
-  const chunks = splitTtsText(text, provider === "tencent" ? 100 : 140);
+  /* 单块越长一次推理越久，越容易撞上 12s 单句超时；本地按 60 字切，
+   * 每块大约 6s 内能合成完，出问题也只影响一小段。 */
+  const limit = provider === "tencent" ? 100 : provider === "local" ? 60 : 140;
+  const chunks = splitTtsText(text, limit);
   /* strict 只给管理页「本地 TTS 试听」用：那一处要看到本地的真实错误，不能悄悄换引擎。
    * 设备播报永远不 strict —— 只要还有任一引擎可用就必须出声。 */
   const strict = opts.strict === true ||
@@ -499,12 +502,25 @@ export async function textToPcm16k(text, opts = {}) {
     let pcm;
     try {
       if (provider === "local") {
-        try {
-          const audio = await localTTS(chunk, opts.local || {});
-          pcm = await localAudioToPcm16k(audio, opts.local || {});
-        } catch (e) {
-          if (strict) throw e;
-          console.error(`[tts] 本地合成失败（${e.message}），本句回退云端`);
+        /* 本地偶发 ECONNRESET / 502（尤其走 frp 隧道时）不该直接判死：
+         * 先原样重试一次，仍然失败才回退云端。
+         * 实测百度 Key 是空的、腾讯额度已耗尽，回退基本等于静音，
+         * 所以这一层重试才是"句子被跳过"的真正防线。 */
+        let lastErr = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const audio = await localTTS(chunk, opts.local || {});
+            pcm = await localAudioToPcm16k(audio, opts.local || {});
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            if (strict) throw e;
+            if (attempt === 0) await new Promise((r) => setTimeout(r, 250));
+          }
+        }
+        if (lastErr) {
+          console.error(`[tts] 本地合成失败（${lastErr.message}），本句回退云端`);
           pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
         }
       } else if (provider === "tencent") {
