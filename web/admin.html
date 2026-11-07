@@ -569,6 +569,32 @@
                   </select>
                 </div>
               </div>
+              <details style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+                <summary style="cursor:pointer;font-size:13px">高级：采样与韵律（留空 = 用 GPT-SoVITS 默认值）</summary>
+                <p class="hint" style="margin-top:6px">调自然度主要看这里。<b>切分方式</b>影响长句的停顿和语气，
+                  <b>temperature / top_k</b> 影响起伏和稳定性，<b>seed</b> 固定后同一句每次结果一致、方便对比。</p>
+                <div class="row">
+                  <div>
+                    <label>文本切分</label>
+                    <select id="t_local_split">
+                      <option value="cut0">cut0 · 不切（最快，长句易一口气读完）</option>
+                      <option value="cut1">cut1 · 按句号切</option>
+                      <option value="cut2">cut2 · 按标点切</option>
+                      <option value="cut3">cut3 · 按语义段切</option>
+                      <option value="cut4">cut4 · 按短句切</option>
+                      <option value="cut5">cut5 · 按标点细切（长句更自然，稍慢）</option>
+                    </select>
+                  </div>
+                  <div><label>temperature<span class="hint"> 默认 1；0.7~0.9 更稳</span></label><input id="t_local_temp" type="number" step="0.05" min="0.1" max="2" placeholder="1"></div>
+                  <div><label>top_k<span class="hint"> 默认 15；调小更保守</span></label><input id="t_local_topk" type="number" step="1" min="1" max="100" placeholder="15"></div>
+                </div>
+                <div class="row">
+                  <div><label>top_p<span class="hint"> 默认 1</span></label><input id="t_local_topp" type="number" step="0.05" min="0.1" max="1" placeholder="1"></div>
+                  <div><label>repetition_penalty<span class="hint"> 默认 1.35，抑制拖音重复</span></label><input id="t_local_rep" type="number" step="0.05" min="1" max="2" placeholder="1.35"></div>
+                  <div><label>seed<span class="hint"> -1 随机；填数字固定</span></label><input id="t_local_seed" type="number" step="1" placeholder="-1"></div>
+                </div>
+                <label class="chk" style="margin-top:6px"><input type="checkbox" id="t_local_parallel"> 并行推理（多段切分时更快，短句反而慢）</label>
+              </details>
             </div>
             <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 本地失败时回退云端（有腾讯密钥走腾讯，否则百度）</label>
             <label>试听文本<span class="hint"> 留空用默认句；最多 200 字</span></label>
@@ -930,6 +956,12 @@ async function loadConfig() {
   $("t_local_prompt").value = lo.promptText || "";
   $("t_local_key").value = lo.apiKey || "";
   $("t_local_insecure").checked = lo.insecure === true;
+  $("t_local_split").value = lo.textSplitMethod || "cut0";
+  $("t_local_parallel").checked = lo.parallelInfer === true;
+  for (const [id, k] of [
+    ["t_local_temp", "temperature"], ["t_local_topk", "topK"], ["t_local_topp", "topP"],
+    ["t_local_rep", "repetitionPenalty"], ["t_local_seed", "seed"],
+  ]) $(id).value = (lo[k] === undefined || lo[k] === null) ? "" : lo[k];
   $("t_local_fallback").checked = lo.fallback !== false;
   toggleLocalMode();
   refreshTtsEngineHint();
@@ -969,6 +1001,11 @@ async function loadConfig() {
 
 /* TTS 表单 → 配置对象（saveAll 和「测试合成」共用，避免两处字段漂移） */
 function ttsForm() {
+  /* 留空 = null，服务端会跳过这个字段让 GPT-SoVITS 用默认值 */
+  const numOrNull = (id) => {
+    const v = $(id).value.trim();
+    return v === "" ? null : Number(v);
+  };
   return {
     provider: $("t_provider").value,
     speed: +$("t_speed").value,
@@ -991,6 +1028,13 @@ function ttsForm() {
       promptText: $("t_local_prompt").value.trim(),
       textLang: $("t_local_textlang").value,
       promptLang: $("t_local_promptlang").value,
+      textSplitMethod: $("t_local_split").value,
+      parallelInfer: $("t_local_parallel").checked,
+      temperature: numOrNull("t_local_temp"),
+      topK: numOrNull("t_local_topk"),
+      topP: numOrNull("t_local_topp"),
+      repetitionPenalty: numOrNull("t_local_rep"),
+      seed: numOrNull("t_local_seed"),
       insecure: $("t_local_insecure").checked,
       fallback: $("t_local_fallback").checked,
     },

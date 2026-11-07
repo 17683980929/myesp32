@@ -358,6 +358,20 @@ async function localTTS(text, cfg = {}) {
       /* 单句推理开并行只会多花调度开销，实测关掉快 0.8s */
       parallel_infer: cfg.parallelInfer === true,
     };
+    /* 采样 / 韵律参数：管理页没填就不发，让 GPT-SoVITS 用它自己的默认值。
+     * 这些才是影响「自然度」的旋钮，之前一直被写死在服务端默认上。 */
+    const numOrNull = (v) =>
+      (v === null || v === undefined || v === "" || !Number.isFinite(Number(v))) ? null : Number(v);
+    for (const [k, v] of Object.entries({
+      temperature: numOrNull(cfg.temperature),
+      top_k: numOrNull(cfg.topK),
+      top_p: numOrNull(cfg.topP),
+      repetition_penalty: numOrNull(cfg.repetitionPenalty),
+      seed: numOrNull(cfg.seed),
+      batch_size: numOrNull(cfg.batchSize),
+    })) {
+      if (v !== null) body[k] = v;
+    }
   } else {
     url = `${base}/v1/audio/speech`;
     body = {
