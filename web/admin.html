@@ -286,6 +286,17 @@
         </div>
 
         <div class="card">
+          <h2>语音链路自检 <span class="tag">不用设备 · TTS → ASR 闭环</span></h2>
+          <p class="hint" style="margin-top:0">合成「今天天气怎么样」再送识别，一次验证 TTS 引擎、音频格式和 ASR 鉴权。
+            分阶段计时，挂了能直接看出是哪一段。</p>
+          <div class="actions">
+            <button class="primary" id="asrTestBtn" onclick="testAsr()">开始自检</button>
+            <span class="msg" id="asrMsg"></span>
+          </div>
+          <div id="asrResult" class="hint" style="display:none;color:var(--text);margin-top:8px"></div>
+        </div>
+
+        <div class="card">
           <h2>在线设备 <span class="tag">5 秒自动刷新</span></h2>
           <div class="table-wrap">
             <table>
@@ -1090,6 +1101,35 @@ async function testTts() {
 /* 从响应头拿 provider，拿不到就回显 select 当前值 */
 function ttsProvider(r) {
   return r.headers.get("x-tts-provider") || $("t_provider").value;
+}
+
+/* 语音链路自检：TTS 合成一句 → ASR 识别回来，不用设备也能确认两端都活着 */
+async function testAsr() {
+  const btn = $("asrTestBtn");
+  const box = $("asrResult");
+  btn.disabled = true;
+  setMsg($("asrMsg"), "合成并识别中…", "");
+  box.style.display = "none";
+  box.textContent = "";
+  try {
+    const r = await fetch("api/asr/test", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) {
+      setMsg($("asrMsg"), `${j.stage === "tts" ? "TTS 合成" : "ASR 识别"}失败：${j.msg}`, "err");
+      if (j.ttsMs) box.textContent = `TTS 已成功（${j.ttsMs}ms），卡在识别这一侧。`;
+      box.style.display = box.textContent ? "" : "none";
+      return;
+    }
+    const label = j.match ? "识别一致 ✅" : "识别有偏差 ⚠";
+    setMsg($("asrMsg"), `TTS ${j.ttsMs}ms + ASR ${j.asrMs}ms · ${label}`, j.match ? "ok" : "warn");
+    box.textContent = `合成：「${j.expected}」 → 识别：「${j.got || "（空）"}」` +
+      ` · ${(j.bytes / 1024).toFixed(0)} KB / ${j.provider}`;
+    box.style.display = "";
+  } catch {
+    setMsg($("asrMsg"), "请求失败（服务是否已启动？）", "err");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* 屏幕预览：调服务端渲染一张 PNG（固件同款字体 + ui.c 坐标） */

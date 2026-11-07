@@ -31,6 +31,7 @@ import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
 import { opusStatus, textToOpusFrames, textToPcm16k, pcmToWav } from "./services/tts.mjs";
+import { createASR } from "./services/asr.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -554,6 +555,38 @@ export async function handleHttp(req, res, ctx) {
           });
         } catch (e) {
           return json(res, 200, { ok: false, ms: Date.now() - t0, provider: tts.provider, msg: e.message });
+        }
+      }
+
+      /* 语音链路自检：合成一句固定文本 → 再送 ASR 识别，闭环验证
+       * TTS 引擎、音频格式、ASR 鉴权，全程不用设备/麦克风。
+       * 分阶段计时，挂了能直接看出是 TTS 还是 ASR 的问题。 */
+      if (p === "/api/asr/test" && req.method === "POST") {
+        const expected = "今天天气怎么样";
+        const t0 = Date.now();
+        let pcm;
+        try {
+          pcm = await textToPcm16k(expected, getConfig().tts || {});
+        } catch (e) {
+          return json(res, 200, { ok: false, stage: "tts", msg: `TTS 合成失败：${e.message}` });
+        }
+        const ttsMs = Date.now() - t0;
+        const t1 = Date.now();
+        try {
+          const asr = createASR(getConfig().asr);
+          const r = await asr.recognize(pcm, { timeoutMs: 15000 });
+          const got = String(r.text || "");
+          const norm = (s) => s.replace(/[，。！？、,.!?\s]/g, "");
+          return json(res, 200, {
+            ok: true, ttsMs, asrMs: Date.now() - t1,
+            provider: (getConfig().tts || {}).provider || "baidu",
+            expected, got, match: norm(got) === norm(expected),
+            bytes: pcm.length,
+          });
+        } catch (e) {
+          return json(res, 200, {
+            ok: false, stage: "asr", ttsMs, asrMs: Date.now() - t1, msg: e.message,
+          });
         }
       }
 
