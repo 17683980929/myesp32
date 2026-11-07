@@ -341,6 +341,29 @@
           </div>
 
           <div class="card wide">
+            <h2>屏幕预览 <span class="tag">400×300 · 与固件同字体同坐标</span></h2>
+            <p class="hint" style="margin-top:0">服务端用固件里的点阵字体和 <code>ui.c</code> 坐标逐像素渲染，改完布局先看这里，不用烧板。</p>
+            <div class="row">
+              <div><label>时<span class="hint"> 留空=当前</span></label><input id="pv_h" type="number" min="0" max="23" placeholder="当前"></div>
+              <div><label>分<span class="hint"> 留空=当前</span></label><input id="pv_m" type="number" min="0" max="59" placeholder="当前"></div>
+              <div><label>窗外</label>
+                <select id="pv_day">
+                  <option value="day">白天（太阳）</option>
+                  <option value="night">夜晚（弯月）</option>
+                </select>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="primary" id="pvBtn" onclick="previewScreen()">刷新预览</button>
+              <span class="msg" id="pvMsg"></span>
+            </div>
+            <div style="margin-top:10px;background:#000;border-radius:8px;padding:10px;text-align:center">
+              <img id="pvImg" alt="屏幕预览" style="max-width:100%;image-rendering:pixelated;display:none">
+              <div id="pvEmpty" class="hint" style="color:#888">点“刷新预览”生成一张</div>
+            </div>
+          </div>
+
+          <div class="card wide">
             <h2>Lua 脚本 <span class="tag">下发到设备</span></h2>
             <textarea id="lua_code" rows="14" placeholder="-- 例：&#10;display.clear()&#10;display.text(10, 10, &quot;Hello&quot;, 16)&#10;display.flush()&#10;-- 事件：双击 KEY 让桌宠睡 5 秒&#10;sys.on(&quot;key_double&quot;, function()&#10;  pet.state(&quot;sleeping&quot;)&#10;  timer.after(5000, function() pet.state(&quot;auto&quot;) end)&#10;end)"></textarea>
             <div class="actions">
@@ -524,10 +547,13 @@
               </div>
             </div>
             <label class="chk" style="margin-top:12px"><input type="checkbox" id="t_local_fallback"> 本地失败时回退云端（有腾讯密钥走腾讯，否则百度）</label>
+            <label>试听文本<span class="hint"> 留空用默认句；最多 200 字</span></label>
+            <input id="t_tts_text" placeholder="你好，我是小智，这是语音合成的测试。">
             <div class="actions">
-              <button onclick="testTts()">测试合成</button>
+              <button class="primary" id="ttsTestBtn" onclick="testTts()">合成并试听</button>
               <span class="msg" id="ttsMsg"></span>
             </div>
+            <audio id="ttsAudio" controls style="width:100%;margin-top:10px;display:none"></audio>
             <p class="hint">想克隆自己的声音：用 <b>GPT-SoVITS</b>（MIT，6G 显存可推理，Windows 整合包解压即用、不用 Docker），
               启动 <code>api_v2.py</code> 后接口选 GPT-SoVITS、地址填 <code>http://127.0.0.1:9880</code>，再填参考音频路径和参考文本。
               只想要个快的通用音色、不克隆：<b>Kokoro-82M</b>（Apache-2.0，CPU 也能跑），接口选 OpenAI 兼容，
@@ -778,6 +804,8 @@ function showPage(name) {
   $("hdrTitle").textContent = PAGES[name].t;
   $("hdrSub").textContent = PAGES[name].s;
   document.title = `MyEsp32 · ${PAGES[name].t}`;
+  /* 首次进“设备与屏幕”自动出一张预览，省一次点击 */
+  if (name === "device" && !$("pvImg").dataset.url) previewScreen();
   /* 窄屏时菜单是横向滚动的，切页后把当前项滚进可视区 */
   const nav = $("nav");
   const cur = document.querySelector(".nav-item.active");
@@ -947,7 +975,11 @@ function toggleLocalMode() {
 
 /* 先保存 TTS 这一段，再用服务器上的新配置合成一句——否则测的是旧配置 */
 async function testTts() {
+  const btn = $("ttsTestBtn");
+  const text = ($("t_tts_text").value || "").trim() || "你好，我是小智，这是语音合成的测试。";
   setMsg($("ttsMsg"), "保存并合成中…", "");
+  if (btn) btn.disabled = true;
+  const t0 = Date.now();
   try {
     await fetch("api/config", {
       method: "POST",
@@ -957,18 +989,71 @@ async function testTts() {
     const r = await fetch("api/tts/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "你好，我是小智，这是语音合成的测试。" }),
+      body: JSON.stringify({ text, audio: true }),
     });
-    const j = await r.json();
-    if (j.ok) {
-      setMsg($("ttsMsg"),
-        `成功：${j.ms}ms 合成 ${(j.durationMs / 1000).toFixed(1)}s 音频（${j.frames} 帧，${j.provider}）`,
-        "ok");
-    } else {
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.startsWith("audio/")) {
+      const j = await r.json().catch(() => ({}));
       setMsg($("ttsMsg"), `失败：${j.msg || "未知错误"}`, "err");
+      return;
     }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const au = $("ttsAudio");
+    if (au.dataset.url) URL.revokeObjectURL(au.dataset.url);
+    au.dataset.url = url;
+    au.src = url;
+    au.style.display = "";
+    au.onloadedmetadata = () => {
+      const dur = isFinite(au.duration) ? au.duration.toFixed(1) : "?";
+      setMsg($("ttsMsg"),
+        `成功：${Date.now() - t0}ms 合成 ${dur}s（${ttsProvider(r)}，${(blob.size / 1024).toFixed(0)} KB）`, "ok");
+    };
+    au.play().catch(() => { /* 浏览器拦自动播放，用户手动点 */ });
   } catch {
     setMsg($("ttsMsg"), "请求失败", "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* 从响应头拿 provider，拿不到就回显 select 当前值 */
+function ttsProvider(r) {
+  return r.headers.get("x-tts-provider") || $("t_provider").value;
+}
+
+/* 屏幕预览：调服务端渲染一张 PNG（固件同款字体 + ui.c 坐标） */
+async function previewScreen() {
+  const btn = $("pvBtn"), img = $("pvImg");
+  const now = new Date();
+  const hv = +$("pv_h").value, mv = +$("pv_m").value;
+  const h = $("pv_h").value === "" ? now.getHours() : hv;
+  const m = $("pv_m").value === "" ? now.getMinutes() : mv;
+  const day = $("pv_day").value === "night" ? 0 : 1;
+  setMsg($("pvMsg"), "渲染中…", "");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(`api/screen-preview?h=${h}&m=${m}&day=${day}&t=${Date.now()}`);
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.startsWith("image/")) {
+      const j = await r.json().catch(() => ({}));
+      setMsg($("pvMsg"), j.msg || "渲染失败", "err");
+      return;
+    }
+    const live = r.headers.get("x-preview-live") === "1";
+    const blob = await r.blob();
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    img.dataset.url = URL.createObjectURL(blob);
+    img.src = img.dataset.url;
+    img.style.display = "";
+    $("pvEmpty").style.display = "none";
+    setMsg($("pvMsg"),
+      `${h}:${String(m).padStart(2, "0")} ${day ? "白天" : "夜晚"}${live ? " · 真实数据" : " · 设备离线，部分为示例值"}`,
+      live ? "ok" : "warn");
+  } catch {
+    setMsg($("pvMsg"), "请求失败", "err");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

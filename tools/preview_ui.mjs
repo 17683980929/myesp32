@@ -361,16 +361,27 @@ function renderHome(frameSym, opts = {}) {
   /* 块1 时间 */
   const tbuf = `${String(opts.h ?? 14).padStart(2, "0")}:${String(opts.m ?? 32).padStart(2, "0")}:${String(opts.s ?? 7).padStart(2, "0")}`;
   segTime(PANEL_X + Math.floor((PANEL_SEP_W - segTimeW(tbuf, 38)) / 2), 8, tbuf, 38, 1);
-  drawText(PANEL_X, 52, "2026-11-03", 2, 1);
-  drawText(PANEL_X + PANEL_SEP_W - textW("TUE", 2), 52, "TUE", 2, 1);
+  /* 日期用当天真值，避免预览里出现写死的旧日期 */
+  const now = new Date();
+  const dt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const dw = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][now.getDay()];
+  drawText(PANEL_X, 52, dt, 2, 1);
+  drawText(PANEL_X + PANEL_SEP_W - textW(dw, 2), 52, dw, 2, 1);
 
-  const vx = PANEL_X + 76;
-  /* 块2 环境 */
-  iconWeather(PANEL_X, 84, 24, 0, 1);
-  drawCjk(PANEL_X + 32, 88, "通城", 1, 1);
-  const ww1 = cjkW("晴", 1);
-  drawCjk(vx, 88, "晴", 1, 1);
-  drawText(vx + ww1, 88, " 18`C", 2, 1);
+  /* 块2 环境 —— 数据可被 opts.env 覆盖（管理页传真实天气/电量），缺省用示例值 */
+  const env = opts.env || {};
+  const city = env.city || "通城";
+  const cond = env.cond || "晴";
+  const temp = env.temp ?? 18;
+  const hum = env.hum ?? 58;
+  const bat = env.bat ?? 76;
+  const vx = Math.max(PANEL_X + 76, PANEL_X + 32 + cjkW(city, 1) + 6);
+
+  iconWeather(PANEL_X, 84, 24, /雨|雪|云|阴|雾/.test(cond) ? 1 : 0, 1);
+  drawCjk(PANEL_X + 32, 88, city, 1, 1);
+  const ww1 = cjkW(cond, 1);
+  drawCjk(vx, 88, cond, 1, 1);
+  drawText(vx + ww1, 88, ` ${temp}\`C`, 2, 1);
 
   iconTherm(PANEL_X, 118, 22, 1);
   drawCjk(PANEL_X + 32, 120, "温度", 1, 1);
@@ -378,22 +389,23 @@ function renderHome(frameSym, opts = {}) {
 
   iconDrop(PANEL_X, 150, 22, 1);
   drawCjk(PANEL_X + 32, 152, "湿度", 1, 1);
-  drawText(vx, 152, "58%", 2, 1);
+  drawText(vx, 152, `${hum}%`, 2, 1);
 
-  iconBattery(PANEL_X, 186, 26, 76, 1);
+  iconBattery(PANEL_X, 186, 26, bat, 1);
   drawCjk(PANEL_X + 32, 184, "电量", 1, 1);
-  drawText(vx, 184, "76%", 2, 1);
+  drawText(vx, 184, `${bat}%`, 2, 1);
 
   /* 块3 状态 */
+  const st = opts.st || {};
   const row = (y, label, value) => {
     if (/[^\x00-\x7f]/.test(label)) drawCjk(PANEL_X + 4, y, label, 1, 1);
     else drawText(PANEL_X + 4, y + 5, label, 1, 1);
     drawCjk(PANEL_X + PANEL_SEP_W - cjkW(value, 1) - 4, y, value, 1, 1);
   };
-  row(218, "WiFi", "已连接");
-  row(238, "服务器", "已连接");
-  row(258, "蓝牙", "关闭");
-  row(278, "雷达", "有人 0.6m");
+  row(218, "WiFi", st.wifi || "已连接");
+  row(238, "服务器", st.server || "已连接");
+  row(258, "蓝牙", st.ble || "关闭");
+  row(278, "雷达", st.radar || "有人 0.6m");
 }
 
 /* ── PNG 输出（2 倍放大，纯黑白）──────────────────────────────────── */
@@ -435,7 +447,10 @@ const out = process.argv[2] || "assets/ui_preview.png";
 const argH = Number(process.argv[3] ?? 14);
 const argM = Number(process.argv[4] ?? 32);
 const argDay = (process.argv[5] ?? "day") !== "night";
-renderHome("pet_sm_01_idle", { h: argH, m: argM, day: argDay });
+/* 可选：PREVIEW_DATA='{"env":{...},"st":{...}}' 用真实天气/电量/状态覆盖示例值（管理页用） */
+let extra = {};
+try { extra = JSON.parse(process.env.PREVIEW_DATA || "{}"); } catch { extra = {}; }
+renderHome("pet_sm_01_idle", { h: argH, m: argM, day: argDay, env: extra.env, st: extra.st });
 savePng(out);
 console.log("预览已生成:", out, `${argH}:${String(argM).padStart(2, "0")}`, argDay ? "白天" : "夜晚");
 

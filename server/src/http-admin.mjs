@@ -30,7 +30,7 @@ import { parseSms } from "./services/parcel-sms.mjs";
 import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
-import { opusStatus, textToOpusFrames } from "./services/tts.mjs";
+import { opusStatus, textToOpusFrames, textToPcm16k, pcmToWav } from "./services/tts.mjs";
 
 /* OTA 用的应用镜像：把 CI 下载的 myesp32.bin 放到这里即可
  * （我的烧录流程会在解压新包时自动更新它） */
@@ -496,17 +496,32 @@ export async function handleHttp(req, res, ctx) {
         return json(res, 200, { ok: !!w, weather: w, error: ctx.weather.lastError });
       }
 
-      /* 语音合成试听：只回时长/帧数，不回音频（音频要占几百 KB，页面不需要）。
-       * 用来确认本地 TTS 地址、模式、音色、参考音频是否配对了，失败把原始错误带回去。 */
+      /* 语音合成试听。
+       * 默认只回时长/帧数；带 audio:true 直接回 WAV 给浏览器播放，这样能真听到音色对不对。
+       * 失败把原始错误带回去。 */
       if (p === "/api/tts/test" && req.method === "POST") {
         let text = "你好，我是小智，这是语音合成的测试。";
+        let wantAudio = false;
         try {
           const j = JSON.parse(await readBody(req) || "{}");
-          if (typeof j.text === "string" && j.text.trim()) text = j.text.trim().slice(0, 80);
+          if (typeof j.text === "string" && j.text.trim()) text = j.text.trim().slice(0, 200);
+          wantAudio = j.audio === true || j.audio === 1;
         } catch { /* 用默认文本 */ }
         const tts = getConfig().tts || {};
         const t0 = Date.now();
         try {
+          if (wantAudio) {
+            const pcm = await textToPcm16k(text, tts);
+            const wav = pcmToWav(pcm);
+            res.writeHead(200, {
+              "Content-Type": "audio/wav",
+              "Content-Length": wav.length,
+              "Cache-Control": "no-store",
+              "X-Tts-Ms": String(Date.now() - t0),
+              "X-Tts-Provider": String(tts.provider || "baidu"),
+            });
+            return res.end(wav);
+          }
           const r = await textToOpusFrames(text, tts);
           return json(res, 200, {
             ok: true, ms: Date.now() - t0, provider: tts.provider,
@@ -514,6 +529,57 @@ export async function handleHttp(req, res, ctx) {
           });
         } catch (e) {
           return json(res, 200, { ok: false, ms: Date.now() - t0, provider: tts.provider, msg: e.message });
+        }
+      }
+
+      /* 屏幕预览：复用 tools/preview_ui.mjs 在服务端画一张 400×300 的 PNG。
+       * 和固件同一套字体/坐标，改完布局先在这里看，不用烧板。
+       * 天气/电量/雷达取当前真实值，室内温湿度没有来源仍是示例值。 */
+      if (p === "/api/screen-preview" && req.method === "GET") {
+        const q = new URL(req.url, "http://x").searchParams;
+        const h = Math.min(23, Math.max(0, Number(q.get("h") ?? new Date().getHours()) || 0));
+        const m = Math.min(59, Math.max(0, Number(q.get("m") ?? new Date().getMinutes()) || 0));
+        const day = q.get("day") === "0" ? "night" : "day";
+
+        const w = ctx.weather.data;
+        const dev = uniqueDevices(ctx.devices)[0] || null;
+        const stat = dev?.lastStat || null;
+        const pres = dev?.presence?.snapshot?.() ?? null;
+        const env = {
+          city: String(w?.city || getConfig().weather?.city || "通城").replace(/[市县区旗]$/, "").slice(0, 3),
+          cond: w?.text || "晴",
+          temp: Number.isFinite(w?.temp) ? w.temp : 18,
+          hum: Number.isFinite(w?.humidity) ? w.humidity : 58,
+          bat: Number.isFinite(stat?.bat) ? stat.bat : 76,
+        };
+        const st = {
+          wifi: dev ? "已连接" : "未连接",
+          server: dev ? "已连接" : "未连接",
+          ble: stat?.bt ? "开启" : "关闭",
+          radar: pres?.known
+            ? (pres.present ? `有人 ${(pres.dist / 100).toFixed(1)}m` : "无人")
+            : "未接入",
+        };
+
+        const tmp = path.join(ROOT, ".preview.png");
+        try {
+          execFileSync(process.execPath,
+            [path.join(ROOT, "..", "tools", "preview_ui.mjs"), tmp, String(h), String(m), day],
+            {
+              cwd: path.join(ROOT, ".."), timeout: 20000, stdio: "pipe",
+              env: { ...process.env, PREVIEW_DATA: JSON.stringify({ env, st }) },
+            });
+          const png = readFileSync(tmp);
+          res.writeHead(200, {
+            "Content-Type": "image/png",
+            "Content-Length": png.length,
+            "Cache-Control": "no-store",
+            "X-Preview-Live": dev ? "1" : "0",
+          });
+          return res.end(png);
+        } catch (e) {
+          const detail = String(e.stderr || e.message || "").slice(0, 300);
+          return json(res, 200, { ok: false, msg: `渲染失败：${detail}` });
         }
       }
 

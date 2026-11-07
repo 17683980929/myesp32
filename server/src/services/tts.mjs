@@ -405,16 +405,16 @@ function pcmToOpusFrames(pcm) {
 }
 
 /**
- * 一步到位：文字 → Opus 帧（按 provider 选引擎）
+ * 文字 → 16k/mono/s16 PCM（按 provider 选引擎）
  *
  * provider=local 时走自己部署的 TTS，失败按 local.fallback 决定是否回退云端
  * （有腾讯密钥就回退腾讯，否则百度），这样本地服务挂了也不至于哑巴。
  *
  * @param {string} text
  * @param {{provider?:string, speed?:number, tencent?:object, local?:object}} opts 通常直接传 config.tts
- * @returns {Promise<{frames:Buffer[], durationMs:number}>}
+ * @returns {Promise<Buffer>}
  */
-export async function textToOpusFrames(text, opts = {}) {
+export async function textToPcm16k(text, opts = {}) {
   const provider = opts.provider || "baidu";
   const chunks = splitTtsText(text, provider === "tencent" ? 100 : 140);
 
@@ -446,9 +446,33 @@ export async function textToOpusFrames(text, opts = {}) {
     parts.push(pcm);
   }
 
-  const pcm = parts.length === 1 ? parts[0] : Buffer.concat(parts);
+  return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+}
+
+/** 文字 → Opus 帧（下发设备用） */
+export async function textToOpusFrames(text, opts = {}) {
+  const pcm = await textToPcm16k(text, opts);
   const frames = pcmToOpusFrames(pcm);
   return { frames, durationMs: (pcm.length / 2 / SAMPLE_RATE) * 1000 };
+}
+
+/** 16k/mono/s16 PCM → WAV，给管理页试听用（浏览器不认裸 PCM） */
+export function pcmToWav(pcm, rate = SAMPLE_RATE) {
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0, "ascii");
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write("WAVE", 8, "ascii");
+  h.write("fmt ", 12, "ascii");
+  h.writeUInt32LE(16, 16);          /* PCM 块大小 */
+  h.writeUInt16LE(1, 20);           /* 格式 = PCM */
+  h.writeUInt16LE(1, 22);           /* 单声道 */
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);    /* 字节率 */
+  h.writeUInt16LE(2, 32);           /* 块对齐 */
+  h.writeUInt16LE(16, 34);          /* 位深 */
+  h.write("data", 36, "ascii");
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

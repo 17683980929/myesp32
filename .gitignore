@@ -47,3 +47,6 @@ assets/pet_frames_preview/
 assets/ui_preview.png
 assets/ui_clock_*.png
 assets/adm_*.png
+
+# 屏幕预览临时输出（server/.preview.png）
+server/.preview.png
