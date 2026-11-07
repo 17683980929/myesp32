@@ -504,6 +504,7 @@ export async function textToPcm16k(text, opts = {}) {
      * 送给 GPT-SoVITS 会得到 1.00 秒全零音频，设备播出来就是一段死寂。 */
     if (!chunk) continue;
     let pcm;
+    let cloudUsed = false;   /* 本句是否已经走过云端兜底，避免重复调用 */
     try {
       if (provider === "local") {
         /* 本地偶发 ECONNRESET / 502（尤其走 frp 隧道时）不该直接判死：
@@ -526,6 +527,7 @@ export async function textToPcm16k(text, opts = {}) {
         if (lastErr) {
           console.error(`[tts] 本地合成失败（${lastErr.message}），本句回退云端`);
           pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
+          cloudUsed = true;
         }
       } else if (provider === "tencent") {
         try {
@@ -544,8 +546,21 @@ export async function textToPcm16k(text, opts = {}) {
       console.error(`[tts-skip] 该句所有引擎均失败（${e.message}），跳过：${chunk.slice(0, 40)}`);
       pcm = Buffer.alloc(Math.round(SAMPLE_RATE * 2 * 0.3));
     }
-    /* 最后一道闸：模型偶尔仍会吐出全零音频（例如文本归一化后没有音素），
-     * 这种"有长度但没声音"的结果播出来就是凭空少一句，直接丢掉更安全。 */
+    /* 本地模型偶发吐出"有长度但没声音"的音频（全零 / -60dB 以下坍缩）。
+     * 以前是直接丢弃 → 这一句凭空消失，正是用户听到的"漏句"。
+     * api_v2 已经在本地换提示词/换 seed 自救过，这里只做最后一件事：
+     * 仍然没声音就**立刻用云端引擎把这句补出来**，绝不让任何一句消失。 */
+    if (!strict && provider === "local" && !cloudUsed && pcmLevelDb(pcm) < -45) {
+      const before = pcmLevelDb(pcm);
+      try {
+        pcm = await mp3ToPcm16k(await cloudTTS(chunk, opts));
+        console.warn(`[tts-silent] 本地 ${before.toFixed(1)}dB → 已回退云端补齐：${chunk.slice(0, 24)}`);
+      } catch (e) {
+        console.error(`[tts-skip] 云端补齐也失败（${e.message}）：${chunk.slice(0, 30)}`);
+      }
+    }
+    /* 到这里仍是全零，说明三级引擎都没能出声；占位反而会插进一段死寂，
+     * 宁可让字幕一闪而过，也不要假装播过了。 */
     if (!strict && isAllZeroPcm(pcm)) {
       console.error(`[tts-skip] 全零音频，跳过本句：${chunk.slice(0, 30)}`);
       continue;
@@ -563,6 +578,18 @@ function stripUnspeakable(s) {
     .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{27BF}\u{FE0F}\u{200D}\u{2B00}-\u{2BFF}]/gu, "")
     .replace(/[ \t]+/g, " ");
   return /[\p{L}\p{N}]/u.test(t) ? t.trim() : "";
+}
+
+/** PCM 平均电平（dBFS）。正常语音约 -25~-30dB；<-45dB 视为"没说出来"。 */
+function pcmLevelDb(buf) {
+  if (!buf || buf.length < 2) return -180;
+  const n = buf.length / 2;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = buf.readInt16LE(i * 2) / 32768;
+    sum += v * v;
+  }
+  return 20 * Math.log10(Math.max(Math.sqrt(sum / n), 1e-9));
 }
 
 /** PCM 是否全零（= 模型输出的"空音频"） */
