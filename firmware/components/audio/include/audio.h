@@ -21,7 +21,8 @@ int  audio_rec_active(void);
 /* ── 下行（播放 TTS）────────────────────────────────────────────────── */
 void audio_play_reset(void);                            /* tts_start：清队列 */
 void audio_play_push(const uint8_t *opus, size_t len);  /* 一帧 opus（可在 ws 回调里调） */
-void audio_play_finish(void);                           /* tts_stop：队列播完即结束 */
+void audio_play_finish(void);
+void audio_play_pause(void);                            /* 打断用：清队列但保持播放流打开 */                           /* tts_stop：队列播完即结束 */
 void audio_play_stop(void);                             /* 立即停止（断线/用户打断） */
 int  audio_play_finished(void);                         /* 读一次即清：一轮播放完成 */
 void audio_play_stats(int *pushed, int *played);        /* 帧计数（tts_start 清零）：已入队 / 已播 */

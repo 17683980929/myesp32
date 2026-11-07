@@ -236,7 +236,7 @@ static void voice_interrupt(void)
 {
     s_wake_greet = 0;
     s_followup = 0;
-    audio_play_stop();
+    audio_play_pause();        /* 只清队列、不关播放流：否则服务端后续帧全被丢弃 */
     audio_rec_stop();
     subq_clear();
     sub_cur_clear();

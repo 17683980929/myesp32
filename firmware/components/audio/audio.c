@@ -570,6 +570,24 @@ void audio_play_push(const uint8_t *opus, size_t len)
     }
 }
 
+/* 暂停（用户打断用）：清掉还没播的音频，但**保持播放流开着**。
+ * 用 audio_play_stop() 会把 s_stream_open 置 0，只有下一次 tts_start 才重新开闸；
+ * 而服务端若因为 resume 来得太快没走到"恢复补发 tts_start"，就会继续往关着的门里发帧，
+ * 结果整段回答后半截全部被丢弃 —— 表现为字幕照常滚、声音全没。 */
+void audio_play_pause(void)
+{
+    if (!s_ready || !s_playq) return;
+    xQueueReset(s_playq);
+    s_frames_pushed = 0;
+    s_frames_played = 0;
+    s_energy_ss = 0;
+    s_energy_n = 0;
+    s_playing = 0;
+    s_play_finishing = 0;
+    s_stream_open = 1;               /* 关键：门留着，后续帧还能进来 */
+    s_stream_act_ms = (int)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
 void audio_play_finish(void) { if (s_ready) s_play_finishing = 1; }
 
 /* 唤醒提示音（本地合成，不经过网络）：没有 tts_stop，播完直接标记结束，
