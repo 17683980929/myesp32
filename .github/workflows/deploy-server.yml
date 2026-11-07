@@ -7,6 +7,8 @@ on:
     paths:
       - "server/**"
       - "web/**"
+      - "tools/preview_ui.mjs"
+      - "firmware/components/ui/**"
       - ".github/workflows/deploy-server.yml"
   workflow_dispatch:
 
@@ -27,7 +29,9 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
+          # screen preview runs preview_ui.mjs on the server and needs the firmware fonts
           zip -qr /tmp/server.zip server/src server/skills server/data web \
+            tools/preview_ui.mjs firmware/components/ui \
             -x 'server/data/life-guide/*'
           ls -lh /tmp/server.zip
           code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 90 \

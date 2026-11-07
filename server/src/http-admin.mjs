@@ -730,7 +730,12 @@ export async function handleHttp(req, res, ctx) {
         rmSync(stage, { recursive: true, force: true });
         rmSync(bak, { recursive: true, force: true });
         const files = unzipTo(readFileSync(UPD_ZIP), stage, {
-          allowPrefix: ["server/src/", "server/skills/", "server/data/", "web/", "server/package"],
+          /* tools/ 与 firmware/components/ui/ 是 /api/screen-preview 的渲染依赖：
+           * preview_ui.mjs 在服务端跑，直接读固件里的点阵字体和桌宠帧数据 */
+          allowPrefix: [
+            "server/src/", "server/skills/", "server/data/", "web/", "server/package",
+            "tools/", "firmware/components/ui/",
+          ],
         });
         const js = files.filter((f) => f.endsWith(".mjs"));
         if (!js.length) return json(res, 400, { ok: false, msg: "包里没有 .mjs，拒绝应用" });
@@ -765,7 +770,7 @@ export async function handleHttp(req, res, ctx) {
           }
         };
         try {
-          ["server/src", "server/skills", "web"].forEach(swapDir);
+          ["server/src", "server/skills", "web", "tools", "firmware/components/ui"].forEach(swapDir);
           const dataFrom = path.join(stage, "server/data");
           if (existsSync(dataFrom)) {
             /* 部署包里的 data/timetable.json 是 git 里的出厂模板，会覆盖云端课表。
