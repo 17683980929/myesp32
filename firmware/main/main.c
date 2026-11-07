@@ -86,6 +86,7 @@ static void subq_clear(void) { s_subq_head = s_subq_tail = 0; }
 static char s_sub_cur[SUB_MAX] = "";
 static int  s_sub_cur_at = 0;           /* 该句首帧序号 */
 static int  s_sub_cur_frames = 0;       /* 该句总帧数（0=不翻页） */
+static int  s_sub_played0 = 0;          /* 该句开始时的已播帧数（诊断用） */
 static int  s_sub_cur_page = 0;         /* 当前显示到第几页 */
 static void sub_cur_clear(void)
 {
@@ -394,6 +395,9 @@ static void on_ws_event(const ws_event_t *ev)
         int pushed = 0;
         audio_play_stats(&pushed, NULL);
         subq_push(ev->text, pushed, ev->frames);
+        /* 诊断：每句下发时记下"该句帧数 / 到这句为止已入队帧数"，
+         * 配合主循环里的"实播帧数"，就能看出哪一句被丢帧 */
+        ESP_LOGI(TAG, "sub: 应播=%d 已入队=%d", ev->frames, pushed);
         break;
     }
     case WS_EVT_STT:
@@ -791,10 +795,20 @@ static void main_loop(void)
             audio_play_stats(&pushed, &played);
             while (s_subq && s_subq_head != s_subq_tail && played > s_subq[s_subq_head].at_frame) {
                 sub_item_t *it = &s_subq[s_subq_head];
+                /* 诊断：上一句实际播了多少帧 vs 服务器声称的帧数。
+                 * 差得多 → 该句的帧在设备侧被丢了（流被关/队列满/解码失败） */
+                if (s_sub_cur[0] && s_sub_cur_frames > 0) {
+                    int actual = played - s_sub_played0;
+                    if (actual < s_sub_cur_frames - 2 || actual > s_sub_cur_frames + 2)
+                        ESP_LOGW(TAG, "句丢帧: 实播=%d 应播=%d", actual, s_sub_cur_frames);
+                    else
+                        ESP_LOGI(TAG, "句完整: 实播=%d 应播=%d", actual, s_sub_cur_frames);
+                }
                 snprintf(s_sub_cur, sizeof(s_sub_cur), "%s", it->text);
                 s_sub_cur_at     = it->at_frame;
                 s_sub_cur_frames = it->n_frames;
                 s_sub_cur_page   = 0;
+                s_sub_played0    = played;
                 ui_set_sub(s_sub_cur);
                 s_dirty = 1;
                 s_subq_head = (s_subq_head + 1) % SUBQ_MAX;
