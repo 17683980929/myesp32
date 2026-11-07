@@ -493,7 +493,7 @@
           </div>
 
           <div class="card wide">
-            <h2>本地 TTS <span class="tag">Kokoro / GPT-SoVITS · 引擎选「本地 TTS」时生效</span></h2>
+            <h2>本地 TTS <span class="tag">GPT-SoVITS / Kokoro · 引擎选「本地 TTS」时生效</span></h2>
             <div class="row">
               <div style="flex:2">
                 <label>服务地址</label>
@@ -564,9 +564,12 @@
             </div>
             <audio id="ttsAudio" controls style="width:100%;margin-top:10px;display:none"></audio>
             <p class="hint">想克隆自己的声音：用 <b>GPT-SoVITS</b>（MIT，6G 显存可推理，Windows 整合包解压即用、不用 Docker），
-              启动 <code>api_v2.py</code> 后接口选 GPT-SoVITS、地址填 <code>http://127.0.0.1:9880</code>，再填参考音频路径和参考文本。
-              只想要个快的通用音色、不克隆：<b>Kokoro-82M</b>（Apache-2.0，CPU 也能跑），接口选 OpenAI 兼容，
-              模型 <code>kokoro</code>，音色 <code>zf_xiaobei</code> / <code>zf_xiaoni</code> / <code>zm_yunjian</code>。</p>
+              启动 <code>api_v2.py</code> 后接口选 GPT-SoVITS、地址填 <code>http://127.0.0.1:9880</code>，再选参考音频和参考文本。
+              本机当前就是这套，<b>换参考音频 = 换音色</b>。</p>
+            <p class="hint"><b>Kokoro-82M 本机没装，需要自行部署</b>（Apache-2.0，CPU 也能跑，约 400MB）：
+              装 <code>kokoro-fastapi</code> 后它监听 <code>8880</code>，接口选 OpenAI 兼容才有
+              <code>model=kokoro</code> / <code>voice=zf_xiaobei</code> 这套参数。
+              下面那几栏的灰字只是示例值，没装服务时填了也连不上。</p>
           </div>
         </div>
       </section>
@@ -1032,6 +1035,18 @@ function pickRef() {
 async function testTts() {
   const btn = $("ttsTestBtn");
   const text = ($("t_tts_text").value || "").trim() || "你好，我是小智，这是语音合成的测试。";
+  /* 先在本地挡掉两个必然失败的配置，别让用户等一轮网络超时 */
+  if ($("t_provider").value === "local") {
+    const lo = ttsForm().local;
+    if (!lo.baseUrl) {
+      setMsg($("ttsMsg"), "先填服务地址：GPT-SoVITS 是 http://127.0.0.1:9880，Kokoro 是 8880", "err");
+      return;
+    }
+    if (lo.mode === "gptsovits" && !lo.refAudioPath) {
+      setMsg($("ttsMsg"), "GPT-SoVITS 需要参考音频，点上面的「扫描」选一个", "err");
+      return;
+    }
+  }
   setMsg($("ttsMsg"), "保存并合成中…", "");
   if (btn) btn.disabled = true;
   const t0 = Date.now();
