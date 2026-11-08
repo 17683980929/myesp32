@@ -26,8 +26,10 @@ function errText(e) {
   return s.length > 80 ? s.slice(0, 80) + "…" : s;
 }
 
-/** 单句 TTS 合成超时：Baidu 偶发卡住会让设备端"沉默卡在说话中"，超时后干净收尾 */
-const TTS_TIMEOUT_MS = 12000;
+/** 单句 TTS 合成超时。本地微调模型 60 字约 5.5s，长句偶发到 10s 以上，
+ *  12s 太紧（实测 140 字最慢 11.05s，几乎必撞）；放宽到 25s 只用于兜底真卡死，
+ *  正常的慢句子不会再被误判失败。 */
+const TTS_TIMEOUT_MS = 25000;
 /** 打断后等用户说话的上限：固件最长录 30 秒，超过说明 resume 丢了/设备卡在录音 */
 const HOLD_TIMEOUT_MS = 35000;
 function withTimeout(p, ms) {
@@ -901,6 +903,7 @@ export class DeviceSession {
         if (this.stale(myTurn)) break;
         const toolSink = { calls: [] };
         let stop = false;
+        let ttsFails = 0;               /* 连续合成失败计数：单句失败只跳过，不再丢掉整段 */
         try {
           for await (const sentence of chatSentences({
             ...genOpts,
@@ -909,7 +912,15 @@ export class DeviceSession {
             toolSink: toolsOn ? toolSink : undefined,
           })) {
             if (this.stale(myTurn)) break;
-            if (!(await pushSentence(sentence))) { stop = true; break; }
+            if (!(await pushSentence(sentence))) {
+              /* 这句没合成出来：跳过它继续下一句，宁可漏一句也不要把后半段全砍掉。
+               * 连续 3 句都失败说明引擎整体不可用，那时才收尾。 */
+              ttsFails++;
+              log(`[${this.sid}] 第 ${ttsFails} 句合成失败 → 跳过继续`);
+              if (ttsFails >= 3) { stop = true; break; }
+              continue;
+            }
+            ttsFails = 0;
           }
         } catch (e) {
           /* 个别网关不认 tools 参数：这一轮还什么都没生成 → 关掉工具重试一次 */

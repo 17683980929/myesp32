@@ -488,7 +488,11 @@ function pcmToOpusFrames(pcm) {
  */
 export async function textToPcm16k(text, opts = {}) {
   const provider = opts.provider || "baidu";
-  const chunks = splitTtsText(text, provider === "tencent" ? 100 : 140);
+  /* 本地切块上限 60 字：实测 60 字约 5.5s、100 字约 8.7s、140 字约 10.6s（最慢 11.05s），
+   * 而 device.mjs 的单句超时是 12s —— 140 字只剩 0.95s 余量，叠加 HTTP/重采样/编码
+   * 和 GPU 抖动必然偶发超时；超时一次就会让整段回答被丢弃（pushSentence 返回 false）。
+   * 降到 60 字后余量约 6s，基本消除这条路。 */
+  const chunks = splitTtsText(text, provider === "tencent" ? 100 : 60);
   /* strict 只给管理页「本地 TTS 试听」用：那一处要看到本地的真实错误，不能悄悄换引擎。
    * 设备播报永远不 strict —— 只要还有任一引擎可用就必须出声。 */
   const strict = opts.strict === true ||
