@@ -807,7 +807,11 @@ export class DeviceSession {
 
     const sender = (async () => {
       this.send(build.ttsStart());
-      const t0s = Date.now();
+      /* 起算点必须等第一帧真正发出去再取。若在循环开始就取，首句合成的
+       * 2~5 秒里 audioMs 还是 0、elapsed 一直在涨，lead 变成大负数，
+       * 之后一路 2 倍速追赶，把设备端缓冲堆到 8 秒（串口实测 inflight=132 帧，
+       * 设计值只有 33 帧）。缓冲越厚，任何一次中断丢掉的整句越多。 */
+      let t0s = 0;
       let audioMs = 0;                         /* 累计已发音频时长 */
       let cur = null, ci = 0;                  /* 当前句 / 句内帧指针 */
       let resend = true;                       /* 是否整句重发（首次 & 挂起恢复） */
@@ -846,6 +850,7 @@ export class DeviceSession {
           resend = false;
         }
         if (this.stale(myTurn)) break;
+        if (!t0s) t0s = Date.now();           /* 见上：第一帧发出时才开始计时 */
         this.sendBin(cur.frames[ci]);
         audioMs += FRAME_MS;
         ci++;
