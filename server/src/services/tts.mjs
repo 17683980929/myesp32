@@ -350,8 +350,11 @@ async function localTTS(text, cfg = {}) {
       ref_audio_path: cfg.refAudioPath || "",
       prompt_text: cfg.promptText || "",
       prompt_lang: cfg.promptLang || "zh",
-      /* 服务端已经按句子切好再送进来，这里不再二次切分（cut0 实测比 cut5 快 0.5s） */
-      text_split_method: cfg.textSplitMethod || "cut0",
+      /* 按标点二次切分：微调模型对长句会随机"吞字"（跳过一整段文字、
+       * 生成较短但听起来正常的语音，电平/帧数完全正常，只能靠 ASR 回读发现）。
+       * 实测同一批 10 句：cut0 吞 2/10、cut5 吞 1/10，被吞的两句 cut5 都念全了；
+       * 调低 temperature 无效。片段更短 → 自回归采样提前收尾的概率更低。 */
+      text_split_method: cfg.textSplitMethod || "cut5",
       media_type: "wav",
       streaming_mode: false,
       speed_factor: Number(cfg.speed) || 1,
