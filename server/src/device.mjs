@@ -32,6 +32,22 @@ function errText(e) {
 const TTS_TIMEOUT_MS = 25000;
 /** 打断后等用户说话的上限：固件最长录 30 秒，超过说明 resume 丢了/设备卡在录音 */
 const HOLD_TIMEOUT_MS = 35000;
+
+/** 送 TTS 前剥掉 Markdown / 引号等排版符号。
+ *  云端 TTS SDK 会自动忽略这些，本地 GPT-SoVITS 却会把 `**` 念成额外停顿：
+ *  实测同一句「**第七擒**，孟获…」带标记 5.94s、去掉后 4.54s，凭空多 1.4 秒。
+ *  大模型还常把引号单独留在一句里，切句后会变成「只有标点」的碎片句。 */
+const SPEAKABLE_RE = /[\p{L}\p{N}]/u;
+function cleanForSpeech(text) {
+  return String(text || "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")   // [标题](链接) → 标题
+    .replace(/\*\*|__|`/g, "")                  // 加粗 / 行内代码
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")         // 标题
+    .replace(/^\s*[-+•]\s+/gm, "")              // 列表符号
+    .replace(/[“”"‘’']/g, "")                   // 各种引号（TTS 本就不念）
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
 function withTimeout(p, ms) {
   let t;
   return Promise.race([
@@ -875,6 +891,13 @@ export class DeviceSession {
     /* 单句：累计文本 + 合成 + 入队；返回 false = 合成失败，应停止后续 */
     const pushSentence = async (sentence) => {
       full += sentence;
+      /* 纯标点 / 引号 / Markdown 碎片句：整句跳过，既不合成也不占一条字幕。
+       * 本地模型对无可读字符的文本会返回 1 秒全零音频，听感就是"凭空少一句"。 */
+      const spoken = cleanForSpeech(sentence);
+      if (!SPEAKABLE_RE.test(spoken)) {
+        log(`[${this.sid}] 跳过无可读字符片段: ${JSON.stringify(sentence.trim().slice(0, 20))}`);
+        return true;
+      }
       if (!firstAt) {
         firstAt = Date.now();
         log(`[${this.sid}] 首句延迟 ${firstAt - t0}ms`);
@@ -882,14 +905,14 @@ export class DeviceSession {
       /* 单句合成加超时：卡住的句子不能拖死整段回答（设备端会沉默卡"说话中"） */
       let frames;
       try {
-        ({ frames } = await withTimeout(textToOpusFrames(sentence, cfg.tts), TTS_TIMEOUT_MS));
+        ({ frames } = await withTimeout(textToOpusFrames(spoken, cfg.tts), TTS_TIMEOUT_MS));
       } catch (e) {
         log(`[${this.sid}] 句子合成失败: ${e.message}`);
         if (sent === 0) throw e;      /* 一句都没成 → 走道歉流程 */
         return false;                 /* 已有内容 → 干净收尾，设备播完队列自然结束 */
       }
       sent++;
-      queue.push({ frames, text: sentence.trim() });
+      queue.push({ frames, text: spoken.trim() });
       return true;
     };
 
