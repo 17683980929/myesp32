@@ -25,7 +25,7 @@ import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
-import { listParcels, addParcel, removeParcel } from "./services/parcels.mjs";
+import { listParcels, addParcel, removeParcel, clearParcels } from "./services/parcels.mjs";
 import { parseSms } from "./services/parcel-sms.mjs";
 import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
@@ -435,8 +435,10 @@ export async function handleHttp(req, res, ctx) {
 
       const raw = await readBody(req);
       let text = raw;
+      let body = null;
       try {
         const j = JSON.parse(raw);
+        body = j;
         text = String(j.text || j.content || j.msg || j.message || j.sms || raw);
       } catch {
         /* 有些转发器发的是表单：text=...&from=... */
@@ -445,6 +447,36 @@ export async function handleHttp(req, res, ctx) {
           text = q.get("text") || q.get("content") || q.get("msg") || q.get("message") || q.get("sms") || raw;
         }
       }
+
+      /* ── 按手机号查快递的结构化同步 ──────────────────────────────
+       * 取件短信里没有运单号，所以真正能用的数据源是菜鸟/支付宝/微信
+       * 「我的快递」里已绑定手机号的全量包裹列表（App 登录态，无公开 API，
+       * 由手机端自动化读取后同步过来）。payload:
+       *   { phone:"138...", items:[{number,carrier,status,label}], replace:true }
+       * phone 只用于手机端标识，不落盘、不进日志；replace=true 时以本次列表
+       * 为准清掉旧单（适合"当前在途包裹"的全量同步），默认增量合并。
+       */
+      if (body && Array.isArray(body.items)) {
+        if (body.replace === true) clearParcels();
+        let seen = 0;
+        const numbers = [];
+        for (const it of body.items) {
+          const n = String(it?.number ?? it?.num ?? it?.mailNo ?? "")
+            .replace(/[\s-]/g, "").toUpperCase();
+          if (!/^[A-Z0-9]{6,32}$/.test(n)) continue;
+          const status = String(it.status || it.state || "").trim();
+          addParcel(n, String(it.carrier || it.com || ""),
+            String(it.label || "").trim() || status);
+          numbers.push(n);
+          seen++;
+        }
+        log(`手机号同步快递 ${seen} 个`);
+        return json(res, 200, {
+          ok: true, added: seen, total: listParcels().length,
+          mode: "sync", numbers,
+        });
+      }
+
       const list = parseSms(text);
       if (!list.length) return json(res, 200, { ok: true, added: 0, msg: "没有识别到快递单号" });
 

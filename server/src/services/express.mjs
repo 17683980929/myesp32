@@ -266,7 +266,19 @@ export async function myParcelsAnswer(args = {}) {
   }
 
   const cfg = getConfig()?.express || {};
-  if (!cfg.customer || !cfg.key) return CONFIG_HINT;
+  if (!cfg.customer || !cfg.key) {
+    /* 手机端「按手机号同步」过来的包裹自带状态，不必依赖快递100 也能播报。
+     * 清单为空或只有裸单号时，才提示去配置正式 API。 */
+    if (items.some((it) => it.label)) {
+      const phone = maskPhone(cfg.phone);
+      const head2 = `你有 ${items.length} 个快递${phone ? `（手机号 ${phone}）` : ""}：`;
+      const lines2 = items.slice(0, 8).map((it, i) =>
+        `${i + 1}. ${it.number}${it.label ? `：${it.label}` : ""}`);
+      const tail2 = items.length > 8 ? `\n还有 ${items.length - 8} 个没显示。` : "";
+      return head2 + "\n" + lines2.join("\n") + tail2;
+    }
+    return CONFIG_HINT;
+  }
 
   const phone = maskPhone(cfg.phone);
   const results = [];

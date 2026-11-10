@@ -674,7 +674,7 @@
           </div>
 
           <div class="card wide">
-            <h2>短信自动导入 <span class="tag">手机转发 → 服务器</span></h2>
+            <h2>手机同步 / 短信导入 <span class="tag">手机转发 → 服务器</span></h2>
             <label>Webhook 密钥<span class="hint"> 手机转发时带这个 token</span></label>
             <div class="row">
               <div>
@@ -696,6 +696,7 @@
               <span class="msg" id="hookMsg"></span>
             </div>
             <p class="hint">安卓用 SmsForwarder / 短信转发器，iOS 用快捷指令：收到含「快递」的短信时 POST JSON {"text":"短信内容"} 到这个地址。只存单号，不存原文。</p>
+            <p class="hint"><b>按手机号查快递（推荐）</b>：取件短信通常不含运单号。手机端用一次短信验证码绑定菜鸟／支付宝／微信「我的快递」后，把包裹列表 POST 到同一地址：<code>{"items":[{"number":"YT...","carrier":"yuantong","status":"派送中"}],"replace":true}</code>。服务端直接入库，<code>status</code> 会随清单播报——此时无需快递100 凭据。<code>replace</code> 为 true 时以本次列表为准清掉旧单，适合全量同步。</p>
           </div>
         </div>
       </section>
