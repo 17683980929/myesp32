@@ -127,13 +127,6 @@
   .skill-src{flex:1;min-width:0;font-size:11px;color:var(--muted);
              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .skill-del{flex:none;padding:2px 8px;font-size:11px;color:var(--err)}
-  .parcel-row{display:flex;align-items:center;gap:8px;padding:5px 0;
-              border-bottom:1px dashed var(--line);font-size:12px}
-  .parcel-row:last-child{border-bottom:0}
-  .parcel-num{flex:none;font-family:ui-monospace,Consolas,monospace}
-  .parcel-label{flex:1;min-width:0;color:var(--muted);
-                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .parcel-del{flex:none;padding:1px 7px;font-size:11px;color:var(--err)}
   .logbox{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;
           max-height:420px;overflow:auto;font-size:11px;line-height:1.5;
           white-space:pre-wrap;word-break:break-all;margin-top:8px}
@@ -237,11 +230,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l8.5 4.7L12 12.4 3.5 7.7z"/><path d="M3.5 12.2l8.5 4.7 8.5-4.7"/><path d="M3.5 16.6L12 21.3l8.5-4.7"/></svg>
         <span>技能</span><span class="nav-badge" id="navSkills"></span>
       </a>
-      <a class="nav-item" href="#/express" data-page="express">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M21 8.2L12 3.4 3 8.2v7.6l9 4.8 9-4.8z"/><path d="M3 8.2l9 4.8 9-4.8M12 13v8"/></svg>
-        <span>快递与包裹</span><span class="nav-badge" id="navParcels"></span>
-      </a>
-
       <div class="nav-group">系统</div>
       <a class="nav-item" href="#/service" data-page="service">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7.5h8.3M17.7 7.5H20M4 16.5h3.3M12.7 16.5H20"/><circle cx="15" cy="7.5" r="2.2"/><circle cx="10" cy="16.5" r="2.2"/></svg>
@@ -639,68 +627,6 @@
         </div>
       </section>
 
-      <!-- ── 快递与包裹 ───────────────────────────────────────── -->
-      <section class="page" id="page-express">
-        <div class="grid">
-          <div class="card">
-            <h2>快递100 <span class="tag">凭据</span></h2>
-            <label>授权码 customer</label>
-            <input id="ex_customer" placeholder="快递100 的 customer">
-            <label>密钥 key<span class="hint"> 留空 = 未配置</span></label>
-            <input id="ex_key" type="password" placeholder="快递100 的 key">
-            <label>绑定手机号<span class="hint"> 只作清单标识，不会用手机号向快递公司查</span></label>
-            <input id="ex_phone" placeholder="13800138000">
-            <p class="hint">在 api.kuaidi100.com 注册后获取，额度以官网为准。不配置时语音会提示去配置，不会瞎编轨迹。</p>
-          </div>
-
-          <div class="card">
-            <h2>我的快递 <span class="tag" id="parcelCount">0 个</span></h2>
-            <div id="parcelList" style="margin-top:2px"></div>
-            <div class="row" style="margin-top:8px">
-              <div>
-                <label>单号</label>
-                <input id="p_number" placeholder="SF...">
-              </div>
-              <div>
-                <label>备注（可空）</label>
-                <input id="p_label" placeholder="耳机 / 妈妈寄的">
-              </div>
-            </div>
-            <div class="actions">
-              <button onclick="addParcel()">加入清单</button>
-              <span class="msg" id="parcelMsg"></span>
-            </div>
-            <p class="hint">查到轨迹的单号会自动进来；问「我的快递到哪了」会逐个播报。</p>
-          </div>
-
-          <div class="card wide">
-            <h2>手机同步 / 短信导入 <span class="tag">手机转发 → 服务器</span></h2>
-            <label>Webhook 密钥<span class="hint"> 手机转发时带这个 token</span></label>
-            <div class="row">
-              <div>
-                <input id="ex_hookToken" placeholder="点右侧生成" oninput="updateHookUrl()">
-              </div>
-              <div style="flex:none">
-                <button type="button" onclick="genHookToken()">随机生成</button>
-              </div>
-            </div>
-            <div class="hint" id="hookUrl" style="word-break:break-all">保存后显示转发地址</div>
-            <div class="row" style="margin-top:6px">
-              <div>
-                <label>测试一条短信</label>
-                <input id="hookTest" placeholder="【菜鸟驿站】您的圆通快递YT...已到">
-              </div>
-            </div>
-            <div class="actions">
-              <button onclick="testHook()">测试解析</button>
-              <span class="msg" id="hookMsg"></span>
-            </div>
-            <p class="hint">安卓用 SmsForwarder / 短信转发器，iOS 用快捷指令：收到含「快递」的短信时 POST JSON {"text":"短信内容"} 到这个地址。只存单号，不存原文。</p>
-            <p class="hint"><b>按手机号查快递（推荐）</b>：取件短信通常不含运单号。手机端用一次短信验证码绑定菜鸟／支付宝／微信「我的快递」后，把包裹列表 POST 到同一地址：<code>{"items":[{"number":"YT...","carrier":"yuantong","status":"派送中"}],"replace":true}</code>。服务端直接入库，<code>status</code> 会随清单播报——此时无需快递100 凭据。<code>replace</code> 为 true 时以本次列表为准清掉旧单，适合全量同步。</p>
-          </div>
-        </div>
-      </section>
-
       <!-- ── 服务设置 ─────────────────────────────────────────── -->
       <section class="page" id="page-service">
         <div class="grid">
@@ -836,7 +762,6 @@ const PAGES = {
   create:   { t: "创造模式", s: "用一句话修改屏幕" },
   voice:    { t: "语音对话", s: "大模型 · 语音识别 · 语音合成" },
   skills:   { t: "技能", s: "工具与数据源" },
-  express:  { t: "快递与包裹", s: "快递100 · 我的快递 · 短信导入" },
   service:  { t: "服务设置", s: "端口 · 鉴权 · 天气 · 信息栏推送" },
   ops:      { t: "运维", s: "固件 OTA · 服务端更新 · 运行日志" },
 };
@@ -920,12 +845,6 @@ async function loadConfig() {
   $("wt_city").value = cfg.weather.city;
   $("wt_refresh").value = cfg.weather.refreshSec;
   $("wt_enabled").value = cfg.weather.enabled ? "1" : "0";
-  $("ex_customer").value = cfg.express?.customer || "";
-  $("ex_key").value = cfg.express?.key || "";
-  $("ex_phone").value = cfg.express?.phone || "";
-  $("ex_hookToken").value = cfg.express?.hookToken || "";
-  updateHookUrl();
-
   $("i_push").value = cfg.info.pushSec;
 
   $("l_base").value = cfg.llm.baseUrl;
@@ -998,7 +917,6 @@ async function loadConfig() {
     $("warnBanner").textContent = "⚠ " + warns.join("；") + "。公网部署请务必设置。";
   }
 
-  refreshParcels();
   refreshLogs();
 }
 
@@ -1249,13 +1167,6 @@ async function saveAll() {
       refreshSec: +$("wt_refresh").value,
       enabled: $("wt_enabled").value === "1",
     },
-    express: {
-      provider: "kuaidi100",
-      customer: $("ex_customer").value.trim(),
-      key: $("ex_key").value,
-      phone: $("ex_phone").value.trim(),
-      hookToken: $("ex_hookToken").value.trim(),
-    },
     info: { pushSec: +$("i_push").value },
     llm: {
       baseUrl: $("l_base").value,
@@ -1283,103 +1194,6 @@ async function saveAll() {
   const j = await r.json();
   setMsg($("saveMsg"), j.ok ? "已保存" : "保存失败", j.ok ? "ok" : "err");
   if (j.ok) loadConfig();
-}
-
-async function refreshParcels() {
-  try {
-    const r = await fetch("api/parcels");
-    const j = await r.json();
-    const items = j.items || [];
-    $("parcelCount").textContent = items.length + " 个";
-    $("navParcels").textContent = items.length ? String(items.length) : "";
-    if (!items.length) {
-      $("parcelList").innerHTML = '<div class="hint">还没有记录。查一次单号会自动记住。</div>';
-      return;
-    }
-    $("parcelList").innerHTML = items.map((it) => `
-      <div class="parcel-row">
-        <span class="parcel-num">${escHtml(it.number)}</span>
-        <span class="parcel-label">${escHtml(it.label || "")}</span>
-        <button class="parcel-del" data-number="${escHtml(it.number)}"
-                onclick="delParcel(this.dataset.number)">删除</button>
-      </div>`).join("");
-  } catch {
-    $("parcelList").innerHTML = '<div class="hint">读取清单失败。</div>';
-  }
-}
-
-async function addParcel() {
-  const number = $("p_number").value.trim();
-  if (!number) return setMsg($("parcelMsg"), "先填单号", "err");
-  try {
-    const r = await fetch("api/parcels/add", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number, label: $("p_label").value.trim() }),
-    });
-    const j = await r.json();
-    if (!j.ok) return setMsg($("parcelMsg"), j.error || "添加失败", "err");
-    $("p_number").value = "";
-    $("p_label").value = "";
-    setMsg($("parcelMsg"), "已加入", "ok");
-    refreshParcels();
-  } catch {
-    setMsg($("parcelMsg"), "添加失败", "err");
-  }
-}
-
-async function delParcel(number) {
-  try {
-    const r = await fetch("api/parcels/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number }),
-    });
-    const j = await r.json();
-    setMsg($("parcelMsg"), j.ok ? "已删除" : (j.error || "删除失败"), j.ok ? "ok" : "err");
-    refreshParcels();
-  } catch {
-    setMsg($("parcelMsg"), "删除失败", "err");
-  }
-}
-
-function hookBase() {
-  return location.origin + location.pathname.replace(/\/admin\/?$/, "");
-}
-
-function updateHookUrl() {
-  const t = $("ex_hookToken").value.trim();
-  $("hookUrl").textContent = t
-    ? `${hookBase()}/api/parcel-hook?token=${encodeURIComponent(t)}`
-    : "先填/生成 token 并保存";
-}
-
-function genHookToken() {
-  const a = new Uint8Array(12);
-  crypto.getRandomValues(a);
-  $("ex_hookToken").value = [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
-  updateHookUrl();
-  $("hookUrl").textContent += "（记得点保存）";
-}
-
-async function testHook() {
-  const token = $("ex_hookToken").value.trim();
-  const text = $("hookTest").value.trim();
-  if (!token) return setMsg($("hookMsg"), "先生成 token", "err");
-  if (!text) return setMsg($("hookMsg"), "先填一条短信", "err");
-  try {
-    const r = await fetch(`api/parcel-hook?token=${encodeURIComponent(token)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const j = await r.json();
-    if (!j.ok) return setMsg($("hookMsg"), j.msg || "失败", "err");
-    setMsg($("hookMsg"), j.added ? `识别到 ${j.added} 个，已加入` : (j.msg || "没识别到"), j.added ? "ok" : "warn");
-    if (j.added) refreshParcels();
-  } catch {
-    setMsg($("hookMsg"), "请求失败", "err");
-  }
 }
 
 let logFiles = [];

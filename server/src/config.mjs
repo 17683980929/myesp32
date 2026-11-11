@@ -83,17 +83,6 @@ export const DEFAULT_CONFIG = {
     /** 多久拉一次天气（秒） */
     refreshSec: 600,
   },
-  /** 快递查询（快递100 正式 API）。customer/key 在 api.kuaidi100.com 注册后获取；
-   *  没配置时技能会明确提示去配置，不会用免 key 的野接口瞎编轨迹。 */
-  express: {
-    provider: "kuaidi100",
-    customer: "",
-    key: "",
-    /** 绑定的手机号：只作「我的快递」的标识，不用来向快递公司查（那需要企业授权） */
-    phone: "",
-    /** 短信转发 webhook 的密钥（只允许加单号，不能读配置） */
-    hookToken: "",
-  },
   news: {
     enabled: true,
     /** 新闻源：auto=头条主源、微博兜底；也可写 toutiao / weibo */
@@ -258,6 +247,9 @@ export function loadConfig() {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
     /* 用默认值补齐缺失字段，老配置升级不会炸 */
     cache = deepMerge(structuredClone(DEFAULT_CONFIG), raw);
+    /* 快递功能已移除：清掉旧配置里残留的快递100 凭据 / hookToken，
+     * 下次管理页保存任意配置时会把清理后的结果写回磁盘。 */
+    delete cache.express;
   } catch (e) {
     throw new Error(`config.json 解析失败: ${e.message}`);
   }
@@ -293,8 +285,8 @@ export function maskedConfig() {
   c.server.uploadToken = mask(c.server.uploadToken);
   c.server.adminPassword = mask(c.server.adminPassword);
   c.wifi.password = mask(c.wifi.password);
-  c.express.key = mask(c.express.key);
-  c.express.phone = mask(c.express.phone);
+  /* 兼容旧配置文件里残留的 express 段：不再对外暴露明文，也不参与功能 */
+  if (c.express) delete c.express;
   return c;
 }
 

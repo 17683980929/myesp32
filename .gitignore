@@ -16,9 +16,6 @@ server/config.json
 # 运行时课表（管理页保存，部署不覆盖）
 server/runtime/
 
-# 「我的快递」清单：含用户单号，只存服务器本地
-server/parcels.json
-server/parcels.json.tmp
 server/*.log
 
 # ── AI 助手工作区记忆（本地会话数据，不进仓库）───────────────

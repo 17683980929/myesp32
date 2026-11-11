@@ -25,8 +25,6 @@ import { unzipTo } from "./unzip.mjs";
 import { ROOT, getConfig, saveConfig, maskedConfig, isMasked } from "./config.mjs";
 import { VOICE_GROUPS } from "./voices.mjs";
 import { reloadSkills, loadedSkills, skillsError, skillsDir, saveSkill, deleteSkill } from "./services/skills.mjs";
-import { listParcels, addParcel, removeParcel, clearParcels } from "./services/parcels.mjs";
-import { parseSms } from "./services/parcel-sms.mjs";
 import { loadTimetableRaw, timetablePath } from "./services/timetable.mjs";
 import { generateLuaProposal, validateLua, luaBaseHash } from "./services/lua-ai.mjs";
 import { build } from "./protocol.mjs";
@@ -423,70 +421,6 @@ export async function handleHttp(req, res, ctx) {
       const info = otaInfo();
       log(`固件已更新：${info.version} ${(buf.length / 1048576).toFixed(2)}MB ${info.built}`);
       return json(res, 200, { ok: true, ...info });
-    }
-
-    /* ── 快递短信转发（手机端 SmsForwarder / 快捷指令，独立 token）──
-     * 不走网页密码：手机转发器塞不进登录态。token 只允许"加单号"，不能读配置。 */
-    if (p === "/api/parcel-hook" && req.method === "POST") {
-      const want = String(getConfig().express?.hookToken || "");
-      if (!want) return json(res, 403, { ok: false, msg: "未配置 hookToken" });
-      const token = String(url.searchParams.get("token") || req.headers["x-parcel-token"] || "");
-      if (token !== want) return json(res, 403, { ok: false, msg: "token 不对" });
-
-      const raw = await readBody(req);
-      let text = raw;
-      let body = null;
-      try {
-        const j = JSON.parse(raw);
-        body = j;
-        text = String(j.text || j.content || j.msg || j.message || j.sms || raw);
-      } catch {
-        /* 有些转发器发的是表单：text=...&from=... */
-        if (/^(text|content|msg|message|sms)=/i.test(raw.trim())) {
-          const q = new URLSearchParams(raw);
-          text = q.get("text") || q.get("content") || q.get("msg") || q.get("message") || q.get("sms") || raw;
-        }
-      }
-
-      /* ── 按手机号查快递的结构化同步 ──────────────────────────────
-       * 取件短信里没有运单号，所以真正能用的数据源是菜鸟/支付宝/微信
-       * 「我的快递」里已绑定手机号的全量包裹列表（App 登录态，无公开 API，
-       * 由手机端自动化读取后同步过来）。payload:
-       *   { phone:"138...", items:[{number,carrier,status,label}], replace:true }
-       * phone 只用于手机端标识，不落盘、不进日志；replace=true 时以本次列表
-       * 为准清掉旧单（适合"当前在途包裹"的全量同步），默认增量合并。
-       */
-      if (body && Array.isArray(body.items)) {
-        if (body.replace === true) clearParcels();
-        let seen = 0;
-        const numbers = [];
-        for (const it of body.items) {
-          const n = String(it?.number ?? it?.num ?? it?.mailNo ?? "")
-            .replace(/[\s-]/g, "").toUpperCase();
-          if (!/^[A-Z0-9]{6,32}$/.test(n)) continue;
-          const status = String(it.status || it.state || "").trim();
-          addParcel(n, String(it.carrier || it.com || ""),
-            String(it.label || "").trim() || status);
-          numbers.push(n);
-          seen++;
-        }
-        log(`手机号同步快递 ${seen} 个`);
-        return json(res, 200, {
-          ok: true, added: seen, total: listParcels().length,
-          mode: "sync", numbers,
-        });
-      }
-
-      const list = parseSms(text);
-      if (!list.length) return json(res, 200, { ok: true, added: 0, msg: "没有识别到快递单号" });
-
-      let added = 0;
-      for (const it of list) if (addParcel(it.number, it.carrier, "短信")) added++;
-      log(`短信导入快递 ${added} 个`);
-      return json(res, 200, {
-        ok: true, added, total: listParcels().length,
-        numbers: list.map((x) => x.number),
-      });
     }
 
     /* ── API ──────────────────────────────────────────────────────── */
@@ -1291,27 +1225,6 @@ export async function handleHttp(req, res, ctx) {
           ok: true, count: list.length, error: skillsError(),
           skills: list.map((s) => ({ name: s.name, description: s.description, file: s.file })),
         });
-      }
-
-      /* 「我的快递」清单：语音查过的单号会自动进来，也可以在网页删/补 */
-      if (p === "/api/parcels" && req.method === "GET") {
-        return json(res, 200, { items: listParcels() });
-      }
-
-      if (p === "/api/parcels/add" && req.method === "POST") {
-        const b = JSON.parse(await readBody(req));
-        const item = addParcel(b.number, b.carrier, b.label);
-        if (!item) return json(res, 400, { ok: false, error: "单号不合法" });
-        log(`记录快递 ${item.number}`);
-        return json(res, 200, { ok: true, item });
-      }
-
-      if (p === "/api/parcels/delete" && req.method === "POST") {
-        const b = JSON.parse(await readBody(req));
-        const ok = removeParcel(b.number);
-        return json(res, 200, ok
-          ? { ok: true }
-          : { ok: false, error: "清单里没有这个单号" });
       }
 
       /* 网页里粘贴一个技能 JSON 直接写进 server/skills/ 并热重载。
