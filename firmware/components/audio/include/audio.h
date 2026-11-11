@@ -48,3 +48,7 @@ void audio_volume_up(void);     /* 语音调大一档（到顶保持） */
 void audio_volume_down(void);   /* 语音调小一档（到底为 0） */
 void audio_volume_mute(void);
 void audio_volume_unmute(void);
+
+/** 限制实际输出音量的上限（0..100），不改用户设定的档位。
+ *  电池供电时用来压住功放电流尖峰，避免欠压复位；100 = 不限制。 */
+void audio_volume_cap(int cap);

@@ -613,14 +613,27 @@ void audio_set_volume(int vol)
 static const int VOL_STEPS[] = { 25, 50, 75, 90, 100 };
 static int s_vol_cur = 65;              /* 与 audio_init 里设置的默认一致 */
 static int s_vol_before_mute = 65;
+static int s_vol_cap = 100;             /* 电池供电时压低实际输出，不改用户档位 */
 
 static void vol_apply(int v)
 {
     if (v < 0) v = 0;
     if (v > 100) v = 100;
-    audio_set_volume(v);
     s_vol_cur = v;
+    /* 只限制真正写进 codec 的值：档位仍记在 s_vol_cur，
+     * 解除限制后用户原来的档位能原样恢复，不会卡在 capped 值上。 */
+    audio_set_volume(v > s_vol_cap ? s_vol_cap : v);
     s_beep_req = 1;                     /* 反馈音（播放任务空闲时响） */
+}
+
+void audio_volume_cap(int cap)
+{
+    if (cap < 0) cap = 0;
+    if (cap > 100) cap = 100;
+    if (cap == s_vol_cap) return;
+    s_vol_cap = cap;
+    /* 立即套用到当前档位；不触发反馈音，免得自动策略自己"叮"一下 */
+    if (s_play) audio_set_volume(s_vol_cur > cap ? cap : s_vol_cur);
 }
 
 void audio_volume_cycle(void)

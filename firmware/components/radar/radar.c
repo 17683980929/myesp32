@@ -48,6 +48,7 @@ static StackType_t *s_task_stack;
 
 static bool s_started;
 static bool s_uart_ready;
+static bool s_power_on = true;          /* 升压模块 EN 的允许状态（软件侧） */
 static uint8_t s_buf[PARSE_BUF_SIZE];
 static size_t s_buf_len;
 static bool s_last_raw;
@@ -288,6 +289,22 @@ void radar_start(void)
     if (s_started) return;
     s_started = true;
 
+    /* 升压模块 EN：高电平给雷达供电。没接 EN 线时只是个悬空 IO，
+     * 拉高拉低都不影响 UART/OUT 检测。 */
+    gpio_config_t pwr = {
+        .pin_bit_mask = 1ULL << RADAR_PWR_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if (gpio_config(&pwr) == ESP_OK) {
+        gpio_set_level(RADAR_PWR_GPIO, RADAR_PWR_ON_LEVEL);
+        s_power_on = true;
+    } else {
+        ESP_LOGW(TAG, "雷达电源 EN(GP%d) 配置失败，不影响 UART 检测", RADAR_PWR_GPIO);
+    }
+
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << RADAR_OUT_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -361,3 +378,17 @@ bool radar_uart_ok(void)
     taskEXIT_CRITICAL(&s_lock);
     return ok;
 }
+
+void radar_power_set(bool on)
+{
+    if (on == s_power_on) return;
+    s_power_on = on;
+    gpio_set_level(RADAR_PWR_GPIO, on ? RADAR_PWR_ON_LEVEL : !RADAR_PWR_ON_LEVEL);
+    if (on && s_uart_ready) {
+        /* 重新上电后把残留在 FIFO 里的半帧清掉，别当成有效帧解析 */
+        uart_flush_input(RADAR_UART_PORT);
+    }
+    ESP_LOGI(TAG, "雷达电源 → %s（EN=GP%d）", on ? "开" : "关", RADAR_PWR_GPIO);
+}
+
+bool radar_power_on(void) { return s_power_on; }

@@ -43,6 +43,18 @@ static const char *TAG = "main";
 
 static volatile int s_dirty = 1;        /* 需要重绘 */
 
+/* ── 电池供电策略 ─────────────────────────────────────────────────────
+ * 雷达原本挂在 VBUS，拔掉 USB 就没电；改接 18650 升压 5V 后会常耗
+ * 70~80mA。这里按电池电压分级省电。板上没有 VBUS 检测脚，用电压近似
+ * 判断放电状态：充电/满电 4.1~4.2V 走正常策略，放下来后逐级收紧。
+ * 各级带回差，避免 ADC 抖动来回切。 */
+#define BAT_ECO_ENTER_MV   3700
+#define BAT_ECO_EXIT_MV    3780
+#define BAT_LOW_ENTER_MV   3350
+#define BAT_LOW_EXIT_MV    3430
+static int s_power_level = 0;              /* 0=正常 1=省电 2=低电保命 */
+static const char *s_pwr_name = "normal";
+
 /* 长按 BOOT 触发的"重启进重置门户"标记：RTC 内存跨软件重启保留，
  * 不占用已经耗尽的内部堆（NVS 写失败也不影响）。 */
 #define BOOT_PORTAL_MAGIC 0x504F5254u   /* "PORT" */
@@ -320,7 +332,7 @@ static void stat_send(void)
     int bat = sensors_battery_pct();
     radar_state_t rd;
     radar_get(&rd);
-    char msg[416];
+    char msg[448];
     char ip[20];
     wifi_sta_ip(ip, sizeof(ip));
     const char *part = esp_ota_get_running_partition()->label;   /* ota_0 / ota_1 */
@@ -347,6 +359,13 @@ static void stat_send(void)
              rd.present ? 1 : 0, (int)rd.detect_dist_cm,
              rd.moving ? 1 : 0, rd.still ? 1 : 0, rd.uart_ok ? 1 : 0);
 
+    /* 电池电压 mV 与供电策略：服务端宽松解析未知字段，日志/管理页可据此
+     * 判断板子是不是在脱线放电、有没有进省电档 */
+    char pwr_part[64];
+    snprintf(pwr_part, sizeof(pwr_part),
+             "\"batmv\":%d,\"pwr\":\"%s\",\"radaren\":%d,",
+             sensors_battery_mv(), s_pwr_name, radar_power_on() ? 1 : 0);
+
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
         int t10 = (int)(t * 10 + (t >= 0 ? 0.5f : -0.5f));
@@ -356,15 +375,16 @@ static void stat_send(void)
         if (hf < 0) hf = -hf;
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s"
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s%s"
                  "\"room\":{\"t\":%d.%d,\"h\":%d.%d}}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, radar_part,
-                 t10 / 10, tf, h10 / 10, hf);
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part,
+                 radar_part, pwr_part, t10 / 10, tf, h10 / 10, hf);
     } else {
         snprintf(msg, sizeof(msg),
                  "{\"t\":\"stat\",\"bat\":%d,\"vol\":%d,\"bt\":%d,\"rssi\":%d,\"up\":%d,"
-                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s\"noroom\":1}",
-                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part, radar_part);
+                 "\"ip\":\"%s\",%s%s\"part\":\"%s\",%s%s\"noroom\":1}",
+                 bat, vol, bt, rssi, up, ip, net_part, bn_part, part,
+                 radar_part, pwr_part);
     }
     ws_send_json(msg);
 }
@@ -634,6 +654,51 @@ static void enter_portal_mode(void)
 
 /* ── 主循环 ────────────────────────────────────────────────────────── */
 
+/* 每 5 秒按电池电压调整一次省电档位。电压无效（ADC 没就绪 / 没装电池）
+ * 时完全不干预，插着 USB 充电时电压在 4.1~4.2V，也走正常档。 */
+static void power_tick(uint32_t now)
+{
+    static uint32_t s_next = 0;
+    if ((int32_t)(now - s_next) < 0) return;
+    s_next = now + 5000;
+
+    int mv = sensors_battery_mv();
+    if (mv < 2000 || mv > 5000) return;
+
+    int level = mv < BAT_LOW_ENTER_MV ? 2 : (mv < BAT_ECO_ENTER_MV ? 1 : 0);
+    /* 回升带 80mV 回差，防止电压抖动来回切档 */
+    if (level < s_power_level) {
+        if (s_power_level == 2 && mv < BAT_LOW_EXIT_MV) level = 2;
+        else if (mv < BAT_ECO_EXIT_MV) level = 1;
+    }
+    if (level == s_power_level) return;
+
+    int prev = s_power_level;
+    s_power_level = level;
+    switch (level) {
+        case 2:
+            s_pwr_name = "low";
+            audio_volume_cap(50);
+            radar_power_set(false);       /* 保住 ESP32 和屏幕，等充电 */
+            ui_set_sub("电量低，请接 USB 充电");
+            s_sub_clear_at = now_ms() + 6000;
+            s_dirty = 1;
+            break;
+        case 1:
+            s_pwr_name = "eco";
+            audio_volume_cap(75);        /* 躲开 85/100 档的功放电流尖峰 */
+            radar_power_set(true);
+            break;
+        default:
+            s_pwr_name = "normal";
+            audio_volume_cap(100);
+            radar_power_set(true);
+            break;
+    }
+    ESP_LOGI(TAG, "供电策略 → %s（电池 %dmV，%d → %d）",
+             s_pwr_name, mv, prev, level);
+}
+
 static void main_loop(void)
 {
     /* 开机即空闲态，但 s_voice_state 是静态初始化成 IDLE 的、没走过 voice_to()，
@@ -644,6 +709,9 @@ static void main_loop(void)
     TickType_t last = xTaskGetTickCount();
     for (;;) {
         uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        /* 电池分级省电：内部 5 秒节流，每轮调用很便宜 */
+        power_tick(now);
 
         /* BOOT 长按 8 秒 → 重启进 WiFi 重置模式。
          * 有符号差值：按键任务可能在本轮 now 之后才记录按下时刻。 */
