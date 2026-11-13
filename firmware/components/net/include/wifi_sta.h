@@ -25,6 +25,11 @@ int wifi_sta_rssi(void);
 /** 当前是否已连上（拿到 IP） */
 int wifi_sta_connected(void);
 
+/** 动态切换 WiFi 省电档：save=1 → MIN_MODEM，0 → NONE（全速）。
+ *  只在长时间无人且非语音时由主循环调用；有人/说话立即切回 NONE。
+ *  启动默认 NONE，历史上 modem sleep 曾导致 beacon 超时断连。 */
+void wifi_sta_set_ps(int save);
+
 /** 强制断开重连（事件处理器会自动重连；治"僵尸关联"） */
 void wifi_sta_kick(void);
 

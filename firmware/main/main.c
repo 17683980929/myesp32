@@ -55,6 +55,21 @@ static volatile int s_dirty = 1;        /* 需要重绘 */
 static int s_power_level = 0;              /* 0=正常 1=省电 2=低电保命 */
 static const char *s_pwr_name = "normal";
 
+/* ── 空闲省电（实验档）─────────────────────────────────────────────
+ * 只在「长时间无人 + 非语音 + 无按键」时启用，任何活动立即恢复全速。
+ * 历史上 wifi_sta.c 固定 WIFI_PS_NONE（注释记着 modem sleep 曾造成
+ * beacon 超时断连 + 延迟），所以这版做成可一键关闭的实验项：
+ *   POWER_SAVE_MODEM=0 → 只降 UI/循环频率，完全不动 WiFi
+ *   POWER_SAVE_ENABLE=0 → 整个空闲档关闭
+ * 也可以直接 OTA 回 0.1.65 回退。CPU 降频 / light sleep 这版不做
+ * （sdkconfig 未开 CONFIG_PM_ENABLE，且会影响 UART/I2S 实时性）。 */
+#define POWER_SAVE_ENABLE   1
+#define POWER_SAVE_MODEM    1
+#define IDLE_AFTER_MS       (5 * 60 * 1000)    /* 安静 5 分钟才进 idle */
+#define IDLE_UI_MS          3000               /* idle 时 3 秒重绘一次 */
+static int s_idle = 0;
+static uint32_t s_quiet_since = 0;
+
 /* 长按 BOOT 触发的"重启进重置门户"标记：RTC 内存跨软件重启保留，
  * 不占用已经耗尽的内部堆（NVS 写失败也不影响）。 */
 #define BOOT_PORTAL_MAGIC 0x504F5254u   /* "PORT" */
@@ -332,7 +347,7 @@ static void stat_send(void)
     int bat = sensors_battery_pct();
     radar_state_t rd;
     radar_get(&rd);
-    char msg[448];
+    char msg[480];
     char ip[20];
     wifi_sta_ip(ip, sizeof(ip));
     const char *part = esp_ota_get_running_partition()->label;   /* ota_0 / ota_1 */
@@ -361,10 +376,11 @@ static void stat_send(void)
 
     /* 电池电压 mV 与供电策略：服务端宽松解析未知字段，日志/管理页可据此
      * 判断板子是不是在脱线放电、有没有进省电档 */
-    char pwr_part[64];
+    char pwr_part[96];
     snprintf(pwr_part, sizeof(pwr_part),
-             "\"batmv\":%d,\"pwr\":\"%s\",\"radaren\":%d,",
-             sensors_battery_mv(), s_pwr_name, radar_power_on() ? 1 : 0);
+             "\"batmv\":%d,\"pwr\":\"%s\",\"radaren\":%d,\"idle\":%d,\"ps\":\"%s\",",
+             sensors_battery_mv(), s_pwr_name, radar_power_on() ? 1 : 0,
+             s_idle, (POWER_SAVE_MODEM && s_idle) ? "modem" : "none");
 
     float t = 0, h = 0;
     if (sensors_read_th(&t, &h) == ESP_OK) {
@@ -699,6 +715,40 @@ static void power_tick(uint32_t now)
              s_pwr_name, mv, prev, level);
 }
 
+/* 每轮主循环调用；只在档位变化时动 WiFi / 打日志，平时开销可忽略。 */
+static void idle_tick(uint32_t now)
+{
+    (void)now;      /* POWER_SAVE_ENABLE=0 时避免未使用参数告警 */
+#if POWER_SAVE_ENABLE
+    /* 有人、说话、按键、唤醒应答、问句续接 = 活跃，立刻恢复全速 */
+    bool busy = (s_voice_state != VOICE_IDLE) || radar_present() ||
+                s_wake_greet || s_followup ||
+                s_key_down_at >= 0 || s_boot_down_at >= 0;
+    if (busy) {
+        s_quiet_since = 0;
+    } else if (!s_quiet_since) {
+        s_quiet_since = now;
+    }
+
+    int want = (s_quiet_since &&
+                (int32_t)(now - s_quiet_since) >= IDLE_AFTER_MS) ? 1 : 0;
+    /* 低电保命档不再折腾 WiFi：避免断连/重连带来的额外电流尖峰 */
+    if (s_power_level >= 2) want = 0;
+    if (want == s_idle) return;
+    s_idle = want;
+
+#if POWER_SAVE_MODEM
+    wifi_sta_set_ps(want);
+#endif
+    ESP_LOGI(TAG, "空闲省电 → %s（%s）",
+             want ? "开" : "关",
+             want ? (POWER_SAVE_MODEM ? "安静5分钟，WiFi MIN_MODEM / UI 3s / 循环100ms"
+                                      : "安静5分钟，UI 3s / 循环100ms")
+                  : "检测到活动，恢复全速");
+    s_dirty = 1;       /* 退出 idle 时立刻重绘，别等下一个周期 */
+#endif
+}
+
 static void main_loop(void)
 {
     /* 开机即空闲态，但 s_voice_state 是静态初始化成 IDLE 的、没走过 voice_to()，
@@ -712,6 +762,8 @@ static void main_loop(void)
 
         /* 电池分级省电：内部 5 秒节流，每轮调用很便宜 */
         power_tick(now);
+        /* 空闲省电：每轮判断活动，只在档位变化时切换 WiFi/UI/循环频率 */
+        idle_tick(now);
 
         /* BOOT 长按 8 秒 → 重启进 WiFi 重置模式。
          * 有符号差值：按键任务可能在本轮 now 之后才记录按下时刻。 */
@@ -998,14 +1050,15 @@ static void main_loop(void)
          * Lua 画布保鲜期内跳过重绘（脚本在接管屏幕）。 */
         int pet_changed = ui_tick(now);
         TickType_t nowT = xTaskGetTickCount();
-        if ((s_dirty || pet_changed || (nowT - last) >= pdMS_TO_TICKS(1000)) &&
+        uint32_t render_ms = s_idle ? IDLE_UI_MS : 1000;
+        if ((s_dirty || pet_changed || (nowT - last) >= pdMS_TO_TICKS(render_ms)) &&
             !ui_lua_hold_active()) {
             ui_render();
             s_dirty = 0;
             last = nowT;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(s_idle ? 100 : 50));
     }
 }
 

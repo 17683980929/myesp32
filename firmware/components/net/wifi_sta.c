@@ -279,6 +279,19 @@ esp_err_t wifi_sta_start(const char *ssid, const char *password)
     return ESP_OK;
 }
 
+void wifi_sta_set_ps(int save)
+{
+    /* MIN_MODEM：Wi-Fi 按 AP 的 DTIM 间隔睡 RF，CPU 不睡；平均能省下
+     * 一大截射频电流。NONE：全速、最低延迟。
+     * 注意：本项目原先固定 NONE，注释记着 modem sleep 会造成 beacon
+     * 超时断连，所以这个切换由主循环严格限定在"长时间无人且非语音"，
+     * 并且每次活动立即切回 NONE。 */
+    wifi_ps_type_t type = save ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE;
+    esp_err_t e = esp_wifi_set_ps(type);
+    ESP_LOGI(TAG, "WiFi 省电 → %s%s", save ? "MIN_MODEM" : "NONE",
+             e == ESP_OK ? "" : "（设置失败）");
+}
+
 esp_err_t wifi_sta_wait(int timeout_ms)
 {
     EventBits_t b = xEventGroupWaitBits(wifi_events, WIFI_EVT_GOT_IP,
