@@ -25,11 +25,28 @@ import { startReminders } from "./services/reminders.mjs";
  * 未捕获异常记录后退出，交给 NSSM / run-loop 拉起；
  * unhandledRejection 只记日志不退出，避免单个异步请求把整站带走。 */
 const CRASH_LOG = path.join(path.dirname(CONFIG_PATH), "crash.log");
-function writeCrash(kind, e) {
+const CRASH_MAX_BYTES = 512 * 1024;
+
+/** 生命周期事件落盘： boot / health / exit / fatal / stall 全写同一份文件。
+ *  同步 append，进程被外部硬杀（TerminateProcess / 关控制台）之前也能留下
+ *  「最后存活时间」——旧版只有 uncaughtException 才写，无声死亡完全没证据。 */
+function writeLife(kind, detail = "") {
   const line = `[${new Date().toISOString()}] ${kind} pid=${process.pid} ` +
-               `uptime=${Math.round(process.uptime())}s\n` +
-               (e?.stack || e?.message || String(e)) + "\n\n";
-  try { fs.appendFileSync(CRASH_LOG, line, "utf8"); } catch { /* 写不了也不能再抛 */ }
+               `uptime=${Math.round(process.uptime())}s ${detail}\n`;
+  try {
+    const st = fs.statSync(CRASH_LOG);
+    if (st.size > CRASH_MAX_BYTES) {
+      /* 轮转：保留后半，避免管理页 tail 256KB 只剩几个月前的旧记录 */
+      const buf = fs.readFileSync(CRASH_LOG);
+      fs.writeFileSync(CRASH_LOG, buf.subarray(Math.max(0, buf.length - CRASH_MAX_BYTES / 2)));
+    }
+  } catch { /* 文件不存在 / 读写失败都不影响主流程 */ }
+  try { fs.appendFileSync(CRASH_LOG, line, "utf8"); } catch { /* ignore */ }
+}
+function writeCrash(kind, e) {
+  writeLife(kind, "");
+  const detail = (e?.stack || e?.message || String(e)) + "\n\n";
+  try { fs.appendFileSync(CRASH_LOG, detail, "utf8"); } catch { /* ignore */ }
 }
 process.on("exit", (code) => {
   try {
@@ -37,6 +54,7 @@ process.on("exit", (code) => {
   } catch {
     /* 退出阶段 stdout 可能已关闭 */
   }
+  writeLife("exit", `code=${code}`);
 });
 process.on("unhandledRejection", (e) => {
   console.error("[fatal] unhandledRejection:", e?.stack || e?.message || e);
@@ -55,14 +73,17 @@ const devices = new Set();
  * 半夜挂掉时，最后几条 [health] 能看出是不是内存/会话数一路涨到爆。
  * rss 超过阈值就主动退出让守护拉起：被系统 OOM 硬杀通常连日志都留不下。 */
 console.log(`[boot] pid=${process.pid} node=${process.version} at=${new Date().toISOString()}`);
+writeLife("boot", `node=${process.version}`);
 const RSS_LIMIT_MB = Number(process.env.MYESP32_RSS_LIMIT_MB) || 512;
 setInterval(() => {
   const m = process.memoryUsage();
   const rssMB = Math.round(m.rss / 1048576);
+  const at = new Date().toISOString();
   console.log(
-    `[health] uptime=${Math.round(process.uptime())}s ` +
+    `[health] at=${at} uptime=${Math.round(process.uptime())}s ` +
     `rss=${rssMB}MB heap=${Math.round(m.heapUsed / 1048576)}MB devices=${devices.size}`
   );
+  writeLife("health", `rss=${rssMB}MB heap=${Math.round(m.heapUsed / 1048576)}MB devices=${devices.size}`);
   if (rssMB > RSS_LIMIT_MB) {
     const msg = `rss ${rssMB}MB 超过阈值 ${RSS_LIMIT_MB}MB，主动退出让守护拉起`;
     console.error(`[fatal] ${msg}`);
@@ -70,6 +91,22 @@ setInterval(() => {
     setTimeout(() => process.exit(1), 100);
   }
 }, 2 * 60 * 1000).unref();
+
+/* event loop 假死检测：进程还在、但 HTTP 不再响应时 nginx 同样报 502，
+ * 而且这种情况不会触发 uncaughtException / exit，旧版完全留不下证据。
+ * 定时器依赖同一个 loop，卡住期间两个都不跑；一旦恢复，时间漂移会被
+ * 检查到，于是主动退出让 NSSM 拉起（比留一个半死不活的进程好）。 */
+const STALL_MS = Number(process.env.MYESP32_STALL_MS) || 60_000;
+let lastTick = Date.now();
+setInterval(() => { lastTick = Date.now(); }, 1000).unref();
+setInterval(() => {
+  const gap = Date.now() - lastTick;
+  if (gap > STALL_MS) {
+    writeLife("stall", `event-loop 卡住 ${gap}ms`);
+    console.error(`[fatal] event-loop 卡住 ${gap}ms，主动退出让守护拉起`);
+    setTimeout(() => process.exit(1), 100);
+  }
+}, 5000).unref();
 
 const ctx = { config, weather, devices };
 

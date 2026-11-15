@@ -131,6 +131,7 @@ export class DeviceSession {
     this.hold = 0;              /* 挂起的回合号：打断后用户没说话 → 从断点续播 */
     this.holdAt = 0;            /* 挂起开始的时刻（超时兜底用） */
     this.timers = [];
+    this.closed = false;           /* close() 幂等：新连接挤掉旧会话 + ws close 事件会各调一次 */
     this.lastStat = null;
     this.lastRxAt = Date.now();    /* 最近一次上行时刻：90 秒没有就清僵尸会话 */
     this.presence = null;          /* 雷达状态（按 MAC 跨会话共享，见 presence.mjs） */
@@ -240,6 +241,8 @@ export class DeviceSession {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
     this.aborted = true;
     this.turn++;                        /* 作废正在跑的回合（发送/生成循环立即退出） */
     this.clearPreviewTimer();

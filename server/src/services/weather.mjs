@@ -263,6 +263,8 @@ export class WeatherCache {
     this.data = null;
     this.fetchedAt = 0;
     this.lastError = null;
+    this.failStreak = 0;
+    this.lastAttemptAt = 0;
   }
 
   async get(cfg) {
@@ -271,13 +273,24 @@ export class WeatherCache {
 
     if (fresh) return this.data;
 
+    /* 连续失败退避：外网不通时别每轮都白等 wttr(10s) + open-meteo(8s)。
+     * 旧行为是每次 get 都重试，日志里几百行「天气源都失败」就是这么来的，
+     * 还会一直挂着超时请求。逐次拉长间隔，上限 10 分钟。 */
+    if (this.failStreak > 0) {
+      const wait = Math.min(10 * 60_000, this.failStreak * 60_000);
+      if (Date.now() - this.lastAttemptAt < wait) return this.data;
+    }
+    this.lastAttemptAt = Date.now();
+
     try {
       this.data = await fetchWeather(cfg);
       this.fetchedAt = Date.now();
       this.lastError = null;
+      this.failStreak = 0;
       console.log(`[weather] ${this.data.city} ${this.data.text} ${this.data.temp}℃`);
     } catch (e) {
       this.lastError = e.message;
+      this.failStreak++;
       console.warn(`[weather] 失败: ${e.message}`);
       /* 失败时沿用旧数据，没有旧数据就返回 null（设备那边显示 "--"） */
     }
