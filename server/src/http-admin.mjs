@@ -49,6 +49,7 @@ const VERSION_FILE = path.join(ROOT, "VERSION");
 const LOG_FILES = [
   { name: "server.log", file: path.join(ROOT, "server.log") },
   { name: "server.err.log", file: path.join(ROOT, "server.err.log") },
+  { name: "crash.log", file: path.join(ROOT, "crash.log") },
   { name: "supervisor.log", file: path.join(ROOT, "supervisor.log") },
   { name: "server.log", file: path.join(ROOT, "..", "firmware", "build", "server.log") },
   { name: "supervisor.log", file: path.join(ROOT, "..", "firmware", "build", "supervisor.log") },

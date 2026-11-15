@@ -218,12 +218,18 @@ export class DeviceSession {
      * 否则旧会话会一直留在管理页，OTA/提醒也会重复发给同一台设备。 */
     this.lastRxAt = Date.now();
     this.timers.push(setInterval(() => {
-      if (Date.now() - this.lastRxAt > 90_000) {
-        log(`[${this.sid}] 90 秒没有上行，关闭僵尸会话`);
-        try { this.ws.terminate(); } catch { /* ignore */ }
-        return;
+      try {
+        if (Date.now() - this.lastRxAt > 90_000) {
+          log(`[${this.sid}] 90 秒没有上行，关闭僵尸会话`);
+          try { this.ws.terminate(); } catch { /* ignore */ }
+          return;
+        }
+        this.send(build.ping());
+      } catch (e) {
+        /* 定时器回调里的异常是同步抛出的，会直接触发 uncaughtException
+         * → 整个进程退出 → nginx 502。这里必须自己兜住。 */
+        log(`[${this.sid}] 心跳异常: ${e?.message || e}`);
       }
-      this.send(build.ping());
     }, 25000));
 
     /* 信息栏定时推送 */

@@ -9,6 +9,8 @@
  */
 
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { getConfig, CONFIG_PATH } from "./config.mjs";
 import { WeatherCache } from "./services/weather.mjs";
 import { getHotNews } from "./services/news.mjs";
@@ -17,8 +19,18 @@ import { handleHttp } from "./http-admin.mjs";
 import { reloadSkills } from "./services/skills.mjs";
 import { startReminders } from "./services/reminders.mjs";
 
-/* 进程级兜底：单个异步/定时错误不能直接带走服务（否则 nginx 立刻 502）。
- * 未捕获异常记录后退出，交给 run-loop/schtasks 拉起；unhandledRejection 只记日志。 */
+/* 进程级兜底：这个进程是 nginx 的唯一上游，一退出管理页立刻 502。
+ * 崩溃原因除了走 stderr（run-loop 重定向到 server.err.log），再单独落一份
+ * crash.log —— 防止重定向失效、日志轮转或守护把 stderr 丢掉时没有证据。
+ * 未捕获异常记录后退出，交给 NSSM / run-loop 拉起；
+ * unhandledRejection 只记日志不退出，避免单个异步请求把整站带走。 */
+const CRASH_LOG = path.join(path.dirname(CONFIG_PATH), "crash.log");
+function writeCrash(kind, e) {
+  const line = `[${new Date().toISOString()}] ${kind} pid=${process.pid} ` +
+               `uptime=${Math.round(process.uptime())}s\n` +
+               (e?.stack || e?.message || String(e)) + "\n\n";
+  try { fs.appendFileSync(CRASH_LOG, line, "utf8"); } catch { /* 写不了也不能再抛 */ }
+}
 process.on("exit", (code) => {
   try {
     console.log(`[exit] code=${code} at=${new Date().toISOString()}`);
@@ -31,6 +43,7 @@ process.on("unhandledRejection", (e) => {
 });
 process.on("uncaughtException", (e) => {
   console.error("[fatal] uncaughtException:", e?.stack || e?.message || e);
+  writeCrash("uncaughtException", e);
   setTimeout(() => process.exit(1), 100);
 });
 
@@ -38,16 +51,25 @@ const config = getConfig();
 const weather = new WeatherCache();
 const devices = new Set();
 
-/* 崩溃排查：每次启动记一行，之后每 10 分钟记一次内存。
- * 如果服务半夜挂掉，日志里最后一条 [health] 能看出是不是内存涨爆。 */
+/* 崩溃排查：每次启动记一行，之后每 2 分钟记一次内存 + 在线会话数。
+ * 半夜挂掉时，最后几条 [health] 能看出是不是内存/会话数一路涨到爆。
+ * rss 超过阈值就主动退出让守护拉起：被系统 OOM 硬杀通常连日志都留不下。 */
 console.log(`[boot] pid=${process.pid} node=${process.version} at=${new Date().toISOString()}`);
+const RSS_LIMIT_MB = Number(process.env.MYESP32_RSS_LIMIT_MB) || 512;
 setInterval(() => {
   const m = process.memoryUsage();
+  const rssMB = Math.round(m.rss / 1048576);
   console.log(
     `[health] uptime=${Math.round(process.uptime())}s ` +
-    `rss=${Math.round(m.rss / 1048576)}MB heap=${Math.round(m.heapUsed / 1048576)}MB`
+    `rss=${rssMB}MB heap=${Math.round(m.heapUsed / 1048576)}MB devices=${devices.size}`
   );
-}, 10 * 60 * 1000).unref();
+  if (rssMB > RSS_LIMIT_MB) {
+    const msg = `rss ${rssMB}MB 超过阈值 ${RSS_LIMIT_MB}MB，主动退出让守护拉起`;
+    console.error(`[fatal] ${msg}`);
+    writeCrash("rss-limit", msg);
+    setTimeout(() => process.exit(1), 100);
+  }
+}, 2 * 60 * 1000).unref();
 
 const ctx = { config, weather, devices };
 
