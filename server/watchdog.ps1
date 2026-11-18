@@ -89,6 +89,14 @@ function Get-Fails {
     return 0
 }
 
+function Get-Saved {
+    if (Test-Path $envFile) {
+        $raw = Get-Content $envFile -Raw -Encoding UTF8
+        if ($raw) { return ($raw | ConvertFrom-Json) }
+    }
+    return $null
+}
+
 # 只有「服务可执行路径里带 index.mjs / run-loop / myesp32」或
 # 「服务名以 myesp 开头」才算本项目，svchost / services 一律排除。
 function Get-ServiceTarget {
@@ -105,29 +113,31 @@ function Get-ServiceTarget {
     return $null
 }
 
-function Get-TaskTarget {
-    $tasks = @()
-    try {
-        $tasks = @(Get-ScheduledTask | Where-Object {
-            $tn = [string]$_.TaskName
-            if ($tn -match 'MyEsp32 Watchdog') { return $false }
-            foreach ($a in @($_.Actions)) {
-                $ex = [string]$a.Execute
-                $ar = [string]$a.Arguments
-                $wd = [string]$a.WorkingDirectory
-                if ($ar -match 'index\.mjs|run-loop') { return $true }
-                if ($wd -match 'myesp32' -and $ex -match 'node|cmd|powershell') { return $true }
-            }
-            return $false
-        })
-    } catch {
-        $tasks = @()
+function Get-TaskTarget([object[]]$Tasks) {
+    if (-not $Tasks) {
+        try { $Tasks = @(Get-ScheduledTask) } catch { $Tasks = @() }
     }
-    if ($tasks.Count -eq 0) { return $null }
-    foreach ($t in $tasks) {
+    $hit = @($Tasks | Where-Object {
+        $tn = [string]$_.TaskName
+        if ($tn -match 'MyEsp32 Watchdog') { return $false }
+        foreach ($a in @($_.Actions)) {
+            $ex = [string]$a.Execute
+            $ar = [string]$a.Arguments
+            $wd = [string]$a.WorkingDirectory
+            # 三种写法都算：程序本身就是 run-loop.cmd / 路径里带 myesp32 /
+            # 参数里带 index.mjs（MyEsp32 任务的 Actions 是 Execute=run-loop.cmd，
+            # Arguments 和 WorkingDirectory 都是空的，只查参数会漏掉）
+            if ($ex -match 'index\.mjs|run-loop|myesp32') { return $true }
+            if ($ar -match 'index\.mjs|run-loop') { return $true }
+            if ($wd -match 'myesp32' -and $ex -match 'node|cmd|powershell') { return $true }
+        }
+        return $false
+    })
+    if ($hit.Count -eq 0) { return $null }
+    foreach ($t in $hit) {
         if ([string]$t.TaskName -match 'myesp') { return $t }
     }
-    return $tasks[0]
+    return $hit[0]
 }
 
 function Get-ProcessTarget {
@@ -303,6 +313,13 @@ if ($Diag) {
             Write-Output ('    exec: ' + [string]$a.Execute + ' ' + [string]$a.Arguments)
             Write-Output ('    cwd : ' + [string]$a.WorkingDirectory)
         }
+        $lim = [string]$tsk.Settings.ExecutionTimeLimit
+        $rc = [string]$tsk.Settings.RestartCount
+        Write-Output ('    执行期限: ' + $lim + '   失败重启次数: ' + $rc)
+        if ($lim -ne '' -and $lim -ne 'PT0S') {
+            Write-Output '    !! 执行期限不是 PT0S：任务跑满这个时长会被计划任务强制结束，'
+            Write-Output '       进程被杀时不写任何崩溃日志，表现就是「无声无息消失」'
+        }
     } else { Write-Output '  (无)' }
     Write-Output '--- 所有含 index.mjs 的 node 进程 ---'
     $ps = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
@@ -330,7 +347,18 @@ $fails = Get-Fails
 if (Test-Port $Port) {
     if ($fails -ge 2) { Write-Log ('服务已恢复（此前连续失败 ' + $fails + ' 次）') }
     Set-Content $stateFile '0' -Encoding ASCII
-    if (-not (Test-Path $envFile)) { Save-Target | Out-Null }
+    # 没记录、或上次探测落空(mode=none)且已过 30 分钟，才重新探测一次。
+    # 不无条件重探是因为服务正常时每 2 分钟都会走到这里，探不到会刷满日志。
+    $saved = Get-Saved
+    $probe = $false
+    if (-not $saved) {
+        $probe = $true
+    } elseif ([string]$saved.mode -eq 'none') {
+        $age = 9999
+        try { $age = ((Get-Date) - [datetime]::Parse([string]$saved.saved)).TotalMinutes } catch { $age = 9999 }
+        if ($age -ge 30) { $probe = $true }
+    }
+    if ($probe) { Save-Target | Out-Null }
     exit 0
 }
 
