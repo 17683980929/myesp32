@@ -50,6 +50,7 @@ const LOG_FILES = [
   { name: "server.log", file: path.join(ROOT, "server.log") },
   { name: "server.err.log", file: path.join(ROOT, "server.err.log") },
   { name: "crash.log", file: path.join(ROOT, "crash.log") },
+  { name: "watchdog.log", file: path.join(ROOT, "watchdog.log") },
   { name: "supervisor.log", file: path.join(ROOT, "supervisor.log") },
   { name: "server.log", file: path.join(ROOT, "..", "firmware", "build", "server.log") },
   { name: "supervisor.log", file: path.join(ROOT, "..", "firmware", "build", "supervisor.log") },

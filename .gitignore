@@ -50,3 +50,10 @@ server/.preview.png
 
 # 临时试听样本（用 ffmpeg/管理页合成，可随时重出）
 tts_*.wav
+
+# 外部看门狗运行时产物（只在云端生成，不进仓库）
+server/watchdog.state
+server/watchdog.env.json
+server/watchdog.log
+server/watchdog.stdout.log
+server/watchdog.stderr.log
